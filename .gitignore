@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Personal context
+/devpost/learner-profile.md
+
+# Credentials & environment files
+.env
+.env.*
+!.env.example
