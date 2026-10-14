@@ -102,3 +102,4 @@ def test_latency_under_15ms():
     res = prune_file(code, "fetch_remote_resource", 0.5)
     print(f"Latency: {res.latency_ms:.3f}ms")
     assert res.latency_ms < 15.0
+

@@ -73,3 +73,4 @@ class ConnectionManager:
     def close_connection(self) -> None:
         """Closes the current socket connection."""
         self.state.terminate()
+
