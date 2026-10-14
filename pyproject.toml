@@ -1,14 +1,22 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
 [project]
 name = "fastast"
 version = "0.1.0"
-description = "Add your description here"
+description = "High-performance syntax-guaranteed context pruning MCP server for AI coding agents"
 readme = "README.md"
-requires-python = ">=3.15"
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+]
 
 [project.scripts]
-fastast = "fastast:main"
+fastast = "fastast.cli:main"
+fastast-mcp = "fastast.server:main"
 
-[build-system]
-requires = ["uv_build>=0.13.0,<0.14.0"]
-build-backend = "uv_build"
+[tool.maturin]
+python-source = "python"
+module-name = "fastast._core"
+features = ["pyo3/extension-module", "pyo3/abi3-py310"]

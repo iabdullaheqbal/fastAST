@@ -5,9 +5,12 @@ build/
 dist/
 wheels/
 *.egg-info
+*.so
 
 # Virtual environments
 .venv
+/.bin/
+/target/
 
 # Personal context
 /devpost/learner-profile.md
