@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use tree_sitter::{Node, Parser, Tree};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,16 +48,20 @@ pub fn end_row_inclusive(node: &Node) -> usize {
     }
 }
 
-pub fn create_parser() -> Option<Parser> {
-    let mut parser = Parser::new();
-    let language = tree_sitter_python::language();
-    parser.set_language(&language).ok()?;
-    Some(parser)
+thread_local! {
+    static PARSER: RefCell<Parser> = RefCell::new({
+        let mut p = Parser::new();
+        let lang = tree_sitter_python::language();
+        p.set_language(&lang).expect("Error loading Python grammar");
+        p
+    });
 }
 
 pub fn parse_ast(code: &str) -> Result<Tree, String> {
-    let mut parser = create_parser().ok_or_else(|| "Failed to initialize tree-sitter-python parser".to_string())?;
-    parser.parse(code, None).ok_or_else(|| "Failed to parse code into AST".to_string())
+    PARSER.with(|parser_cell| {
+        let mut parser = parser_cell.borrow_mut();
+        parser.parse(code, None).ok_or_else(|| "Failed to parse code into AST".to_string())
+    })
 }
 
 /// Recursively traverses the AST and builds a flattened list of Scopes with hierarchy

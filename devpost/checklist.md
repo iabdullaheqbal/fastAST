@@ -9,7 +9,7 @@ Build mode: fast
 
 ## Slices
 
-- [ ] **1. Native Rust AST engine scaffold with PyO3 bindings and basic pruning**
+- [x] **1. Native Rust AST engine scaffold with PyO3 bindings and basic pruning**
   Becomes usable: A compiled native Python extension `fastast._core` callable from Python that parses a Python snippet via Tree-Sitter, identifies function/class scopes and imports, strips unneeded bodies replacing them with indented `pass`, counts tokens via `tiktoken-rs` (`cl100k_base`), and returns `PruneResult` with verified 0 syntax errors.
   Why now: Proves the high-risk compiled native bridge (Rust + Tree-Sitter + PyO3 + tiktoken-rs + maturin) immediately in Slice 1. If native compilation, C-extension loading, or tree-sitter grammars have issues, we catch them on step 1 rather than after building Python layers.
   PRD ref: `prd.md > Dual-Rubric Pruning & AST Structural Repair`
@@ -19,7 +19,7 @@ Build mode: fast
   Learner check: Run `python -c "import fastast._core; res = fastast._core.prune_file('def foo():\n    return 42', 'bar', 0.5); print(res.pruned_code, res.latency_ms)"` to see the native compiled engine in action.
   Commit: `Initialize Rust Tree-Sitter core with PyO3 extension`
 
-- [ ] **2. Dual-rubric scoring, edge-case structural repair, and syntax fallbacks**
+- [x] **2. Dual-rubric scoring, edge-case structural repair, and syntax fallbacks**
   Becomes usable: Full dual-rubric engine handling complex Python syntax: multi-line signatures, stacked decorators, enclosing classes/scopes, module docstrings, the zero-semantic-match API skeleton fallback, and pre-existing syntax error detection.
   Why now: The unique kernel of FastAST is syntax-guaranteed pruning under difficult real-world syntax edge cases. Proving and testing all syntax edge cases directly in native code before wrapping with network/MCP layers guarantees rock-solid reliability.
   PRD ref: `prd.md > Dual-Rubric Pruning & AST Structural Repair`, `prd.md > States and Boundaries`
