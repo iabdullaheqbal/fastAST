@@ -19,3 +19,9 @@ wheels/
 .env
 .env.*
 !.env.example
+
+# SQLite local databases
+*.db
+*.db-shm
+*.db-wal
+.fastast.db*

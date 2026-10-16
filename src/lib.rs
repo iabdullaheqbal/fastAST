@@ -1,6 +1,9 @@
+pub mod indexer;
 pub mod parser;
 pub mod repair;
 pub mod scorer;
+
+pub use indexer::{ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult};
 
 use pyo3::prelude::*;
 use std::sync::OnceLock;
@@ -128,10 +131,39 @@ pub fn prune_file(code_text: &str, focus_query: &str, threshold: f64) -> PyResul
     })
 }
 
+#[pyfunction]
+pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
+    let total_tokens = count_tokens(code_text);
+    let lines: Vec<&str> = code_text.lines().collect();
+
+    let tree = match parser::parse_ast(code_text) {
+        Ok(t) => t,
+        Err(_) => {
+            return Ok(FileIndexResult {
+                symbols: Vec::new(),
+                imports: Vec::new(),
+                calls: Vec::new(),
+                total_lines: lines.len(),
+                total_tokens,
+                has_syntax_error: true,
+            });
+        }
+    };
+
+    let source_bytes = code_text.as_bytes();
+    let res = indexer::extract_file_index(&tree, source_bytes, &lines, total_tokens);
+    Ok(res)
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PruneResult>()?;
+    m.add_class::<ExtractedSymbol>()?;
+    m.add_class::<ExtractedImport>()?;
+    m.add_class::<ExtractedCall>()?;
+    m.add_class::<FileIndexResult>()?;
     m.add_function(wrap_pyfunction!(prune_file, m)?)?;
+    m.add_function(wrap_pyfunction!(index_code, m)?)?;
     Ok(())
 }
 
