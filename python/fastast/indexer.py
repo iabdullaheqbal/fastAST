@@ -135,3 +135,4 @@ def index_repository(
         "total_calls": stats["calls"],
         "elapsed_ms": round(elapsed_ms, 2),
     }
+

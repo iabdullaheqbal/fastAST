@@ -333,3 +333,4 @@ def get_repository_stats(conn: sqlite3.Connection) -> Dict[str, int]:
         "imports": imports_count,
         "calls": calls_count,
     }
+
