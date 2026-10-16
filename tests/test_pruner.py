@@ -107,6 +107,38 @@ def test_latency_under_15ms():
     assert res.latency_ms < 15.0
 
 
+def test_large_benchmark_1500_lines():
+    code = load_fixture("sample_large.py")
+    lines_count = len(code.splitlines())
+    assert lines_count >= 1500, f"Expected 1500+ lines, got {lines_count}"
+
+    # Warmup
+    prune_file(code, "warmup", 0.5)
+
+    # Benchmark test on realistic query
+    res = prune_file(code, "process_request", 0.5)
+
+    # Verify syntax validity
+    ast.parse(res.pruned_code)
+    assert not res.has_syntax_error
+
+    # Verify target function and imports are preserved
+    assert "class RequestProcessingEngine:" in res.pruned_code
+    assert "def process_request(" in res.pruned_code
+    assert "import abc" in res.pruned_code
+    assert "import asyncio" in res.pruned_code
+    assert "class EnterpriseWorkerHandler" in res.pruned_code
+    assert "pass" in res.pruned_code
+
+    # Verify latency < 15ms
+    print(f"Large fixture latency: {res.latency_ms:.3f}ms")
+    assert res.latency_ms < 15.0, f"Expected <15ms latency, got {res.latency_ms:.3f}ms"
+
+    # Verify token savings > 60%
+    print(f"Large fixture savings: {res.savings_pct:.2f}%")
+    assert res.savings_pct > 60.0, f"Expected >60% savings, got {res.savings_pct:.2f}%"
+
+
 if __name__ == "__main__":
     test_simple_pruning()
     test_class_and_method_preservation()
@@ -115,4 +147,5 @@ if __name__ == "__main__":
     test_zero_semantic_match_fallback()
     test_preexisting_syntax_error_handling()
     test_latency_under_15ms()
+    test_large_benchmark_1500_lines()
     print("All pruner tests passed!")

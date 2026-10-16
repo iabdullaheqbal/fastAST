@@ -54,3 +54,4 @@ if __name__ == "__main__":
     test_prune_context_syntax_error()
     test_prune_context_empty()
     print("All server tests passed!")
+

@@ -39,7 +39,7 @@ Build mode: fast
   Learner check: Run `fastast-mcp` or test it via an MCP client call with a prompt and check the returned JSON metadata.
   Commit: `Add FastMCP server with JSON-RPC stdio prune_context tool`
 
-- [ ] **4. CLI runner, 1,500+ line benchmark harness, and latency verification**
+- [x] **4. CLI runner, 1,500+ line benchmark harness, and latency verification**
   Becomes usable: A developer CLI (`fastast prune <file> --query <query>`) and benchmark test suite executing on a 1,500+ line SWE-bench style Python module, demonstrating ~60–75% token reduction, 0 syntax errors, and <15ms execution time.
   Why now: Delivers the concrete "What Working Looks Like" hackathon demo deliverable—proving the sub-15ms speed claim and token savings on realistic large codebase files.
   PRD ref: `prd.md > Interaction Surface (Screens & Layout)`, `prd.md > What We're Building (Proof of Concept)`

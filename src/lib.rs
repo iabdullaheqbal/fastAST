@@ -37,7 +37,7 @@ pub fn count_tokens(text: &str) -> usize {
         .into()
     {
         let bpe_ref: &CoreBPE = bpe;
-        bpe_ref.encode_with_special_tokens(text).len()
+        bpe_ref.encode_ordinary(text).len()
     } else {
         text.split_whitespace().count()
     }
@@ -65,11 +65,13 @@ pub fn prune_file(code_text: &str, focus_query: &str, threshold: f64) -> PyResul
     let total_lines = code_text.lines().count();
     let original_tokens = count_tokens(code_text);
 
+    let prune_start = std::time::Instant::now();
+
     // Parse the code using tree-sitter
     let tree = match parser::parse_ast(code_text) {
         Ok(t) => t,
         Err(_) => {
-            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
             return Ok(PruneResult {
                 pruned_code: code_text.to_string(),
                 original_tokens,
@@ -85,7 +87,7 @@ pub fn prune_file(code_text: &str, focus_query: &str, threshold: f64) -> PyResul
 
     // If source already has syntax errors, gracefully flag it
     if tree.root_node().has_error() {
-        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
         return Ok(PruneResult {
             pruned_code: code_text.to_string(),
             original_tokens,
@@ -104,6 +106,7 @@ pub fn prune_file(code_text: &str, focus_query: &str, threshold: f64) -> PyResul
     let scopes = parser::collect_scopes(&tree, source_bytes, &lines);
     let score_res = scorer::evaluate_scopes(&scopes, focus_query, threshold);
     let pruned_code = repair::reconstruct_code(&lines, &scopes, &score_res.decisions);
+    let prune_elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
 
     let pruned_tokens = count_tokens(&pruned_code);
     let kept_lines = pruned_code.lines().count();
@@ -113,8 +116,6 @@ pub fn prune_file(code_text: &str, focus_query: &str, threshold: f64) -> PyResul
         0.0
     };
 
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-
     Ok(PruneResult {
         pruned_code,
         original_tokens,
@@ -122,7 +123,7 @@ pub fn prune_file(code_text: &str, focus_query: &str, threshold: f64) -> PyResul
         savings_pct,
         total_lines,
         kept_lines,
-        latency_ms: elapsed,
+        latency_ms: prune_elapsed,
         has_syntax_error: false,
     })
 }

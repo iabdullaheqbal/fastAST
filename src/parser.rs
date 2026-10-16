@@ -89,7 +89,7 @@ pub fn collect_scopes(tree: &Tree, source_bytes: &[u8], lines: &[&str]) -> Vec<S
                         decorator_rows: None,
                         parent_idx: None,
                         child_indices: Vec::new(),
-                        tokens: extract_tokens(&child, source_bytes),
+                        tokens: Vec::new(),
                     });
                     break;
                 }
@@ -131,7 +131,7 @@ fn walk_children(
                     decorator_rows: None,
                     parent_idx,
                     child_indices: Vec::new(),
-                    tokens: extract_tokens(&child, source_bytes),
+                    tokens: Vec::new(),
                 });
                 if let Some(pidx) = parent_idx {
                     items[pidx].child_indices.push(idx);
