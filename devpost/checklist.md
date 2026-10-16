@@ -29,7 +29,7 @@ Build mode: fast
   Learner check: Run the test suite on `tests/fixtures/sample_complex.py` and inspect the pruned output to confirm multi-line decorators and signatures are intact with valid syntax.
   Commit: `Implement dual-rubric scoring, edge-case repair, and syntax fallbacks`
 
-- [ ] **3. FastMCP server interface for AI coding agents**
+- [x] **3. FastMCP server interface for AI coding agents**
   Becomes usable: A running local MCP server implementing `prune_context` over JSON-RPC stdio, returning structured JSON with `pruned_code`, `cl100k_base` token metrics, line reduction metrics, and sub-15ms latency telemetry.
   Why now: Connects the native Rust core to the official MCP protocol, making FastAST directly callable by Claude Code, Cursor, and agentic workflows.
   PRD ref: `prd.md > The Core Journey`, `prd.md > Structured MCP Response`

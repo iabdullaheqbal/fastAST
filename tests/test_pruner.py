@@ -1,6 +1,9 @@
 import ast
 from pathlib import Path
-import pytest
+try:
+    import pytest
+except ImportError:
+    pytest = None
 from fastast._core import prune_file
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -103,3 +106,13 @@ def test_latency_under_15ms():
     print(f"Latency: {res.latency_ms:.3f}ms")
     assert res.latency_ms < 15.0
 
+
+if __name__ == "__main__":
+    test_simple_pruning()
+    test_class_and_method_preservation()
+    test_complex_decorators_and_async_signatures()
+    test_nested_classes_and_methods()
+    test_zero_semantic_match_fallback()
+    test_preexisting_syntax_error_handling()
+    test_latency_under_15ms()
+    print("All pruner tests passed!")

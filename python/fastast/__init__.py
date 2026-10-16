@@ -9,5 +9,9 @@ except ImportError:
     PruneResult = None  # type: ignore
     prune_file = None  # type: ignore
 
-__all__ = ["PruneResult", "prune_file"]
+try:
+    from fastast.server import prune_context
+except ImportError:
+    prune_context = None  # type: ignore
 
+__all__ = ["PruneResult", "prune_file", "prune_context"]
