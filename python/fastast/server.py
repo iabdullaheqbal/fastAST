@@ -1,8 +1,7 @@
-"""FastMCP server implementation for FastAST context pruning."""
-
 import ast
 import json
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -10,6 +9,9 @@ except (ImportError, ModuleNotFoundError):
     from mcp.server.mcpserver import MCPServer as FastMCP
 
 from fastast._core import prune_file
+from fastast.db import get_call_graph as db_get_call_graph
+from fastast.db import get_connection, search_symbols
+from fastast.indexer import index_repository as do_index_repository
 
 mcp = FastMCP("fastast")
 
@@ -97,6 +99,84 @@ def prune_context(code_text: str, focus_query: str, threshold: float = 0.5) -> s
         },
         indent=2,
     )
+
+
+@mcp.tool()
+def index_repository(directory_path: str = ".") -> str:
+    """Scan and index all Python files in a directory into a local SQLite symbol graph.
+
+    Args:
+        directory_path: Path to the repository or project directory (default: current directory).
+
+    Returns:
+        JSON string containing repository indexing statistics.
+    """
+    try:
+        res = do_index_repository(directory_path)
+        return json.dumps(res, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool()
+def query_symbols(query: str, kind: Optional[str] = None, directory_path: str = ".") -> str:
+    """Search for symbols (functions, classes, methods) in the indexed codebase.
+
+    Args:
+        query: Symbol name or substring to search for.
+        kind: Optional symbol kind to filter by ('function', 'async_function', 'class', 'method').
+        directory_path: Path to the repository directory (default: current directory).
+
+    Returns:
+        JSON string containing matching symbols with file locations and signatures.
+    """
+    try:
+        db_path = Path(directory_path).resolve() / ".fastast.db"
+        if not db_path.exists():
+            do_index_repository(directory_path)
+
+        conn = get_connection(db_path)
+        try:
+            results = search_symbols(conn, query, kind)
+            return json.dumps(
+                {
+                    "query": query,
+                    "kind": kind,
+                    "count": len(results),
+                    "symbols": results,
+                },
+                indent=2,
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool()
+def get_call_graph(symbol_name: str, directory_path: str = ".") -> str:
+    """Retrieve the call graph (callers and callees) for a specific function or method.
+
+    Args:
+        symbol_name: Name of the function or method to inspect.
+        directory_path: Path to the repository directory (default: current directory).
+
+    Returns:
+        JSON string listing all callers (who invokes this) and callees (what this invokes).
+    """
+    try:
+        db_path = Path(directory_path).resolve() / ".fastast.db"
+        if not db_path.exists():
+            do_index_repository(directory_path)
+
+        conn = get_connection(db_path)
+        try:
+            graph = db_get_call_graph(conn, symbol_name)
+            return json.dumps(graph, indent=2)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
 
 
 def main() -> None:

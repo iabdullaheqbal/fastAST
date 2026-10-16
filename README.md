@@ -1,16 +1,19 @@
 # FastAST
 
-**High-performance, syntax-guaranteed context pruning MCP server for AI coding agents.**
+**High-performance, syntax-guaranteed context pruning and repository symbol graph engine for AI coding agents.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Language: Rust + Python](https://img.shields.io/badge/Language-Rust%20%2B%20Python-orange.svg)](https://www.rust-lang.org/)
 [![Model Context Protocol](https://img.shields.io/badge/Protocol-MCP%20JSON--RPC-purple.svg)](https://modelcontextprotocol.io/)
-[![Latency: < 2ms](https://img.shields.io/badge/Latency-%3C2ms%20warm-brightgreen.svg)]()
+[![Database: SQLite WAL](https://img.shields.io/badge/Database-SQLite%20WAL-blue.svg)](https://www.sqlite.org/)
+[![Latency: < 15ms](https://img.shields.io/badge/Latency-%3C15ms%20pruning-brightgreen.svg)]()
 [![Syntax: 100% Valid ast.parse](https://img.shields.io/badge/Syntax-100%25%20Valid%20ast.parse-success.svg)]()
 
-FastAST optimizes code files for AI coding agents (Claude Code, Cursor, Codex, SWE-agent) by selectively pruning irrelevant function and class bodies while guaranteeing **100% syntactically valid Python** at **sub-2ms native speed**.
+FastAST equips AI coding agents (Claude Code, Cursor, Codex, SWE-bench) with a unified repository context engine:
+1. **Full-Repository Symbol & Call Graph:** Scans entire project trees, extracts symbols (functions, classes, methods, docstrings, imports, call relationships) via native Tree-Sitter, and stores them in a local SQLite database with sub-millisecond querying.
+2. **Syntax-Guaranteed Context Pruning:** Compresses large files (1,500–3,000+ lines) by up to 95% while guaranteeing **100% syntactically valid Python** at **sub-15ms native speed**.
 
-Powered by a native compiled Rust core using [Tree-Sitter](https://tree-sitter.github.io/tree-sitter/) AST parsing and [tiktoken-rs](https://docs.rs/tiktoken-rs) `cl100k_base` BPE token counting, FastAST exposes a standardized [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tool over JSON-RPC stdio.
+Powered by a native compiled Rust core using [Tree-Sitter](https://tree-sitter.github.io/tree-sitter/) AST parsing and [tiktoken-rs](https://docs.rs/tiktoken-rs) `cl100k_base` BPE token counting, FastAST exposes standardized [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools over JSON-RPC stdio.
 
 ---
 
@@ -202,19 +205,40 @@ FastAST communicates over standard `stdio` JSON-RPC 2.0. Any MCP-compatible harn
 
 ## MCP Tool Interface
 
-FastAST registers the `prune_context` tool with the MCP runtime:
+FastAST provides 4 dedicated MCP tools for AI coding agents:
 
-### Parameters
+### 1. `index_repository`
+Scans and indexes all Python files across a repository into an embedded SQLite symbol graph.
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `code_text` | `string` | *(Required)* | Full raw Python source code to prune. |
-| `focus_query` | `string` | *(Required)* | Task description, target function name, or bug prompt. |
-| `threshold` | `float` | `0.5` | Relevance scoring cutoff for Rubric A matching $\in [0.0, 1.0]$. |
+- **Parameters:**
+  - `directory_path` (`string`, default: `"."`): Root directory of the repository to index.
+- **Returns:** JSON object with total files, indexed files, symbols, imports, calls, and execution time.
 
-### Response Schema
+### 2. `query_symbols`
+Searches for functions, classes, and methods across the indexed codebase with exact signatures and file line spans.
 
-The tool returns a serialized JSON payload containing the pruned code and execution telemetry:
+- **Parameters:**
+  - `query` (`string`, required): Symbol identifier or substring to search for.
+  - `kind` (`string`, optional): Filter by `"function"`, `"async_function"`, `"class"`, or `"method"`.
+  - `directory_path` (`string`, default: `"."`): Repository directory.
+- **Returns:** JSON object containing matching symbols, signatures, parent scopes, and docstrings.
+
+### 3. `get_call_graph`
+Inspects callers (who calls this function) and callees (what this function calls) across the entire codebase.
+
+- **Parameters:**
+  - `symbol_name` (`string`, required): Name of the target function or method.
+  - `directory_path` (`string`, default: `"."`): Repository directory.
+- **Returns:** JSON object containing inbound callers and outbound callees with file paths and line numbers.
+
+### 4. `prune_context`
+Prunes a Python file down to query-relevant logic and guaranteed valid syntax.
+
+- **Parameters:**
+  - `code_text` (`string`, required): Raw Python source code to prune.
+  - `focus_query` (`string`, required): Task description or focus symbol.
+  - `threshold` (`float`, default: `0.5`): Relevance cutoff $\in [0.0, 1.0]$.
+- **Returns:** Serialized JSON payload containing `pruned_code`, token reduction metrics, and syntax validity confirmation.
 
 ```json
 {
@@ -233,22 +257,34 @@ The tool returns a serialized JSON payload containing the pruned code and execut
 
 ## Command Line Interface (CLI)
 
-FastAST includes a standalone CLI for developers and CI/CD pipelines to benchmark and inspect code pruning without launching an MCP client:
+FastAST includes a standalone CLI for developers and AI agents to index codebases, inspect symbols, query call graphs, and benchmark pruning:
 
 ```bash
-# Prune a file targeting a specific function or concept
-python -m fastast.cli prune tests/fixtures/sample_complex.py --query "fetch_remote_resource"
+# 1. Index entire repository into SQLite symbol graph
+fastast index .
 
-# Output summary
-FastAST Pruning Complete in 1.82ms [VALID: ast.parse OK]
-Tokens: 520 -> 148 (71.54% reduction)
-Lines:  68 -> 24 (64.71% reduction)
+# 2. Search for symbols across the project
+fastast symbols calculate --kind function
+
+# 3. Inspect callers and callees for any function
+fastast calls prune_file
+
+# 4. Prune a single file targeting a specific function or query
+fastast prune tests/fixtures/sample_large.py --query "handle_request"
+```
+
+### Pruning CLI Output Example
+```text
+FastAST Pruning Complete in 12.97ms [VALID: ast.parse OK]
+Tokens: 12,183 -> 594 (95.12% reduction)
+Lines:  1,542 -> 166 (89.23% reduction)
 ```
 
 Options:
-- `--threshold <float>`: Adjust sensitivity (default: 0.5)
-- `--show-code`: Print full reconstructed code buffer to stdout
-- `--json`: Emit machine-readable telemetry JSON
+- `-t, --threshold <float>`: Relevance sensitivity cutoff (default: 0.5)
+- `-o, --output <path>`: Write pruned code directly to file
+- `--preview`: Display preview of pruned code in terminal
+- `--force`: Force full re-indexing of all repository files
 
 ---
 
@@ -300,21 +336,27 @@ fastAST/
 ├── Cargo.toml                       # Native Rust cdylib crate configuration
 ├── pyproject.toml                   # Maturin build system & Python package metadata
 ├── src/                             # Native Rust Compute Core
-│   ├── lib.rs                       # PyO3 bindings, token counting & entry point
+│   ├── lib.rs                       # PyO3 bindings, token counting & module exports
 │   ├── parser.rs                    # Tree-Sitter AST walker & scope collector
+│   ├── indexer.rs                   # Tree-Sitter AST symbol & call graph extractor
 │   ├── scorer.rs                    # Rubric A (lexical) & Rubric B (structural)
 │   └── repair.rs                    # Deterministic pass synthesis & code reconstruction
 ├── python/                          # Python MCP & CLI Package
 │   └── fastast/
 │       ├── __init__.py              # Package entry point
 │       ├── _core.pyi                # Type stubs for compiled Rust extension
-│       ├── server.py                # FastMCP JSON-RPC stdio server
-│       └── cli.py                   # Command-line benchmark runner
+│       ├── db.py                    # SQLite schema, WAL mode, queries & graph storage
+│       ├── indexer.py               # Incremental repository walker & AST indexer
+│       ├── server.py                # FastMCP JSON-RPC stdio server (4 tools)
+│       └── cli.py                   # Multi-command CLI (prune, index, symbols, calls)
 ├── tests/                           # Verification Test Suite
-│   ├── test_pruner.py               # Unit tests, edge case tests & latency checks
+│   ├── test_pruner.py               # Pruner unit tests & 1,500+ line benchmark
+│   ├── test_indexer.py              # SQLite storage & call graph tests
+│   ├── test_server.py               # MCP tools verification suite
 │   └── fixtures/
 │       ├── sample_simple.py         # Simple functions and classes fixture
-│       └── sample_complex.py        # Decorators, async def & nested classes
+│       ├── sample_complex.py        # Decorators, async def & nested classes
+│       └── sample_large.py          # 1,500+ line realistic SWE-bench fixture
 └── devpost/                         # Hackathon Planning Artifacts
     ├── learner-profile.md
     ├── scope.md
