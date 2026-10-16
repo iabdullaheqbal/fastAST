@@ -1,4 +1,4 @@
-use crate::parser::{NodeKind, ScopeItem};
+use crate::parser::{ControlFlowType, NodeKind, ScopeItem};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
@@ -38,7 +38,11 @@ pub fn evaluate_scopes(items: &[ScopeItem], query: &str, threshold: f64) -> Scor
                     score: 1.0,
                 });
             }
-            NodeKind::Function { .. } | NodeKind::Class { .. } | NodeKind::Other => {
+            NodeKind::Function { .. }
+            | NodeKind::Class { .. }
+            | NodeKind::ControlFlow { .. }
+            | NodeKind::Statement
+            | NodeKind::Other => {
                 let score = compute_overlap(&item.tokens, &query_tokens);
                 let keep = score >= threshold && score > 0.0;
                 if keep {
@@ -67,30 +71,169 @@ pub fn evaluate_scopes(items: &[ScopeItem], query: &str, threshold: f64) -> Scor
         };
     }
 
-    // Propagate Rubric B structural dependencies upward
-    // If a child is kept full, its parent class/function must at least have its header kept
-    for i in (0..items.len()).rev() {
-        if decisions[i].keep_full {
-            if let Some(pidx) = items[i].parent_idx {
-                if !decisions[pidx].keep_full {
-                    decisions[pidx].keep_skeleton = true;
+    // --- DEPENDENCY CLOSURE (LaMR Phase 1) ---
+    let mut keep_full_set: HashSet<usize> = decisions
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.keep_full)
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut keep_skeleton_set: HashSet<usize> = HashSet::new();
+
+    // If a function was matched directly by its name/signature, keep all its descendants full
+    let initial_matched: Vec<usize> = keep_full_set.iter().copied().collect();
+    for idx in initial_matched {
+        if matches!(items[idx].kind, NodeKind::Function { .. }) {
+            mark_descendants_full(idx, items, &mut keep_full_set);
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let current_kept: Vec<usize> = keep_full_set.iter().copied().collect();
+
+        for idx in current_kept {
+            let item = &items[idx];
+
+            // 1. Enclosing scope headers: walk up parent_idx transitively
+            let mut curr = item.parent_idx;
+            while let Some(pidx) = curr {
+                let parent = &items[pidx];
+                match parent.kind {
+                    NodeKind::ControlFlow { .. } => {
+                        if keep_full_set.insert(pidx) {
+                            changed = true;
+                        }
+                    }
+                    NodeKind::Function { .. } | NodeKind::Class { .. } => {
+                        if !keep_full_set.contains(&pidx) {
+                            keep_skeleton_set.insert(pidx);
+                        }
+                    }
+                    _ => {}
+                }
+                curr = parent.parent_idx;
+            }
+
+            // 2. Control-flow companions:
+            // If item is Try, ensure at least one companion Except or Finally is kept
+            if let NodeKind::ControlFlow {
+                flow_type: ControlFlowType::Try,
+            } = item.kind
+            {
+                let has_kept_companion = item
+                    .companion_indices
+                    .iter()
+                    .any(|c| keep_full_set.contains(c));
+                if !has_kept_companion {
+                    if let Some(&first_comp) = item.companion_indices.first() {
+                        if keep_full_set.insert(first_comp) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            // If item is Except, Finally, Elif, or Else, ensure companion Try/If is kept
+            if matches!(
+                item.kind,
+                NodeKind::ControlFlow {
+                    flow_type: ControlFlowType::Except
+                } | NodeKind::ControlFlow {
+                    flow_type: ControlFlowType::Finally
+                } | NodeKind::ControlFlow {
+                    flow_type: ControlFlowType::Elif
+                } | NodeKind::ControlFlow {
+                    flow_type: ControlFlowType::Else
+                }
+            ) {
+                for &comp_idx in &item.companion_indices {
+                    if keep_full_set.insert(comp_idx) {
+                        changed = true;
+                    }
+                }
+            }
+
+            // 3. Symbol definition closure:
+            // For each referenced identifier, find its definition
+            for sym in &item.referenced_symbols {
+                // Look for preceding statement in current or enclosing scope that defines `sym`
+                let mut curr_scope = item.parent_idx;
+                while let Some(scope_idx) = curr_scope {
+                    let siblings = &items[scope_idx].child_indices;
+                    let mut found = false;
+                    for &sib_idx in siblings {
+                        if items[sib_idx].start_row >= item.start_row {
+                            break; // Look only at definitions preceding `item`
+                        }
+                        if items[sib_idx].defined_symbols.contains(sym) {
+                            if keep_full_set.insert(sib_idx) {
+                                changed = true;
+                            }
+                            found = true;
+                            break;
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                    curr_scope = items[scope_idx].parent_idx;
+                }
+
+                // Look for module-level definition (e.g. MODULE_CONSTANT = 100 or function/class)
+                for (m_idx, m_item) in items.iter().enumerate() {
+                    if m_item.parent_idx.is_none() && m_item.defined_symbols.contains(sym) {
+                        match m_item.kind {
+                            NodeKind::Statement | NodeKind::Other => {
+                                if keep_full_set.insert(m_idx) {
+                                    changed = true;
+                                }
+                            }
+                            NodeKind::Function { .. } | NodeKind::Class { .. } => {
+                                if !keep_full_set.contains(&m_idx) {
+                                    keep_skeleton_set.insert(m_idx);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
     }
 
-    // All other unkept functions and classes retain their signatures with pass bodies
+    // Ensure all unkept functions and classes retain their signatures with pass bodies
     for (i, item) in items.iter().enumerate() {
         if matches!(item.kind, NodeKind::Function { .. } | NodeKind::Class { .. }) {
-            if !decisions[i].keep_full && !decisions[i].keep_skeleton {
-                decisions[i].keep_skeleton = true;
+            if !keep_full_set.contains(&i) {
+                keep_skeleton_set.insert(i);
             }
         }
+    }
+
+    // Populate final decision booleans
+    for i in 0..items.len() {
+        decisions[i].keep_full = keep_full_set.contains(&i);
+        decisions[i].keep_skeleton =
+            keep_skeleton_set.contains(&i) && !decisions[i].keep_full;
     }
 
     ScoreResult {
         decisions,
         zero_match: false,
+    }
+}
+
+fn mark_descendants_full(
+    idx: usize,
+    items: &[ScopeItem],
+    keep_full_set: &mut HashSet<usize>,
+) {
+    for &child in &items[idx].child_indices {
+        keep_full_set.insert(child);
+        mark_descendants_full(child, items, keep_full_set);
     }
 }
 
@@ -106,4 +249,3 @@ fn compute_overlap(item_tokens: &[String], query_tokens: &HashSet<String>) -> f6
     }
     (matches as f64) / (query_tokens.len() as f64).max(1.0)
 }
-

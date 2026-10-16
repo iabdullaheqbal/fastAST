@@ -9,7 +9,7 @@ pub fn reconstruct_code(
     let mut output_lines: Vec<String> = Vec::new();
     let mut last_emitted_row: Option<usize> = None;
 
-    // Filter top-level items
+    // Filter top-level items (parent_idx is None)
     let top_level_indices: Vec<usize> = items
         .iter()
         .enumerate()
@@ -21,6 +21,10 @@ pub fn reconstruct_code(
         let item = &items[idx];
         let dec = &decisions[idx];
 
+        if !dec.keep_full && !dec.keep_skeleton {
+            continue;
+        }
+
         // Add a blank line separator between top-level definitions if needed
         if !output_lines.is_empty() {
             if let Some(last) = last_emitted_row {
@@ -30,76 +34,14 @@ pub fn reconstruct_code(
             }
         }
 
-        match &item.kind {
-            NodeKind::Import | NodeKind::ModuleDocstring => {
-                if dec.keep_full {
-                    emit_span(lines, item.start_row, item.end_row, &mut output_lines);
-                    last_emitted_row = Some(item.end_row);
-                }
-            }
-            NodeKind::Function { .. } => {
-                if dec.keep_full {
-                    emit_span(lines, item.start_row, item.end_row, &mut output_lines);
-                    last_emitted_row = Some(item.end_row);
-                } else if dec.keep_skeleton {
-                    // Emit signature (including any decorators)
-                    emit_span(lines, item.start_row, item.sig_end_row, &mut output_lines);
-                    // Insert pass body
-                    output_lines.push(format!("{}pass", item.body_indent));
-                    last_emitted_row = Some(item.end_row);
-                }
-            }
-            NodeKind::Class { .. } => {
-                // Check if any children are kept full
-                let has_full_child = item.child_indices.iter().any(|&cidx| decisions[cidx].keep_full);
-
-                if has_full_child {
-                    // Emit class header
-                    emit_span(lines, item.start_row, item.sig_end_row, &mut output_lines);
-                    let mut class_last_row = item.sig_end_row;
-
-                    // Emit class docstring if present
-                    if let Some((ds_start, ds_end)) = item.docstring_rows {
-                        emit_span(lines, ds_start, ds_end, &mut output_lines);
-                        class_last_row = ds_end;
-                    }
-
-                    // Process child methods and statements
-                    let mut emitted_any_child = false;
-                    for &cidx in &item.child_indices {
-                        let child = &items[cidx];
-                        let cdec = &decisions[cidx];
-
-                        if cdec.keep_full {
-                            emit_span(lines, child.start_row, child.end_row, &mut output_lines);
-                            class_last_row = child.end_row;
-                            emitted_any_child = true;
-                        } else if cdec.keep_skeleton {
-                            emit_span(lines, child.start_row, child.sig_end_row, &mut output_lines);
-                            output_lines.push(format!("{}pass", child.body_indent));
-                            class_last_row = child.end_row;
-                            emitted_any_child = true;
-                        }
-                    }
-
-                    if !emitted_any_child {
-                        output_lines.push(format!("{}pass", item.body_indent));
-                    }
-                    last_emitted_row = Some(item.end_row.max(class_last_row));
-                } else if dec.keep_skeleton || dec.keep_full {
-                    // Class header + pass
-                    emit_span(lines, item.start_row, item.sig_end_row, &mut output_lines);
-                    output_lines.push(format!("{}pass", item.body_indent));
-                    last_emitted_row = Some(item.end_row);
-                }
-            }
-            NodeKind::Other => {
-                if dec.keep_full {
-                    emit_span(lines, item.start_row, item.end_row, &mut output_lines);
-                    last_emitted_row = Some(item.end_row);
-                }
-            }
-        }
+        emit_item(
+            idx,
+            lines,
+            items,
+            decisions,
+            &mut output_lines,
+            &mut last_emitted_row,
+        );
     }
 
     let mut result = output_lines.join("\n");
@@ -107,6 +49,147 @@ pub fn reconstruct_code(
         result.push('\n');
     }
     result
+}
+
+fn emit_item(
+    idx: usize,
+    lines: &[&str],
+    items: &[ScopeItem],
+    decisions: &[Decision],
+    out: &mut Vec<String>,
+    last_emitted_row: &mut Option<usize>,
+) -> bool {
+    let item = &items[idx];
+    let dec = &decisions[idx];
+
+    if !dec.keep_full && !dec.keep_skeleton {
+        return false;
+    }
+
+    match &item.kind {
+        NodeKind::Import | NodeKind::ModuleDocstring => {
+            if dec.keep_full {
+                emit_span(lines, item.start_row, item.end_row, out);
+                *last_emitted_row = Some(item.end_row);
+                return true;
+            }
+        }
+        NodeKind::Statement | NodeKind::Other => {
+            if dec.keep_full {
+                emit_span(lines, item.start_row, item.end_row, out);
+                *last_emitted_row = Some(item.end_row);
+                return true;
+            }
+        }
+        NodeKind::Function { .. } => {
+            let has_full = dec.keep_full || has_any_full_descendant(idx, items, decisions);
+
+            if has_full {
+                let all_descendants_full = are_all_descendants_full(idx, items, decisions);
+                if all_descendants_full && dec.keep_full {
+                    emit_span(lines, item.start_row, item.end_row, out);
+                    *last_emitted_row = Some(item.end_row);
+                    return true;
+                } else {
+                    emit_span(lines, item.start_row, item.sig_end_row, out);
+                    if let Some((ds_start, ds_end)) = item.docstring_rows {
+                        emit_span(lines, ds_start, ds_end, out);
+                    }
+                    let mut emitted_any = false;
+                    for &cidx in &item.child_indices {
+                        if emit_item(cidx, lines, items, decisions, out, last_emitted_row) {
+                            emitted_any = true;
+                        }
+                    }
+                    if !emitted_any {
+                        out.push(format!("{}pass", item.body_indent));
+                    }
+                    *last_emitted_row = Some(item.end_row);
+                    return true;
+                }
+            } else if dec.keep_skeleton {
+                emit_span(lines, item.start_row, item.sig_end_row, out);
+                out.push(format!("{}pass", item.body_indent));
+                *last_emitted_row = Some(item.end_row);
+                return true;
+            }
+        }
+        NodeKind::Class { .. } => {
+            let has_full_descendant = has_any_full_descendant(idx, items, decisions);
+
+            if has_full_descendant {
+                emit_span(lines, item.start_row, item.sig_end_row, out);
+                if let Some((ds_start, ds_end)) = item.docstring_rows {
+                    emit_span(lines, ds_start, ds_end, out);
+                }
+                let mut emitted_any = false;
+                for &cidx in &item.child_indices {
+                    if emit_item(cidx, lines, items, decisions, out, last_emitted_row) {
+                        emitted_any = true;
+                    }
+                }
+                if !emitted_any {
+                    out.push(format!("{}pass", item.body_indent));
+                }
+                *last_emitted_row = Some(item.end_row);
+                return true;
+            } else if dec.keep_skeleton || dec.keep_full {
+                emit_span(lines, item.start_row, item.sig_end_row, out);
+                out.push(format!("{}pass", item.body_indent));
+                *last_emitted_row = Some(item.end_row);
+                return true;
+            }
+        }
+        NodeKind::ControlFlow { .. } => {
+            if dec.keep_full {
+                emit_span(lines, item.start_row, item.sig_end_row, out);
+                let mut emitted_any = false;
+                for &cidx in &item.child_indices {
+                    if emit_item(cidx, lines, items, decisions, out, last_emitted_row) {
+                        emitted_any = true;
+                    }
+                }
+                if !emitted_any {
+                    out.push(format!("{}pass", item.body_indent));
+                }
+                *last_emitted_row = Some(item.end_row);
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn has_any_full_descendant(
+    idx: usize,
+    items: &[ScopeItem],
+    decisions: &[Decision],
+) -> bool {
+    for &cidx in &items[idx].child_indices {
+        if decisions[cidx].keep_full {
+            return true;
+        }
+        if has_any_full_descendant(cidx, items, decisions) {
+            return true;
+        }
+    }
+    false
+}
+
+fn are_all_descendants_full(
+    idx: usize,
+    items: &[ScopeItem],
+    decisions: &[Decision],
+) -> bool {
+    for &cidx in &items[idx].child_indices {
+        if !decisions[cidx].keep_full {
+            return false;
+        }
+        if !are_all_descendants_full(cidx, items, decisions) {
+            return false;
+        }
+    }
+    true
 }
 
 fn emit_span(lines: &[&str], start: usize, end: usize, out: &mut Vec<String>) {
@@ -118,4 +201,3 @@ fn emit_span(lines: &[&str], start: usize, end: usize, out: &mut Vec<String>) {
         }
     }
 }
-
