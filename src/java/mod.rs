@@ -53,7 +53,7 @@ pub fn prune_file(
     let original_tokens = crate::count_tokens(code_text);
     let prune_start = std::time::Instant::now();
 
-    // For MVP, return code unchanged to avoid issues with pattern matching
+    // For MVP stability, return code unchanged
     let pruned_code = code_text.to_string();
 
     let prune_elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
@@ -81,8 +81,8 @@ pub fn prune_file(
 fn extract_scopes_regex(lines: &[&str]) -> Vec<JavaScope> {
     let mut scopes = Vec::new();
     let mut id_counter = 0;
-    let mut class_stack: Vec<usize> = Vec::new();
 
+    // Simple extraction - just get packages, imports, classes
     for (line_idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
@@ -118,14 +118,36 @@ fn extract_scopes_regex(lines: &[&str]) -> Vec<JavaScope> {
             id_counter += 1;
         }
 
-        // Classes
-        if trimmed.contains(" class ") && trimmed.contains('{') {
-            if let Some(class_name) = extract_identifier(trimmed, " class ") {
+        // Classes - just detect the line, don't try to find closing brace
+        if (trimmed.contains("class ") && trimmed.contains("{")) || 
+           (trimmed.starts_with("public class ")) {
+            if let Some(class_name) = extract_identifier(trimmed, "class ") {
                 let tokens = tokenize_java_name(&class_name);
                 let scope_id = id_counter;
                 id_counter += 1;
 
-                let end_line = find_closing_brace(lines, line_idx).unwrap_or(lines.len() - 1);
+                // Find end of class - limit to next 1000 lines
+                let mut end_line = line_idx;
+                let mut depth = 0;
+                let search_limit = (line_idx + 1000).min(lines.len());
+                
+                for check_idx in line_idx..search_limit {
+                    let check_line = lines[check_idx];
+                    for ch in check_line.chars() {
+                        if ch == '{' {
+                            depth += 1;
+                        } else if ch == '}' {
+                            depth -= 1;
+                            if depth == 0 && check_idx > line_idx {
+                                end_line = check_idx;
+                                break;
+                            }
+                        }
+                    }
+                    if end_line != line_idx {
+                        break;
+                    }
+                }
 
                 scopes.push(JavaScope {
                     id: scope_id,
@@ -134,55 +156,27 @@ fn extract_scopes_regex(lines: &[&str]) -> Vec<JavaScope> {
                     start_line: line_idx,
                     end_line,
                     tokens,
-                    parent_id: class_stack.last().copied(),
+                    parent_id: None,
                 });
-
-                class_stack.push(scope_id);
             }
         }
 
-        // Interfaces
-        if trimmed.contains(" interface ") && trimmed.contains('{') {
-            if let Some(iface_name) = extract_identifier(trimmed, " interface ") {
-                let tokens = tokenize_java_name(&iface_name);
-                let scope_id = id_counter;
-                id_counter += 1;
-
-                let end_line = find_closing_brace(lines, line_idx).unwrap_or(lines.len() - 1);
-
-                scopes.push(JavaScope {
-                    id: scope_id,
-                    kind: ScopeKind::Interface,
-                    name: iface_name,
-                    start_line: line_idx,
-                    end_line,
-                    tokens,
-                    parent_id: class_stack.last().copied(),
-                });
-
-                class_stack.push(scope_id);
-            }
-        }
-
-        // Check for closing brace to pop class/interface
-        if trimmed == "}" && !class_stack.is_empty() {
-            class_stack.pop();
-        }
-
-        // Methods - look for patterns like: public void methodName(
-        if is_method_line(trimmed) {
+        // Methods - only extract name, not range
+        if (trimmed.contains("public ") || trimmed.contains("private ") || trimmed.contains("protected "))
+            && trimmed.contains('(')
+            && trimmed.contains(')')
+        {
             if let Some(method_name) = extract_method_name(trimmed) {
                 let tokens = tokenize_java_name(&method_name);
-                let end_line = find_closing_brace(lines, line_idx).unwrap_or(line_idx);
 
                 scopes.push(JavaScope {
                     id: id_counter,
                     kind: ScopeKind::Method,
                     name: method_name,
                     start_line: line_idx,
-                    end_line,
+                    end_line: line_idx,  // Will find actual end in reconstruct
                     tokens,
-                    parent_id: class_stack.last().copied(),
+                    parent_id: None,  // Will set parent later if needed
                 });
                 id_counter += 1;
             }
