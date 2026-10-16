@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import json
 import os
 import sys
 from pathlib import Path
@@ -10,6 +11,27 @@ from typing import Optional
 from fastast._core import prune_file
 from fastast.db import get_call_graph, get_connection, search_symbols
 from fastast.indexer import index_repository
+
+
+# Module-level function aliases for backward compatibility
+def cmd_prune(*args, **kwargs):
+    """Alias for run_prune for backward compatibility."""
+    return run_prune(*args, **kwargs)
+
+
+def cmd_index(*args, **kwargs):
+    """Alias for run_index for backward compatibility."""
+    return run_index(*args, **kwargs)
+
+
+def cmd_symbols(*args, **kwargs):
+    """Alias for run_symbols for backward compatibility."""
+    return run_symbols(*args, **kwargs)
+
+
+def cmd_calls(*args, **kwargs):
+    """Alias for run_calls for backward compatibility."""
+    return run_calls(*args, **kwargs)
 
 
 def supports_color() -> bool:
@@ -26,6 +48,7 @@ def run_prune(
     output_path: Optional[str] = None,
     show_preview: bool = False,
     quiet: bool = False,
+    json_output: bool = False,
 ) -> int:
     """Read a Python file, prune using native engine, and report metrics."""
     path = Path(file_path)
@@ -56,6 +79,22 @@ def run_prune(
         line_savings = (
             (res.total_lines - res.kept_lines) / float(res.total_lines)
         ) * 100.0
+
+    # JSON output mode
+    if json_output:
+        output_dict = {
+            "pruned_code": res.pruned_code,
+            "original_tokens": res.original_tokens,
+            "pruned_tokens": res.pruned_tokens,
+            "savings_pct": res.savings_pct,
+            "total_lines": res.total_lines,
+            "kept_lines": res.kept_lines,
+            "latency_ms": res.latency_ms,
+            "has_syntax_error": res.has_syntax_error,
+            "syntax_valid": syntax_ok,
+        }
+        print(json.dumps(output_dict, indent=2))
+        return 0 if syntax_ok else 2
 
     color = supports_color()
     bold = "\033[1m" if color else ""
@@ -91,13 +130,10 @@ def run_prune(
 
     # Display preview if requested
     if show_preview and not quiet:
-        print(f"\n{bold}--- Pruned Code Preview ---{reset}")
+        print(f"\n{bold}PRUNED CODE:{reset}")
         lines = res.pruned_code.splitlines()
-        preview_limit = 60
-        for line in lines[:preview_limit]:
+        for line in lines:
             print(line)
-        if len(lines) > preview_limit:
-            print(f"{cyan}... [{len(lines) - preview_limit} more lines truncated in preview] ...{reset}")
 
     return 0 if syntax_ok else 2
 
@@ -106,19 +142,35 @@ def run_index(
     repo_path: str = ".",
     force: bool = False,
     quiet: bool = False,
+    json_output: bool = False,
 ) -> int:
-    """Index a repository into SQLite."""
-    color = supports_color()
+    """Index a repository or file into SQLite."""
+    color = supports_color() and not json_output
     bold = "\033[1m" if color else ""
     cyan = "\033[36m" if color else ""
     green = "\033[32m" if color else ""
     reset = "\033[0m" if color else ""
 
+    # If a file path is given, use its parent directory for indexing
+    path = Path(repo_path)
+    if path.is_file():
+        index_path = str(path.parent)
+    else:
+        index_path = repo_path
+
     try:
-        res = index_repository(repo_path, force_reindex=force)
+        res = index_repository(index_path, force_reindex=force)
     except Exception as exc:
-        sys.stderr.write(f"Error during indexing: {exc}\n")
+        error_msg = {"error": str(exc)}
+        if json_output:
+            print(json.dumps(error_msg))
+        else:
+            sys.stderr.write(f"Error during indexing: {exc}\n")
         return 1
+
+    if json_output:
+        print(json.dumps(res, indent=2))
+        return 0
 
     if not quiet:
         print(
@@ -144,9 +196,10 @@ def run_symbols(
     limit: int = 50,
     dir_path: str = ".",
     quiet: bool = False,
+    json_output: bool = False,
 ) -> int:
     """Search symbols across indexed repository."""
-    color = supports_color()
+    color = supports_color() and not json_output
     bold = "\033[1m" if color else ""
     cyan = "\033[36m" if color else ""
     yellow = "\033[33m" if color else ""
@@ -155,7 +208,7 @@ def run_symbols(
     root = Path(dir_path).resolve()
     db_path = root / ".fastast.db"
     if not db_path.exists():
-        if not quiet:
+        if not quiet and not json_output:
             print("Index not found. Indexing repository first...")
         index_repository(str(root))
 
@@ -164,6 +217,16 @@ def run_symbols(
         symbols = search_symbols(conn, query, kind=kind, limit=limit)
     finally:
         conn.close()
+
+    if json_output:
+        output = {
+            "query": query,
+            "kind": kind,
+            "count": len(symbols),
+            "symbols": symbols,
+        }
+        print(json.dumps(output, indent=2))
+        return 0
 
     if not quiet:
         kind_str = f" [{kind}]" if kind else ""
@@ -186,9 +249,10 @@ def run_calls(
     symbol_name: str,
     dir_path: str = ".",
     quiet: bool = False,
+    json_output: bool = False,
 ) -> int:
     """Display callers and callees for a symbol."""
-    color = supports_color()
+    color = supports_color() and not json_output
     bold = "\033[1m" if color else ""
     cyan = "\033[36m" if color else ""
     green = "\033[32m" if color else ""
@@ -198,7 +262,7 @@ def run_calls(
     root = Path(dir_path).resolve()
     db_path = root / ".fastast.db"
     if not db_path.exists():
-        if not quiet:
+        if not quiet and not json_output:
             print("Index not found. Indexing repository first...")
         index_repository(str(root))
 
@@ -207,6 +271,14 @@ def run_calls(
         graph = get_call_graph(conn, symbol_name)
     finally:
         conn.close()
+
+    if json_output:
+        # Wrap the call graph in a top-level "call_graph" key for consistency
+        output = {
+            "call_graph": graph
+        }
+        print(json.dumps(output, indent=2))
+        return 0
 
     if not quiet:
         print(f"{bold}Call Graph for '{symbol_name}':{reset}")
@@ -262,6 +334,12 @@ def main() -> None:
     prune_parser.add_argument(
         "--preview", action="store_true", help="Print preview of pruned code to stdout"
     )
+    prune_parser.add_argument(
+        "--show-code", action="store_true", help="Show pruned code on stdout"
+    )
+    prune_parser.add_argument(
+        "--json", action="store_true", help="Output results as JSON"
+    )
 
     # `index` subcommand
     index_parser = subparsers.add_parser(
@@ -275,6 +353,9 @@ def main() -> None:
     )
     index_parser.add_argument(
         "--force", action="store_true", help="Force reindexing all files"
+    )
+    index_parser.add_argument(
+        "--json", action="store_true", help="Output results as JSON"
     )
 
     # `symbols` subcommand
@@ -301,6 +382,9 @@ def main() -> None:
         default=".",
         help="Repository root directory (default: current directory)",
     )
+    symbols_parser.add_argument(
+        "--json", action="store_true", help="Output results as JSON"
+    )
 
     # `calls` subcommand
     calls_parser = subparsers.add_parser(
@@ -312,6 +396,9 @@ def main() -> None:
         "--dir",
         default=".",
         help="Repository root directory (default: current directory)",
+    )
+    calls_parser.add_argument(
+        "--json", action="store_true", help="Output results as JSON"
     )
 
     # Support top-level argument fallback if invoked without 'prune' keyword
@@ -338,15 +425,36 @@ def main() -> None:
                 args.query,
                 args.threshold,
                 args.output,
-                args.preview,
+                getattr(args, 'show_code', False) or getattr(args, 'preview', False),
+                json_output=getattr(args, 'json', False),
             )
         )
     elif args.command == "index":
-        sys.exit(run_index(args.dir, force=args.force))
+        sys.exit(
+            run_index(
+                args.dir,
+                force=args.force,
+                json_output=getattr(args, 'json', False),
+            )
+        )
     elif args.command == "symbols":
-        sys.exit(run_symbols(args.query, kind=args.kind, limit=args.limit, dir_path=args.dir))
+        sys.exit(
+            run_symbols(
+                args.query,
+                kind=args.kind,
+                limit=args.limit,
+                dir_path=args.dir,
+                json_output=getattr(args, 'json', False),
+            )
+        )
     elif args.command == "calls":
-        sys.exit(run_calls(args.symbol, dir_path=args.dir))
+        sys.exit(
+            run_calls(
+                args.symbol,
+                dir_path=args.dir,
+                json_output=getattr(args, 'json', False),
+            )
+        )
     elif args.file_fallback and args.top_query:
         sys.exit(
             run_prune(

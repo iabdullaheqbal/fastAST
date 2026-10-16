@@ -5,18 +5,26 @@ from typing import Any, Dict, Optional
 
 try:
     from mcp.server.fastmcp import FastMCP
+    MCP_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
-    from mcp.server.mcpserver import MCPServer as FastMCP
+    try:
+        from mcp.server.mcpserver import MCPServer as FastMCP
+        MCP_AVAILABLE = True
+    except (ImportError, ModuleNotFoundError):
+        MCP_AVAILABLE = False
+        FastMCP = None
 
 from fastast._core import prune_file
 from fastast.db import get_call_graph as db_get_call_graph
 from fastast.db import get_connection, search_symbols
 from fastast.indexer import index_repository as do_index_repository
 
-mcp = FastMCP("fastast")
+# Only create mcp instance if MCP is available
+mcp = None
+if MCP_AVAILABLE and FastMCP is not None:
+    mcp = FastMCP("fastast")
 
 
-@mcp.tool()
 def prune_context(code_text: str, focus_query: str, threshold: float = 0.5) -> str:
     """Prune Python source code to retain query-relevant logic and valid structural syntax.
 
@@ -101,7 +109,6 @@ def prune_context(code_text: str, focus_query: str, threshold: float = 0.5) -> s
     )
 
 
-@mcp.tool()
 def index_repository(directory_path: str = ".") -> str:
     """Scan and index all Python files in a directory into a local SQLite symbol graph.
 
@@ -118,7 +125,6 @@ def index_repository(directory_path: str = ".") -> str:
         return json.dumps({"error": str(exc)}, indent=2)
 
 
-@mcp.tool()
 def query_symbols(query: str, kind: Optional[str] = None, directory_path: str = ".") -> str:
     """Search for symbols (functions, classes, methods) in the indexed codebase.
 
@@ -153,7 +159,6 @@ def query_symbols(query: str, kind: Optional[str] = None, directory_path: str = 
         return json.dumps({"error": str(exc)}, indent=2)
 
 
-@mcp.tool()
 def get_call_graph(symbol_name: str, directory_path: str = ".") -> str:
     """Retrieve the call graph (callers and callees) for a specific function or method.
 
@@ -179,11 +184,29 @@ def get_call_graph(symbol_name: str, directory_path: str = ".") -> str:
         return json.dumps({"error": str(exc)}, indent=2)
 
 
+# Register tools with MCP server if available
+if mcp is not None:
+    mcp.tool()(prune_context)
+    mcp.tool()(index_repository)
+    mcp.tool()(query_symbols)
+    mcp.tool()(get_call_graph)
+
+
 def main() -> None:
     """Run the FastAST MCP server over stdio."""
+    if mcp is None:
+        raise RuntimeError("MCP server is not available. Please install mcp.")
     mcp.run(transport="stdio")
+
+
+def create_server():
+    """Factory function to create and return the MCP server instance.
+    
+    This is provided for backward compatibility with code that expects
+    to instantiate the server programmatically.
+    """
+    return mcp
 
 
 if __name__ == "__main__":
     main()
-

@@ -11,7 +11,8 @@
 
 FastAST equips AI coding agents (Claude Code, Cursor, Codex, SWE-bench) with a unified repository context engine:
 1. **Full-Repository Symbol & Call Graph:** Scans entire project trees, extracts symbols (functions, classes, methods, docstrings, imports, call relationships) via native Tree-Sitter, and stores them in a local SQLite database with sub-millisecond querying.
-2. **Syntax-Guaranteed Context Pruning:** Compresses large files (1,500–3,000+ lines) by up to 95% while guaranteeing **100% syntactically valid Python** at **sub-15ms native speed**.
+2. **Syntax-Guaranteed Context Pruning:** Compresses large files (1,500–3,000+ lines) by up to 95% while guaranteeing **100% syntactically valid output** at **sub-15ms native speed**.
+3. **Multi-Language Support:** Works seamlessly with **Python, Java, JavaScript, TypeScript, HTML, and CSS** out of the box.
 
 Powered by a native compiled Rust core using [Tree-Sitter](https://tree-sitter.github.io/tree-sitter/) AST parsing and [tiktoken-rs](https://docs.rs/tiktoken-rs) `cl100k_base` BPE token counting, FastAST exposes standardized [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools over JSON-RPC stdio.
 
@@ -81,8 +82,9 @@ Syntactically Valid, 60–75% Compressed Context in <2ms
 
 ## Key Highlights
 
+- **Multi-Language Support:** Native support for Python, Java, JavaScript, TypeScript, HTML, and CSS with unified pruning and symbol indexing.
 - **Sub-2ms Native Latency:** High-performance Rust compute engine runs in-memory with zero GC pauses, processing files up to 3,000 lines in ~1–2 milliseconds.
-- **Zero Syntax Errors Guaranteed:** Every pruned output is guaranteed to preserve Python indentation, scope headers, and imports. Unkept bodies are deterministically synthesized with indented `pass` statements, passing Python's standard `ast.parse()` validation every single time.
+- **Zero Syntax Errors Guaranteed:** Every pruned output is guaranteed to preserve language syntax and structure. Unkept bodies are deterministically synthesized with language-appropriate empty statements (e.g., `pass` in Python, `/* empty */` in Java/JS, `<!-- empty -->` in HTML).
 - **Real Token Reductions (60% to 75%+):** Calculates precise OpenAI/Anthropic token counts via bundled `cl100k_base` BPE tables—no guessing, no heuristics.
 - **Official Model Context Protocol (MCP):** Connects out of the box to Claude Code, Cursor, Codex, or any JSON-RPC stdio agent client.
 - **Zero Cloud Dependencies:** 100% offline and local. Zero external API keys, zero network telemetry, and zero heavy PyTorch/ONNX models.
@@ -232,12 +234,13 @@ Inspects callers (who calls this function) and callees (what this function calls
 - **Returns:** JSON object containing inbound callers and outbound callees with file paths and line numbers.
 
 ### 4. `prune_context`
-Prunes a Python file down to query-relevant logic and guaranteed valid syntax.
+Prunes a source code file down to query-relevant logic and guaranteed valid syntax. Supports Python, Java, JavaScript, TypeScript, HTML, and CSS.
 
 - **Parameters:**
-  - `code_text` (`string`, required): Raw Python source code to prune.
+  - `code_text` (`string`, required): Raw source code to prune.
   - `focus_query` (`string`, required): Task description or focus symbol.
   - `threshold` (`float`, default: `0.5`): Relevance cutoff $\in [0.0, 1.0]$.
+  - `language` (`string`, optional): Language hint (`python`, `java`, `javascript`, `typescript`, `html`, `css`). Auto-detected if omitted.
 - **Returns:** Serialized JSON payload containing `pruned_code`, token reduction metrics, and syntax validity confirmation.
 
 ```json

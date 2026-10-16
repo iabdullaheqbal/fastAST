@@ -63,13 +63,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.8.0"
+version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
-dependencies = [
- "find-msvc-tools",
- "shlex",
-]
+checksum = "066fce287b1d4eafef758e89e09d724a24808a9196fe9756b8ca90e86d0719a2"
 
 [[package]]
 name = "cfg-if"
@@ -94,14 +90,13 @@ dependencies = [
  "pyo3",
  "tiktoken-rs",
  "tree-sitter",
+ "tree-sitter-css",
+ "tree-sitter-html",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
  "tree-sitter-python",
+ "tree-sitter-typescript",
 ]
-
-[[package]]
-name = "find-msvc-tools"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
 name = "heck"
@@ -347,12 +342,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shlex"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
 name = "smallvec"
 version = "1.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -412,10 +401,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-css"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e08e324b1cf60fd3291774b49724c66de2ce8fcf4d358d0b4b82e37b41b1c9b"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-html"
+version = "0.20.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8766b5ad3721517f8259e6394aefda9c686aebf7a8c74ab8624f2c3b46902fd5"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-java"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33bc21adf831a773c075d9d00107ab43965e6a6ea7607b47fd9ec6f3db4b481b"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-javascript"
+version = "0.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8710a71bc6779e33811a8067bdda3ed08bed1733296ff915e44faf60f8c533d7"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
 name = "tree-sitter-python"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4066c6cf678f962f8c2c4561f205945c84834cce73d981e71392624fdc390a9"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-typescript"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecb35d98a688378e56c18c9c159824fd16f730ccbea19aacf4f206e5d5438ed9"
 dependencies = [
  "cc",
  "tree-sitter",

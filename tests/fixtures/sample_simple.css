@@ -1,0 +1,71 @@
+/* General styles */
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f5f5f5;
+}
+
+header {
+    background-color: #333;
+    color: white;
+    padding: 20px;
+}
+
+header h1 {
+    margin: 0;
+}
+
+nav ul {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    gap: 20px;
+}
+
+nav a {
+    color: white;
+    text-decoration: none;
+}
+
+nav a:hover {
+    text-decoration: underline;
+}
+
+main {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 20px;
+    padding: 20px;
+}
+
+article {
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+}
+
+aside {
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+}
+
+footer {
+    background-color: #333;
+    color: white;
+    text-align: center;
+    padding: 20px;
+    margin-top: 20px;
+}
+
+@media (max-width: 768px) {
+    main {
+        grid-template-columns: 1fr;
+    }
+
+    nav ul {
+        flex-direction: column;
+        gap: 10px;
+    }
+}
