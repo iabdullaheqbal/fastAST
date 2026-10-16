@@ -245,6 +245,68 @@ def unused_routine():
     assert "wait_time = DEFAULT_TIMEOUT_SEC" in res.pruned_code
 
 
+def test_subtoken_identifier_matching():
+    code = """
+def fetch_remote_resource(endpoint: str):
+    data = download(endpoint)
+    return data
+
+def ignored_routine():
+    return 42
+"""
+    # camelCase query matching snake_case code identifier
+    res = prune_file(code, "fetchRemoteResource", 0.5)
+    ast.parse(res.pruned_code)
+    assert not res.has_syntax_error
+    assert "def fetch_remote_resource(endpoint: str):" in res.pruned_code
+    assert "data = download(endpoint)" in res.pruned_code
+    assert "def ignored_routine():" in res.pruned_code
+    assert "pass" in res.pruned_code
+
+
+def test_query_adaptive_structural_vs_functional_gating():
+    code = """
+class DataPipeline:
+    def configure(self, settings):
+        self.settings = settings
+        self.retries = 3
+
+    def run_pipeline_step(self, item):
+        transformed = transform_item(item)
+        validated = validate_item(transformed)
+        return validated
+"""
+    # Structural query: raises statement barrier, focuses on skeleton
+    res_struct = prune_file(code, "class structure and architecture signatures", 0.5)
+    ast.parse(res_struct.pruned_code)
+    assert not res_struct.has_syntax_error
+    assert "class DataPipeline:" in res_struct.pruned_code
+    assert "pass" in res_struct.pruned_code
+    assert "transformed = transform_item(item)" not in res_struct.pruned_code
+
+    # Functional query: lowers barrier for execution logic, retains targeted method body
+    res_func = prune_file(code, "run pipeline step transformed validated", 0.5)
+    ast.parse(res_func.pruned_code)
+    assert not res_func.has_syntax_error
+    assert "run_pipeline_step" in res_func.pruned_code
+    assert "transformed = transform_item(item)" in res_func.pruned_code
+    assert "validated = validate_item(transformed)" in res_func.pruned_code
+
+
+def test_complete_statement_preference_over_weak_partial():
+    code = """
+def process_data(items):
+    temp_data = 100
+    validated_items = validate_batch_items_schema(items)
+    return validated_items
+"""
+    res = prune_file(code, "validate batch items schema", 0.5)
+    ast.parse(res.pruned_code)
+    assert not res.has_syntax_error
+    assert "validated_items = validate_batch_items_schema(items)" in res.pruned_code
+    assert "temp_data = 100" not in res.pruned_code
+
+
 if __name__ == "__main__":
     test_simple_pruning()
     test_class_and_method_preservation()
@@ -259,4 +321,7 @@ if __name__ == "__main__":
     test_symbol_definition_closure()
     test_control_flow_with_and_for_closure()
     test_module_level_symbol_dependency()
-    print("All 13 pruner tests passed!")
+    test_subtoken_identifier_matching()
+    test_query_adaptive_structural_vs_functional_gating()
+    test_complete_statement_preference_over_weak_partial()
+    print("All 16 pruner tests passed!")

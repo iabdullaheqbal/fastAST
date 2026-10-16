@@ -1,6 +1,36 @@
 use crate::parser::{ControlFlowType, NodeKind, ScopeItem};
 use std::collections::HashSet;
 
+const STRUCTURAL_KEYWORDS: &[&str] = &[
+    "import", "imports", "class", "classes", "structure", "structural",
+    "definition", "definitions", "header", "headers", "skeleton", "types",
+    "signature", "signatures", "api", "interface", "interfaces", "overview",
+    "architecture", "hierarchy", "outline", "schema",
+];
+
+const FUNCTIONAL_KEYWORDS: &[&str] = &[
+    "execute", "process", "handle", "compute", "calculate", "run", "algorithm",
+    "logic", "implement", "implementation", "return", "data", "fetch", "send",
+    "call", "step", "pipeline", "solve", "bug", "error", "fix", "parse", "transform",
+    "worker", "routine", "method", "function", "action",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum QueryIntent {
+    Structural,
+    Functional,
+    Balanced,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueryProfile {
+    pub raw_tokens: HashSet<String>,
+    pub all_tokens: HashSet<String>,
+    pub intent: QueryIntent,
+    /// Gate value from -1.0 (purely functional) to +1.0 (purely structural)
+    pub gate: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Decision {
     /// True if the item is kept completely with its full body
@@ -14,20 +44,117 @@ pub struct Decision {
 pub struct ScoreResult {
     pub decisions: Vec<Decision>,
     pub zero_match: bool,
+    pub intent: QueryIntent,
+}
+
+pub fn split_identifier_subtokens(s: &str) -> Vec<String> {
+    let mut subtokens = Vec::new();
+    let lower = s.to_lowercase();
+    subtokens.push(lower.clone());
+
+    // Split snake_case
+    if s.contains('_') {
+        for part in s.split('_') {
+            let p = part.trim().to_lowercase();
+            if p.len() >= 2 && p != lower {
+                subtokens.push(p);
+            }
+        }
+    }
+
+    // Split camelCase / PascalCase
+    let mut current = String::new();
+    for ch in s.chars() {
+        if ch.is_uppercase() && !current.is_empty() {
+            let part = current.to_lowercase();
+            if part.len() >= 2 && part != lower {
+                subtokens.push(part);
+            }
+            current.clear();
+        }
+        if ch != '_' {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        let part = current.to_lowercase();
+        if part.len() >= 2 && part != lower {
+            subtokens.push(part);
+        }
+    }
+
+    subtokens
+}
+
+pub fn analyze_query(query: &str) -> QueryProfile {
+    let mut raw_tokens = HashSet::new();
+    let mut all_tokens = HashSet::new();
+
+    let parts = query.split(|c: char| !c.is_alphanumeric() && c != '_');
+    for p in parts {
+        let trimmed = p.trim();
+        if trimmed.len() >= 2 {
+            raw_tokens.insert(trimmed.to_lowercase());
+            for sub in split_identifier_subtokens(trimmed) {
+                all_tokens.insert(sub);
+            }
+        }
+    }
+
+    let mut struct_count = 0;
+    let mut func_count = 0;
+
+    for t in &all_tokens {
+        if STRUCTURAL_KEYWORDS.contains(&t.as_str()) {
+            struct_count += 1;
+        }
+        if FUNCTIONAL_KEYWORDS.contains(&t.as_str()) {
+            func_count += 1;
+        }
+    }
+
+    let total = (struct_count + func_count) as f64;
+    let gate = if total > 0.0 {
+        (struct_count as f64 - func_count as f64) / total
+    } else {
+        0.0
+    };
+
+    let intent = if gate > 0.15 {
+        QueryIntent::Structural
+    } else if gate < -0.15 {
+        QueryIntent::Functional
+    } else {
+        QueryIntent::Balanced
+    };
+
+    QueryProfile {
+        raw_tokens,
+        all_tokens,
+        intent,
+        gate,
+    }
 }
 
 pub fn tokenize_query(query: &str) -> HashSet<String> {
-    query
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| s.len() >= 2)
-        .collect()
+    analyze_query(query).all_tokens
 }
 
 pub fn evaluate_scopes(items: &[ScopeItem], query: &str, threshold: f64) -> ScoreResult {
-    let query_tokens = tokenize_query(query);
+    let profile = analyze_query(query);
     let mut decisions: Vec<Decision> = Vec::with_capacity(items.len());
     let mut any_match = false;
+
+    // Phase 3: Adaptive threshold modulation based on query gating
+    // Structural intent (+gate): raise threshold for internal statements, prioritize headers
+    // Functional intent (-gate): boost semantic sensitivity for execution logic
+    let effective_threshold = if profile.gate > 0.15 {
+        (threshold + 0.15 * profile.gate).min(0.85)
+    } else if profile.gate < -0.15 {
+        (threshold - 0.10 * profile.gate.abs()).max(0.15)
+    } else {
+        threshold
+    };
 
     for item in items {
         match &item.kind {
@@ -43,8 +170,8 @@ pub fn evaluate_scopes(items: &[ScopeItem], query: &str, threshold: f64) -> Scor
             | NodeKind::ControlFlow { .. }
             | NodeKind::Statement
             | NodeKind::Other => {
-                let score = compute_overlap(&item.tokens, &query_tokens);
-                let keep = score >= threshold && score > 0.0;
+                let score = compute_smart_semantic_score(item, &profile);
+                let keep = score >= effective_threshold && score > 0.0;
                 if keep {
                     any_match = true;
                 }
@@ -57,7 +184,7 @@ pub fn evaluate_scopes(items: &[ScopeItem], query: &str, threshold: f64) -> Scor
         }
     }
 
-    if !any_match && !query_tokens.is_empty() {
+    if !any_match && !profile.all_tokens.is_empty() {
         // Zero Semantic Match: Fallback to pure structural skeleton
         // All imports/module docstrings kept full; functions and classes kept as skeletons
         for (i, item) in items.iter().enumerate() {
@@ -68,10 +195,11 @@ pub fn evaluate_scopes(items: &[ScopeItem], query: &str, threshold: f64) -> Scor
         return ScoreResult {
             decisions,
             zero_match: true,
+            intent: profile.intent,
         };
     }
 
-    // --- DEPENDENCY CLOSURE (LaMR Phase 1) ---
+    // --- DEPENDENCY CLOSURE (Option A / LaMR) ---
     let mut keep_full_set: HashSet<usize> = decisions
         .iter()
         .enumerate()
@@ -223,6 +351,7 @@ pub fn evaluate_scopes(items: &[ScopeItem], query: &str, threshold: f64) -> Scor
     ScoreResult {
         decisions,
         zero_match: false,
+        intent: profile.intent,
     }
 }
 
@@ -237,15 +366,111 @@ fn mark_descendants_full(
     }
 }
 
-fn compute_overlap(item_tokens: &[String], query_tokens: &HashSet<String>) -> f64 {
-    if query_tokens.is_empty() || item_tokens.is_empty() {
+/// Phase 2: Smarter semantic scoring with name boosting and weak partial match suppression
+fn compute_smart_semantic_score(
+    item: &ScopeItem,
+    profile: &QueryProfile,
+) -> f64 {
+    if profile.all_tokens.is_empty() {
         return 0.0;
     }
-    let mut matches = 0;
-    for t in item_tokens {
-        if query_tokens.contains(t) {
-            matches += 1;
+
+    let mut score: f64 = 0.0;
+
+    // Give higher weight to function names, class names, and key definitions appearing in query
+    match &item.kind {
+        NodeKind::Function { name, .. } => {
+            let name_lower = name.to_lowercase();
+            if profile.raw_tokens.contains(&name_lower) || profile.all_tokens.contains(&name_lower) {
+                // Exact function name target in query -> strong boost
+                score = score.max(0.95);
+            } else {
+                let name_subs = split_identifier_subtokens(name);
+                let matched_subs = name_subs.iter().filter(|s| profile.all_tokens.contains(*s)).count();
+                if matched_subs > 0 {
+                    score = score.max(0.60 * (matched_subs as f64 / name_subs.len().max(1) as f64));
+                }
+            }
+            // Check parameter names
+            let param_matches = item.defined_symbols.iter().filter(|p| profile.all_tokens.contains(&p.to_lowercase())).count();
+            if param_matches > 0 {
+                score = score.max(0.40 * (param_matches as f64).min(2.0));
+            }
+        }
+        NodeKind::Class { name } => {
+            let name_lower = name.to_lowercase();
+            if profile.raw_tokens.contains(&name_lower) || profile.all_tokens.contains(&name_lower) {
+                // Exact class name target in query -> strong boost
+                score = score.max(0.95);
+            } else {
+                let name_subs = split_identifier_subtokens(name);
+                let matched_subs = name_subs.iter().filter(|s| profile.all_tokens.contains(*s)).count();
+                if matched_subs > 0 {
+                    score = score.max(0.60 * (matched_subs as f64 / name_subs.len().max(1) as f64));
+                }
+            }
+        }
+        NodeKind::Statement => {
+            // Give higher weight to statements that directly define or call query target symbols
+            let def_matches = item.defined_symbols.iter().filter(|s| profile.raw_tokens.contains(&s.to_lowercase()) || profile.all_tokens.contains(&s.to_lowercase())).count();
+            if def_matches > 0 {
+                score = score.max(0.75);
+            }
+            let ref_matches = item.referenced_symbols.iter().filter(|s| profile.raw_tokens.contains(&s.to_lowercase())).count();
+            if ref_matches > 0 {
+                score = score.max(0.70);
+            }
+        }
+        _ => {}
+    }
+
+    // Keyword & identifier lexical matching against raw query tokens
+    let mut matched_raw_tokens = 0;
+    for rt in &profile.raw_tokens {
+        if item.tokens.iter().any(|it| it == rt)
+            || item.defined_symbols.iter().any(|s| s.to_lowercase() == *rt)
+            || item.referenced_symbols.iter().any(|s| s.to_lowercase() == *rt)
+        {
+            matched_raw_tokens += 1;
         }
     }
-    (matches as f64) / (query_tokens.len() as f64).max(1.0)
+
+    if matched_raw_tokens > 0 {
+        let raw_coverage = (matched_raw_tokens as f64) / (profile.raw_tokens.len().max(1) as f64);
+        score = score.max(raw_coverage);
+    }
+
+    // Sub-token matching for camelCase / snake_case parts
+    let mut matched_sub_tokens = 0;
+    for st in &profile.all_tokens {
+        if item.tokens.iter().any(|it| it == st) {
+            matched_sub_tokens += 1;
+        }
+    }
+
+    if matched_sub_tokens > 0 {
+        let sub_coverage = (matched_sub_tokens as f64) / (profile.all_tokens.len().max(1) as f64);
+        let mut item_matches = 0;
+        for it in &item.tokens {
+            if profile.all_tokens.contains(it) {
+                item_matches += 1;
+            }
+        }
+        let density = (item_matches as f64) / (item.tokens.len().max(1) as f64);
+
+        // F1 harmonic mean between sub-token coverage and item token density
+        let match_quality = (2.0 * sub_coverage * density) / (sub_coverage + density + 1e-6);
+
+        // Suppress weak partial matches unless an exact symbol was already matched
+        if match_quality >= 0.20 || score > 0.0 {
+            score = score.max(sub_coverage.max(match_quality) * 0.85);
+        }
+    }
+
+    // Phase 3: Adaptive gating adjustment
+    if profile.intent == QueryIntent::Functional && score > 0.0 {
+        score = (score + 0.05 * profile.gate.abs()).min(1.0);
+    }
+
+    score.min(1.0)
 }
