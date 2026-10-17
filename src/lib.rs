@@ -1,5 +1,6 @@
 pub mod indexer;
 pub mod java;
+pub mod javascript;
 pub mod language;
 pub mod multi_parser;
 pub mod parser;
@@ -84,13 +85,13 @@ pub fn prune_file(
         match lang_str.to_lowercase().as_str() {
             "python" | "py" => Language::Python,
             "java" => Language::Java,
-            "javascript" | "js" => Language::JavaScript,
+            "javascript" | "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
             "typescript" | "ts" => Language::TypeScript,
             "html" | "htm" => Language::HTML,
             "css" => Language::CSS,
             _ => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("Unsupported language: {}. Supported: python, java, javascript, typescript, html, css", lang_str)
+                    format!("Unsupported language: {}. Supported: python, java, javascript, jsx, typescript, html, css", lang_str)
                 ));
             }
         }
@@ -163,6 +164,10 @@ pub fn prune_file(
         Language::Java => {
             // Java language engine
             java::prune_file(code_text, focus_query, threshold)
+        }
+        Language::JavaScript => {
+            // Dedicated JavaScript + JSX pruning engine
+            javascript::prune_file(code_text, focus_query, threshold)
         }
         _ => {
             // For other languages (JS, TS, HTML, CSS), use simplified multi-language parser
@@ -346,7 +351,7 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
         match lang_str.to_lowercase().as_str() {
             "python" | "py" => Language::Python,
             "java" => Language::Java,
-            "javascript" | "js" => Language::JavaScript,
+            "javascript" | "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
             "typescript" | "ts" => Language::TypeScript,
             "html" | "htm" => Language::HTML,
             "css" => Language::CSS,
@@ -382,6 +387,11 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
         let source_bytes = code_text.as_bytes();
         let res = indexer::extract_file_index(&tree, source_bytes, &lines, total_tokens);
         return Ok(res);
+    }
+
+    // For JavaScript + JSX, use dedicated indexer
+    if detected_lang == Language::JavaScript {
+        return javascript::index_code(code_text);
     }
 
     // For other languages, use simplified multi-language parser

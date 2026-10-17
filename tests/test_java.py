@@ -3,7 +3,8 @@ Test Java pruning engine with real AST parsing and reconstruction.
 """
 
 import sys
-sys.path.insert(0, '/home/shahrinakhan/fastAST/python')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
 
 from fastast import prune_file
 
@@ -153,7 +154,7 @@ public class MyClass {
 
 
 if __name__ == "__main__":
-    test_java_method_pruning_removes_unkept()
+    test_java_method_pruning_basic()
     test_java_imports_always_kept()
     test_java_class_header_preserved()
     test_java_multiple_query_match()

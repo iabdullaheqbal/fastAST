@@ -25,13 +25,19 @@ if MCP_AVAILABLE and FastMCP is not None:
     mcp = FastMCP("fastast")
 
 
-def prune_context(code_text: str, focus_query: str, threshold: float = 0.5) -> str:
-    """Prune Python source code to retain query-relevant logic and valid structural syntax.
+def prune_context(
+    code_text: str,
+    focus_query: str,
+    threshold: float = 0.5,
+    language: Optional[str] = None,
+) -> str:
+    """Prune source code (Python, JavaScript, JSX, etc.) to retain query-relevant logic and valid structural syntax.
 
     Args:
-        code_text: The complete Python code snippet or module content.
+        code_text: The complete code snippet or module content.
         focus_query: The semantic search query or symbol identifier to focus on.
         threshold: Relevance threshold between 0.0 and 1.0 (default: 0.5).
+        language: Optional language name (e.g. 'python', 'javascript', 'jsx'). Defaults to python.
 
     Returns:
         JSON string containing the pruned code, token metrics, reduction stats,
@@ -52,7 +58,7 @@ def prune_context(code_text: str, focus_query: str, threshold: float = 0.5) -> s
             indent=2,
         )
 
-    res = prune_file(code_text, focus_query, threshold)
+    res = prune_file(code_text, focus_query, threshold, language=language)
 
     if res.has_syntax_error:
         # Pre-existing syntax error in input code
@@ -71,12 +77,14 @@ def prune_context(code_text: str, focus_query: str, threshold: float = 0.5) -> s
             indent=2,
         )
 
-    # Validate output syntax using Python's ast parser
-    try:
-        ast.parse(res.pruned_code)
-        syntax_valid = True
-    except SyntaxError:
-        syntax_valid = False
+    # Validate output syntax
+    syntax_valid = not res.has_syntax_error
+    if syntax_valid and (language in ("python", None)):
+        try:
+            ast.parse(res.pruned_code)
+            syntax_valid = True
+        except SyntaxError:
+            syntax_valid = False
 
     if not syntax_valid:
         return json.dumps(

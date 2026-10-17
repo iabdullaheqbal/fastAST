@@ -41,6 +41,26 @@ def supports_color() -> bool:
     return sys.stdout.isatty()
 
 
+def detect_language_from_path(path: Path) -> Optional[str]:
+    ext = path.suffix.lower().lstrip(".")
+    mapping = {
+        "py": "python",
+        "pyi": "python",
+        "pyw": "python",
+        "js": "javascript",
+        "jsx": "javascript",
+        "mjs": "javascript",
+        "cjs": "javascript",
+        "ts": "typescript",
+        "tsx": "typescript",
+        "java": "java",
+        "html": "html",
+        "htm": "html",
+        "css": "css",
+    }
+    return mapping.get(ext)
+
+
 def run_prune(
     file_path: str,
     query: str,
@@ -49,8 +69,9 @@ def run_prune(
     show_preview: bool = False,
     quiet: bool = False,
     json_output: bool = False,
+    language: Optional[str] = None,
 ) -> int:
-    """Read a Python file, prune using native engine, and report metrics."""
+    """Read a source file, prune using native engine, and report metrics."""
     path = Path(file_path)
     if not path.is_file():
         sys.stderr.write(f"Error: File not found: {file_path}\n")
@@ -62,12 +83,15 @@ def run_prune(
         sys.stderr.write(f"Error reading {file_path}: {exc}\n")
         return 1
 
+    # Detect language from file path if not explicitly provided
+    detected_lang = language or detect_language_from_path(path)
+
     # Execute pruning via native Rust Tree-Sitter engine
-    res = prune_file(source_code, query, threshold)
+    res = prune_file(source_code, query, threshold, language=detected_lang)
 
     # Validate output syntax
-    syntax_ok = False
-    if not res.has_syntax_error:
+    syntax_ok = not res.has_syntax_error
+    if syntax_ok and (detected_lang in ("python", None)):
         try:
             ast.parse(res.pruned_code)
             syntax_ok = True
@@ -340,6 +364,9 @@ def main() -> None:
     prune_parser.add_argument(
         "--json", action="store_true", help="Output results as JSON"
     )
+    prune_parser.add_argument(
+        "-l", "--language", help="Source code language (python, javascript, jsx, java, etc.)"
+    )
 
     # `index` subcommand
     index_parser = subparsers.add_parser(
@@ -427,6 +454,7 @@ def main() -> None:
                 args.output,
                 getattr(args, 'show_code', False) or getattr(args, 'preview', False),
                 json_output=getattr(args, 'json', False),
+                language=getattr(args, 'language', None),
             )
         )
     elif args.command == "index":

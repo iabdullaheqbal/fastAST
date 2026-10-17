@@ -8,7 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    pytest = None
+
 from fastast import prune_file, index_code
 
 
@@ -358,8 +362,11 @@ class TestErrorHandling:
     def test_invalid_language(self):
         """Test error when passing invalid language"""
         code = "x = 1\n"
-        with pytest.raises(ValueError, match="Unsupported language"):
+        try:
             prune_file(code, "x", language="ruby")
+            assert False, "Should have raised ValueError"
+        except ValueError as exc:
+            assert "Unsupported language" in str(exc)
 
     def test_syntax_errors_gracefully_handled(self):
         """Test that syntax errors are gracefully handled"""
@@ -383,4 +390,23 @@ class TestErrorHandling:
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    if pytest is not None:
+        pytest.main([__file__, "-v"])
+    else:
+        test_classes = [
+            TestPythonSupport,
+            TestJavaSupport,
+            TestJavaScriptSupport,
+            TestTypeScriptSupport,
+            TestHTMLSupport,
+            TestCSSSupport,
+            TestLanguageDetection,
+            TestErrorHandling,
+        ]
+        for cls in test_classes:
+            instance = cls()
+            for name in dir(cls):
+                if name.startswith("test_"):
+                    method = getattr(instance, name)
+                    method()
+        print("All multi-language tests passed successfully!")
