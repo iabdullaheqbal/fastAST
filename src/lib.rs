@@ -394,6 +394,11 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
         return Ok(res);
     }
 
+    // For Java, use dedicated indexer
+    if detected_lang == Language::Java {
+        return java::index_code(code_text);
+    }
+
     // For JavaScript + JSX, use dedicated indexer
     if detected_lang == Language::JavaScript {
         return javascript::index_code(code_text);
