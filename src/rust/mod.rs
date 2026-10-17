@@ -129,7 +129,6 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
 
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
-    let mut calls = Vec::new();
 
     for item in &scopes {
         match &item.kind {
@@ -159,7 +158,9 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
 
                 let parent_name = if let Some(pid) = item.parent_id {
                     match &scopes[pid].kind {
-                        parser::RustNodeKind::Impl { target_type, .. } => Some(target_type.clone()),
+                        parser::RustNodeKind::Impl { target_type, .. } => {
+                            Some(parser::strip_type_generics(target_type).to_string())
+                        }
                         parser::RustNodeKind::Trait { name: tname } => Some(tname.clone()),
                         parser::RustNodeKind::Mod { name: mname, .. } => Some(mname.clone()),
                         _ => None,
@@ -176,7 +177,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     start_line: item.start_row + 1,
                     end_line: item.end_row + 1,
                     parent_name,
-                    docstring: None,
+                    docstring: item.docstring.clone(),
                 });
             }
             parser::RustNodeKind::Struct { name } => {
@@ -188,7 +189,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     start_line: item.start_row + 1,
                     end_line: item.end_row + 1,
                     parent_name: None,
-                    docstring: None,
+                    docstring: item.docstring.clone(),
                 });
             }
             parser::RustNodeKind::Enum { name, .. } => {
@@ -200,7 +201,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     start_line: item.start_row + 1,
                     end_line: item.end_row + 1,
                     parent_name: None,
-                    docstring: None,
+                    docstring: item.docstring.clone(),
                 });
             }
             parser::RustNodeKind::Trait { name } => {
@@ -212,7 +213,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     start_line: item.start_row + 1,
                     end_line: item.end_row + 1,
                     parent_name: None,
-                    docstring: None,
+                    docstring: item.docstring.clone(),
                 });
             }
             parser::RustNodeKind::Impl {
@@ -232,7 +233,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     start_line: item.start_row + 1,
                     end_line: item.end_row + 1,
                     parent_name: None,
-                    docstring: None,
+                    docstring: item.docstring.clone(),
                 });
             }
             parser::RustNodeKind::Mod { name, .. } => {
@@ -244,7 +245,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     start_line: item.start_row + 1,
                     end_line: item.end_row + 1,
                     parent_name: None,
-                    docstring: None,
+                    docstring: item.docstring.clone(),
                 });
             }
             parser::RustNodeKind::Const { name } => {
@@ -256,7 +257,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     start_line: item.start_row + 1,
                     end_line: item.end_row + 1,
                     parent_name: None,
-                    docstring: None,
+                    docstring: item.docstring.clone(),
                 });
             }
             parser::RustNodeKind::Static { name } => {
@@ -268,7 +269,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     start_line: item.start_row + 1,
                     end_line: item.end_row + 1,
                     parent_name: None,
-                    docstring: None,
+                    docstring: item.docstring.clone(),
                 });
             }
             parser::RustNodeKind::TypeAlias { name } => {
@@ -280,7 +281,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     start_line: item.start_row + 1,
                     end_line: item.end_row + 1,
                     parent_name: None,
-                    docstring: None,
+                    docstring: item.docstring.clone(),
                 });
             }
             _ => {}
@@ -288,7 +289,14 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
     }
 
     // Extract call expressions across AST
-    collect_calls(tree.root_node(), source_bytes, &mut calls, None);
+    let calls = parser::collect_all_calls(tree.root_node(), source_bytes)
+        .into_iter()
+        .map(|c| ExtractedCall {
+            caller_name: c.caller_name,
+            callee_name: c.callee_name,
+            line_number: c.line_number,
+        })
+        .collect();
 
     Ok(FileIndexResult {
         symbols,
@@ -311,50 +319,6 @@ fn source_code_snippet(code: &str, start_byte: usize, end_byte: usize) -> &str {
 fn first_line_of(code: &str, start_byte: usize, end_byte: usize) -> String {
     let snippet = source_code_snippet(code, start_byte, end_byte);
     snippet.lines().next().unwrap_or("").trim().to_string()
-}
-
-fn collect_calls(
-    node: tree_sitter::Node,
-    source_bytes: &[u8],
-    calls: &mut Vec<ExtractedCall>,
-    current_caller: Option<String>,
-) {
-    let kind = node.kind();
-    let mut new_caller = current_caller.clone();
-
-    if kind == "function_item" {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" {
-                if let Ok(t) = child.utf8_text(source_bytes) {
-                    new_caller = Some(t.to_string());
-                    break;
-                }
-            }
-        }
-    } else if kind == "call_expression" {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" || child.kind() == "field_expression" {
-                if let Ok(text) = child.utf8_text(source_bytes) {
-                    let callee = text.split('.').last().unwrap_or(text).trim().to_string();
-                    if !callee.is_empty() {
-                        calls.push(ExtractedCall {
-                            caller_name: current_caller.clone(),
-                            callee_name: callee,
-                            line_number: node.start_position().row + 1,
-                        });
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_calls(child, source_bytes, calls, new_caller.clone());
-    }
 }
 
 #[cfg(test)]

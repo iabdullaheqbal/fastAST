@@ -104,6 +104,60 @@ pub fn reconstruct_code(
     output
 }
 
+pub fn append_reindented_node(
+    output: &mut String,
+    source_code: &str,
+    start_byte: usize,
+    end_byte: usize,
+    indent: &str,
+) {
+    if start_byte >= end_byte || end_byte > source_code.len() {
+        return;
+    }
+    let snippet = &source_code[start_byte..end_byte];
+    let lines: Vec<&str> = snippet.lines().collect();
+    if lines.is_empty() {
+        return;
+    }
+
+    let line_start = source_code[..start_byte].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let base_indent_len = source_code[line_start..start_byte]
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .count();
+
+    for (i, line) in lines.iter().enumerate() {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        output.push_str(indent);
+        let line_indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
+        if i == 0 {
+            output.push_str(line.trim_start());
+        } else if line_indent_len >= base_indent_len {
+            output.push_str(&line[base_indent_len..]);
+        } else {
+            output.push_str(line.trim_start());
+        }
+    }
+}
+
+pub fn append_reindented_lines(output: &mut String, text: &str, indent: &str) {
+    for line in text.lines() {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        output.push_str(indent);
+        output.push_str(line);
+    }
+}
+
 fn reconstruct_impl(
     source_code: &str,
     items: &[RustScopeItem],
@@ -148,14 +202,7 @@ fn reconstruct_impl(
         first_child = false;
 
         if c_dec.keep_full {
-            let snippet = &source_code[child.start_byte..child.end_byte];
-            for line in snippet.lines() {
-                if !output.ends_with('\n') {
-                    output.push('\n');
-                }
-                output.push_str("    ");
-                output.push_str(line.trim_start());
-            }
+            append_reindented_node(output, source_code, child.start_byte, child.end_byte, "    ");
         } else if c_dec.keep_skeleton {
             match &child.kind {
                 RustNodeKind::Function { has_body, .. } => {
@@ -174,14 +221,7 @@ fn reconstruct_impl(
                     }
                 }
                 _ => {
-                    let snippet = &source_code[child.start_byte..child.end_byte];
-                    for line in snippet.lines() {
-                        if !output.ends_with('\n') {
-                            output.push('\n');
-                        }
-                        output.push_str("    ");
-                        output.push_str(line.trim_start());
-                    }
+                    append_reindented_node(output, source_code, child.start_byte, child.end_byte, "    ");
                 }
             }
         }
@@ -237,14 +277,7 @@ fn reconstruct_trait(
         first_child = false;
 
         if c_dec.keep_full {
-            let snippet = &source_code[child.start_byte..child.end_byte];
-            for line in snippet.lines() {
-                if !output.ends_with('\n') {
-                    output.push('\n');
-                }
-                output.push_str("    ");
-                output.push_str(line.trim_start());
-            }
+            append_reindented_node(output, source_code, child.start_byte, child.end_byte, "    ");
         } else if c_dec.keep_skeleton {
             if let Some((csig_start, csig_end)) = child.signature_byte_range {
                 let csig = source_code[csig_start..csig_end].trim();
@@ -253,7 +286,13 @@ fn reconstruct_trait(
                 }
                 output.push_str("    ");
                 output.push_str(csig);
-                if !csig.ends_with(';') {
+                if let RustNodeKind::Function { has_body, .. } = &child.kind {
+                    if *has_body {
+                        output.push_str(" { todo!() }");
+                    } else if !csig.ends_with(';') {
+                        output.push(';');
+                    }
+                } else if !csig.ends_with(';') {
                     output.push(';');
                 }
             }
@@ -309,32 +348,43 @@ fn reconstruct_mod(
         }
         first_child = false;
 
-        if c_dec.keep_full {
-            let snippet = &source_code[child.start_byte..child.end_byte];
-            for line in snippet.lines() {
-                if !output.ends_with('\n') {
-                    output.push('\n');
-                }
-                output.push_str("    ");
-                output.push_str(line.trim_start());
+        match &child.kind {
+            RustNodeKind::Impl { .. } => {
+                let mut buf = String::new();
+                reconstruct_impl(source_code, items, decisions, cid, &mut buf);
+                append_reindented_lines(output, &buf, "    ");
             }
-        } else if c_dec.keep_skeleton {
-            if let Some((csig_start, csig_end)) = child.signature_byte_range {
-                let csig = source_code[csig_start..csig_end].trim();
-                if !output.ends_with('\n') {
-                    output.push('\n');
-                }
-                output.push_str("    ");
-                output.push_str(csig);
-                if let RustNodeKind::Function { has_body, .. } = child.kind {
-                    if has_body {
-                        output.push_str(" { todo!() }");
-                    } else if !csig.ends_with(';') {
-                        output.push(';');
+            RustNodeKind::Trait { .. } => {
+                let mut buf = String::new();
+                reconstruct_trait(source_code, items, decisions, cid, &mut buf);
+                append_reindented_lines(output, &buf, "    ");
+            }
+            RustNodeKind::Mod { is_inline: true, .. } => {
+                let mut buf = String::new();
+                reconstruct_mod(source_code, items, decisions, cid, &mut buf);
+                append_reindented_lines(output, &buf, "    ");
+            }
+            RustNodeKind::Function { has_body, .. } => {
+                if c_dec.keep_full {
+                    append_reindented_node(output, source_code, child.start_byte, child.end_byte, "    ");
+                } else if c_dec.keep_skeleton {
+                    if let Some((csig_start, csig_end)) = child.signature_byte_range {
+                        let csig = source_code[csig_start..csig_end].trim();
+                        if !output.ends_with('\n') {
+                            output.push('\n');
+                        }
+                        output.push_str("    ");
+                        output.push_str(csig);
+                        if *has_body {
+                            output.push_str(" { todo!() }");
+                        } else if !csig.ends_with(';') {
+                            output.push(';');
+                        }
                     }
-                } else if !csig.ends_with(';') {
-                    output.push(';');
                 }
+            }
+            _ => {
+                append_reindented_node(output, source_code, child.start_byte, child.end_byte, "    ");
             }
         }
     }

@@ -24,6 +24,13 @@ pub fn parse_ast(code: &str) -> Result<Tree, String> {
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct RustCall {
+    pub caller_name: Option<String>,
+    pub callee_name: String,
+    pub line_number: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustNodeKind {
     Use,
@@ -52,6 +59,8 @@ pub enum RustNodeKind {
         is_unsafe: bool,
         has_body: bool,
         is_method: bool,
+        is_getter: bool,
+        is_setter: bool,
     },
     Const {
         name: String,
@@ -91,6 +100,7 @@ pub struct RustScopeItem {
     /// Referenced identifiers in this scope
     pub referenced_symbols: Vec<String>,
     pub children_ids: Vec<usize>,
+    pub docstring: Option<String>,
 }
 
 pub fn collect_scopes(tree: &Tree, source_bytes: &[u8], _lines: &[&str]) -> Vec<RustScopeItem> {
@@ -107,6 +117,268 @@ pub fn collect_scopes(tree: &Tree, source_bytes: &[u8], _lines: &[&str]) -> Vec<
     items
 }
 
+const RUST_PRIMITIVES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize",
+    "u8", "u16", "u32", "u64", "u128", "usize",
+    "f32", "f64", "bool", "char", "str", "String",
+    "self", "Self", "true", "false", "Option", "Some", "None",
+    "Result", "Ok", "Err", "Vec", "Box", "Rc", "Arc", "Cell", "RefCell",
+    "println", "format", "eprintln", "print", "write", "panic", "todo", "unimplemented",
+];
+
+pub fn strip_type_generics(t: &str) -> &str {
+    let s = t.trim().trim_start_matches('&').trim_start_matches("mut ").trim();
+    if let Some(idx) = s.find('<') {
+        s[..idx].trim()
+    } else {
+        s
+    }
+}
+
+pub fn find_item_start_with_attributes(node: Node, source_bytes: &[u8]) -> (usize, usize) {
+    let mut current_start_byte = node.start_byte();
+    let mut current_start_row = node.start_position().row;
+    let mut prev = node.prev_named_sibling();
+
+    while let Some(p) = prev {
+        let p_kind = p.kind();
+        if p_kind == "attribute_item" {
+            if let Ok(text) = p.utf8_text(source_bytes) {
+                let trimmed = text.trim();
+                if trimmed.starts_with("#[") {
+                    current_start_byte = p.start_byte();
+                    current_start_row = p.start_position().row;
+                    prev = p.prev_named_sibling();
+                    continue;
+                }
+            }
+            break;
+        } else if p_kind == "line_comment" || p_kind == "block_comment" {
+            if let Ok(text) = p.utf8_text(source_bytes) {
+                let trimmed = text.trim();
+                let is_outer_doc = trimmed.starts_with("///") || trimmed.starts_with("/**");
+                let p_end_row = p.end_position().row;
+                if is_outer_doc || p_end_row + 1 >= current_start_row {
+                    current_start_byte = p.start_byte();
+                    current_start_row = p.start_position().row;
+                    prev = p.prev_named_sibling();
+                    continue;
+                }
+            }
+            break;
+        } else {
+            break;
+        }
+    }
+
+    (current_start_byte, current_start_row)
+}
+
+pub fn extract_rust_doc(node: Node, source_bytes: &[u8]) -> Option<String> {
+    let mut doc_lines = Vec::new();
+    let mut prev = node.prev_named_sibling();
+
+    while let Some(p) = prev {
+        let p_kind = p.kind();
+        if p_kind == "line_comment" || p_kind == "block_comment" {
+            if let Ok(text) = p.utf8_text(source_bytes) {
+                let trimmed = text.trim();
+                if trimmed.starts_with("///") {
+                    let content = trimmed.trim_start_matches("///").trim();
+                    doc_lines.push(content.to_string());
+                    prev = p.prev_named_sibling();
+                    continue;
+                } else if trimmed.starts_with("/**") && trimmed.ends_with("*/") {
+                    let inner = &trimmed[3..trimmed.len() - 2];
+                    for line in inner.lines() {
+                        let cleaned = line.trim().trim_start_matches('*').trim();
+                        if !cleaned.is_empty() {
+                            doc_lines.push(cleaned.to_string());
+                        }
+                    }
+                    prev = p.prev_named_sibling();
+                    continue;
+                }
+            }
+        } else if p_kind == "attribute_item" {
+            prev = p.prev_named_sibling();
+            continue;
+        }
+        break;
+    }
+
+    if doc_lines.is_empty() {
+        None
+    } else {
+        doc_lines.reverse();
+        Some(doc_lines.join("\n"))
+    }
+}
+
+fn is_attached_doc_comment(node: Node, source_bytes: &[u8]) -> bool {
+    if let Ok(text) = node.utf8_text(source_bytes) {
+        let trimmed = text.trim();
+        let is_outer_doc = trimmed.starts_with("///") || trimmed.starts_with("/**");
+        let mut next = node.next_named_sibling();
+        while let Some(n) = next {
+            let n_kind = n.kind();
+            if n_kind == "attribute_item" {
+                next = n.next_named_sibling();
+                continue;
+            }
+            if is_decoratable_item(n_kind) {
+                if is_outer_doc || node.end_position().row + 1 >= n.start_position().row {
+                    return true;
+                }
+            }
+            break;
+        }
+    }
+    false
+}
+
+fn is_decoratable_item(kind: &str) -> bool {
+    matches!(
+        kind,
+        "struct_item"
+            | "enum_item"
+            | "trait_item"
+            | "impl_item"
+            | "function_item"
+            | "const_item"
+            | "static_item"
+            | "type_item"
+            | "mod_item"
+    )
+}
+
+pub fn collect_referenced_symbols(
+    node: Node,
+    source_bytes: &[u8],
+    defined_names: &[String],
+) -> Vec<String> {
+    let mut referenced = Vec::new();
+    let mut seen = HashSet::new();
+    for d in defined_names {
+        seen.insert(d.clone());
+        seen.insert(strip_type_generics(d).to_string());
+    }
+    for prim in RUST_PRIMITIVES {
+        seen.insert(prim.to_string());
+    }
+
+    let all_idents = extract_all_identifiers(node, source_bytes);
+    for id in all_idents {
+        let base = strip_type_generics(&id).to_string();
+        if !seen.contains(&id) && !seen.contains(&base) {
+            seen.insert(id.clone());
+            referenced.push(id);
+        }
+    }
+
+    referenced
+}
+
+pub fn collect_all_calls(root: Node, source_bytes: &[u8]) -> Vec<RustCall> {
+    let mut calls = Vec::new();
+    walk_calls_recursive(root, source_bytes, &mut calls, None);
+    calls
+}
+
+fn walk_calls_recursive(
+    node: Node,
+    source_bytes: &[u8],
+    calls: &mut Vec<RustCall>,
+    current_caller: Option<String>,
+) {
+    let kind = node.kind();
+    let mut new_caller = current_caller.clone();
+
+    if kind == "function_item" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                if let Ok(t) = child.utf8_text(source_bytes) {
+                    new_caller = Some(t.to_string());
+                    break;
+                }
+            }
+        }
+    } else if kind == "call_expression" {
+        let mut callee = String::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let c_kind = child.kind();
+            if c_kind == "identifier" {
+                if let Ok(t) = child.utf8_text(source_bytes) {
+                    callee = t.trim().to_string();
+                    break;
+                }
+            } else if c_kind == "field_expression" {
+                let mut f_cursor = child.walk();
+                for f_child in child.children(&mut f_cursor) {
+                    if f_child.kind() == "field_identifier" {
+                        if let Ok(t) = f_child.utf8_text(source_bytes) {
+                            callee = t.trim().to_string();
+                        }
+                    }
+                }
+                if callee.is_empty() {
+                    if let Ok(t) = child.utf8_text(source_bytes) {
+                        callee = t.split('.').last().unwrap_or(t).trim().to_string();
+                    }
+                }
+                break;
+            } else if c_kind == "scoped_identifier" {
+                let mut s_cursor = child.walk();
+                for s_child in child.children(&mut s_cursor) {
+                    if s_child.kind() == "identifier" {
+                        if let Ok(t) = s_child.utf8_text(source_bytes) {
+                            callee = t.trim().to_string();
+                        }
+                    }
+                }
+                if callee.is_empty() {
+                    if let Ok(t) = child.utf8_text(source_bytes) {
+                        callee = t.split("::").last().unwrap_or(t).trim().to_string();
+                    }
+                }
+                break;
+            }
+        }
+
+        if !callee.is_empty() {
+            calls.push(RustCall {
+                caller_name: current_caller.clone(),
+                callee_name: callee,
+                line_number: node.start_position().row + 1,
+            });
+        }
+    } else if kind == "macro_invocation" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                if let Ok(t) = child.utf8_text(source_bytes) {
+                    let callee = t.trim().to_string();
+                    if !callee.is_empty() {
+                        calls.push(RustCall {
+                            caller_name: current_caller.clone(),
+                            callee_name: callee,
+                            line_number: node.start_position().row + 1,
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_calls_recursive(child, source_bytes, calls, new_caller.clone());
+    }
+}
+
 fn walk_item(
     node: Node,
     source_bytes: &[u8],
@@ -115,6 +387,9 @@ fn walk_item(
 ) {
     let kind_str = node.kind();
     match kind_str {
+        "attribute_item" => {
+            // Handled as part of the item it decorates
+        }
         "use_declaration" => {
             process_use(node, source_bytes, parent_id, items);
         }
@@ -149,6 +424,9 @@ fn walk_item(
             process_macro_def(node, source_bytes, parent_id, items);
         }
         "line_comment" | "block_comment" => {
+            if is_attached_doc_comment(node, source_bytes) {
+                return;
+            }
             process_comment(node, source_bytes, parent_id, items);
         }
         _ => {
@@ -201,6 +479,7 @@ fn process_use(
         defined_symbols: defined,
         referenced_symbols: Vec::new(),
         children_ids: Vec::new(),
+        docstring: None,
     });
 
     if let Some(pid) = parent_id {
@@ -214,9 +493,9 @@ fn process_mod(
     parent_id: Option<usize>,
     items: &mut Vec<RustScopeItem>,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut mod_name = String::new();
@@ -282,6 +561,7 @@ fn process_mod(
         defined_symbols: defined,
         referenced_symbols: Vec::new(),
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -305,9 +585,9 @@ fn process_struct(
     parent_id: Option<usize>,
     items: &mut Vec<RustScopeItem>,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut struct_name = String::new();
@@ -360,6 +640,7 @@ fn process_struct(
         }
     }
 
+    let referenced = collect_referenced_symbols(node, source_bytes, &defined);
     let current_id = items.len();
     items.push(RustScopeItem {
         id: current_id,
@@ -374,8 +655,9 @@ fn process_struct(
         signature_tokens: sig_tokens,
         tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols: referenced,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -389,9 +671,9 @@ fn process_enum(
     parent_id: Option<usize>,
     items: &mut Vec<RustScopeItem>,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut enum_name = String::new();
@@ -460,6 +742,7 @@ fn process_enum(
     }
 
     let tokens = sig_tokens.clone();
+    let referenced = collect_referenced_symbols(node, source_bytes, &defined);
     let current_id = items.len();
 
     items.push(RustScopeItem {
@@ -478,8 +761,9 @@ fn process_enum(
         signature_tokens: sig_tokens,
         tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols: referenced,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -493,9 +777,9 @@ fn process_trait(
     parent_id: Option<usize>,
     items: &mut Vec<RustScopeItem>,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut trait_name = String::new();
@@ -540,6 +824,7 @@ fn process_trait(
     }
 
     let tokens = sig_tokens.clone();
+    let referenced = collect_referenced_symbols(node, source_bytes, &defined);
     let current_id = items.len();
 
     items.push(RustScopeItem {
@@ -555,8 +840,9 @@ fn process_trait(
         signature_tokens: sig_tokens,
         tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols: referenced,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -586,9 +872,9 @@ fn process_impl(
     parent_id: Option<usize>,
     items: &mut Vec<RustScopeItem>,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut target_type = String::new();
@@ -598,10 +884,6 @@ fn process_impl(
     let mut cursor = node.walk();
     let children: Vec<Node> = node.children(&mut cursor).collect();
 
-    // In Tree-Sitter Rust:
-    // Inherent impl: `impl TargetType { ... }` -> type child is `type_identifier` or `generic_type`
-    // Trait impl: `impl TraitName for TargetType { ... }`
-    // Check if there is a "for" keyword in children
     let mut has_for = false;
     let mut type_nodes = Vec::new();
 
@@ -642,6 +924,11 @@ fn process_impl(
 
     if !target_type.is_empty() {
         sig_tokens.push(target_type.to_lowercase());
+        let base_target = strip_type_generics(&target_type).to_string();
+        if base_target != target_type {
+            defined.push(base_target.clone());
+            sig_tokens.push(base_target.to_lowercase());
+        }
         defined.push(target_type.clone());
         for sub in split_identifier_subtokens(&target_type) {
             if !sig_tokens.contains(&sub) {
@@ -653,6 +940,11 @@ fn process_impl(
     if let Some(ref tr) = trait_name {
         sig_tokens.push("for".to_string());
         sig_tokens.push(tr.to_lowercase());
+        let base_tr = strip_type_generics(tr).to_string();
+        if base_tr != *tr {
+            defined.push(base_tr.clone());
+            sig_tokens.push(base_tr.to_lowercase());
+        }
         defined.push(tr.clone());
         for sub in split_identifier_subtokens(tr) {
             if !sig_tokens.contains(&sub) {
@@ -662,6 +954,20 @@ fn process_impl(
     }
 
     let tokens = sig_tokens.clone();
+    let mut referenced = collect_referenced_symbols(node, source_bytes, &defined);
+    if !target_type.is_empty() {
+        let base = strip_type_generics(&target_type).to_string();
+        if !referenced.contains(&base) {
+            referenced.push(base);
+        }
+    }
+    if let Some(ref tr) = trait_name {
+        let base = strip_type_generics(tr).to_string();
+        if !referenced.contains(&base) {
+            referenced.push(base);
+        }
+    }
+
     let current_id = items.len();
 
     items.push(RustScopeItem {
@@ -680,8 +986,9 @@ fn process_impl(
         signature_tokens: sig_tokens,
         tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols: referenced,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -712,9 +1019,9 @@ fn process_function(
     items: &mut Vec<RustScopeItem>,
     is_method: bool,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut fn_name = String::new();
@@ -745,7 +1052,7 @@ fn process_function(
     let (sig_range, body_range) = if let Some(b) = body_node {
         (
             Some((start_byte, b.start_byte())),
-            Some((b.start_byte(), b.end_byte())),
+            Some((b.start_byte(), end_byte)),
         )
     } else {
         (Some((start_byte, end_byte)), None)
@@ -795,16 +1102,18 @@ fn process_function(
     // All tokens inside function (signature + body)
     let all_idents = extract_all_identifiers(node, source_bytes);
     let mut tokens = sig_tokens.clone();
-    let mut referenced = Vec::new();
     for id in all_idents {
         let low = id.to_lowercase();
         if !tokens.contains(&low) {
-            tokens.push(low.clone());
-        }
-        if id != fn_name && !referenced.contains(&id) {
-            referenced.push(id);
+            tokens.push(low);
         }
     }
+
+    let referenced = collect_referenced_symbols(node, source_bytes, &defined);
+    let is_getter = is_method
+        && (fn_name.starts_with("get_")
+            || (!fn_name.starts_with("set_") && !fn_name.starts_with("is_") && fn_name != "new"));
+    let is_setter = is_method && fn_name.starts_with("set_");
 
     let current_id = items.len();
     items.push(RustScopeItem {
@@ -817,6 +1126,8 @@ fn process_function(
             is_unsafe,
             has_body,
             is_method,
+            is_getter,
+            is_setter,
         },
         start_byte,
         end_byte,
@@ -829,6 +1140,7 @@ fn process_function(
         defined_symbols: defined,
         referenced_symbols: referenced,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -842,9 +1154,9 @@ fn process_const(
     parent_id: Option<usize>,
     items: &mut Vec<RustScopeItem>,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut name = String::new();
@@ -870,6 +1182,7 @@ fn process_const(
         }
     }
 
+    let referenced = collect_referenced_symbols(node, source_bytes, &defined);
     let current_id = items.len();
     items.push(RustScopeItem {
         id: current_id,
@@ -884,8 +1197,9 @@ fn process_const(
         signature_tokens: tokens.clone(),
         tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols: referenced,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -899,9 +1213,9 @@ fn process_static(
     parent_id: Option<usize>,
     items: &mut Vec<RustScopeItem>,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut name = String::new();
@@ -927,6 +1241,7 @@ fn process_static(
         }
     }
 
+    let referenced = collect_referenced_symbols(node, source_bytes, &defined);
     let current_id = items.len();
     items.push(RustScopeItem {
         id: current_id,
@@ -941,8 +1256,9 @@ fn process_static(
         signature_tokens: tokens.clone(),
         tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols: referenced,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -956,9 +1272,9 @@ fn process_type_alias(
     parent_id: Option<usize>,
     items: &mut Vec<RustScopeItem>,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut name = String::new();
@@ -984,6 +1300,7 @@ fn process_type_alias(
         }
     }
 
+    let referenced = collect_referenced_symbols(node, source_bytes, &defined);
     let current_id = items.len();
     items.push(RustScopeItem {
         id: current_id,
@@ -998,8 +1315,9 @@ fn process_type_alias(
         signature_tokens: tokens.clone(),
         tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols: referenced,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -1013,9 +1331,9 @@ fn process_macro_def(
     parent_id: Option<usize>,
     items: &mut Vec<RustScopeItem>,
 ) {
-    let start_byte = node.start_byte();
+    let (start_byte, start_row) = find_item_start_with_attributes(node, source_bytes);
+    let docstring = extract_rust_doc(node, source_bytes);
     let end_byte = node.end_byte();
-    let start_row = node.start_position().row;
     let end_row = node.end_position().row;
 
     let mut name = String::new();
@@ -1052,6 +1370,7 @@ fn process_macro_def(
         defined_symbols: defined,
         referenced_symbols: Vec::new(),
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -1086,6 +1405,7 @@ fn process_comment(
         defined_symbols: Vec::new(),
         referenced_symbols: Vec::new(),
         children_ids: Vec::new(),
+        docstring: None,
     });
 
     if let Some(pid) = parent_id {

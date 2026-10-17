@@ -233,6 +233,228 @@ def test_cli_prune_rust():
     assert data["latency_ms"] < 25.0
 
 
+def test_rust_derive_and_outer_attributes_preservation():
+    """Test that #[derive(...)] and other outer attributes are preserved on kept items and removed on unkept ones."""
+    code = """
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct User {
+    pub id: u64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnusedRecord {
+    pub value: String,
+}
+
+impl User {
+    #[inline]
+    pub fn get_id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn reset(&mut self) {
+        self.id = 0;
+    }
+}
+"""
+    res = prune_file(code, "User", threshold=0.3, language="rust")
+    assert not res.has_syntax_error
+    assert "#[derive(Debug, Clone, Serialize)]" in res.pruned_code
+    assert '#[serde(rename_all = "camelCase")]' in res.pruned_code
+    assert "pub struct User {" in res.pruned_code
+    assert "UnusedRecord" not in res.pruned_code
+
+    # Pruning for get_id preserves #[inline]
+    res_fn = prune_file(code, "get_id", threshold=0.3, language="rust")
+    assert not res_fn.has_syntax_error
+    assert "#[inline]" in res_fn.pruned_code
+    assert "pub fn get_id(&self) -> u64 {" in res_fn.pruned_code
+    assert "self.id" in res_fn.pruned_code
+    assert "pub fn reset(&mut self) { todo!() }" in res_fn.pruned_code
+
+
+def test_rust_relative_indentation_preservation():
+    """Test that nested control flow constructs maintain exact relative indentation inside methods."""
+    code = """
+pub struct Engine;
+
+impl Engine {
+    pub fn execute(&self, val: i32) -> i32 {
+        if val > 0 {
+            match val {
+                1 => 10,
+                2 => {
+                    let y = val * 2;
+                    y + 5
+                }
+                _ => 100,
+            }
+        } else {
+            0
+        }
+    }
+
+    pub fn other(&self) -> i32 {
+        999
+    }
+}
+"""
+    res = prune_file(code, "execute", threshold=0.3, language="rust")
+    assert not res.has_syntax_error
+    assert "    pub fn execute(&self, val: i32) -> i32 {" in res.pruned_code
+    assert "        if val > 0 {" in res.pruned_code
+    assert "            match val {" in res.pruned_code
+    assert "                1 => 10," in res.pruned_code
+    assert "                2 => {" in res.pruned_code
+    assert "                    let y = val * 2;" in res.pruned_code
+    assert "    pub fn other(&self) -> i32 { todo!() }" in res.pruned_code
+
+
+def test_rust_constructor_companion_closure():
+    """Test that inherent impl constructors (new, default, etc.) are kept as skeletons when a method is kept full."""
+    code = """
+pub struct Storage {
+    data: Vec<u8>,
+}
+
+impl Storage {
+    pub fn new() -> Self {
+        Self { data: Vec::new() }
+    }
+
+    pub fn write_payload(&mut self, payload: &[u8]) {
+        self.data.extend_from_slice(payload);
+    }
+
+    pub fn clear(&mut self) {
+        self.data.clear();
+    }
+}
+"""
+    res = prune_file(code, "write_payload", threshold=0.3, language="rust")
+    assert not res.has_syntax_error
+    assert "pub struct Storage {" in res.pruned_code
+    assert "pub fn new() -> Self { todo!() }" in res.pruned_code
+    assert "pub fn write_payload(&mut self, payload: &[u8]) {" in res.pruned_code
+    assert "self.data.extend_from_slice(payload);" in res.pruned_code
+    assert "pub fn clear(&mut self) { todo!() }" in res.pruned_code
+
+
+def test_rust_getter_setter_companion_pairing():
+    """Test that getter and setter methods are paired as companions."""
+    code = """
+pub struct BankAccount {
+    balance: i64,
+}
+
+impl BankAccount {
+    pub fn balance(&self) -> i64 {
+        self.balance
+    }
+
+    pub fn set_balance(&mut self, amount: i64) {
+        self.balance = amount;
+    }
+
+    pub fn unrelated_audit(&self) -> bool {
+        true
+    }
+}
+"""
+    res = prune_file(code, "balance", threshold=0.3, language="rust")
+    assert not res.has_syntax_error
+    assert "pub fn balance(&self) -> i64 {" in res.pruned_code
+    assert "pub fn set_balance(&mut self, amount: i64) {" in res.pruned_code or "pub fn set_balance" in res.pruned_code
+    assert "unrelated_audit" not in res.pruned_code or "todo!()" in res.pruned_code
+
+
+def test_rust_multi_hop_dependency_closure():
+    """Test multi-hop transitive closure: task calls helper, helper references struct."""
+    code = """
+pub struct DatabaseConfig {
+    pub url: String,
+}
+
+pub fn db_helper(cfg: &DatabaseConfig) -> String {
+    format!("Connecting to {}", cfg.url)
+}
+
+pub fn start_worker() -> String {
+    let cfg = DatabaseConfig { url: "postgres://localhost/db".to_string() };
+    db_helper(&cfg)
+}
+
+pub fn unused_standalone() {
+    println!("not needed");
+}
+"""
+    res = prune_file(code, "start_worker", threshold=0.3, language="rust")
+    assert not res.has_syntax_error
+    assert "pub struct DatabaseConfig {" in res.pruned_code
+    assert "pub fn db_helper(cfg: &DatabaseConfig) -> String {" in res.pruned_code
+    assert "pub fn start_worker() -> String {" in res.pruned_code
+    assert "unused_standalone" not in res.pruned_code
+
+
+def test_rust_docstring_indexing():
+    """Test extracting doc comments (/// and /** */) into ExtractedSymbol.docstring."""
+    code = """
+/// Service managing user sessions.
+pub struct SessionService {
+    timeout: u32,
+}
+
+impl SessionService {
+    /// Validates whether the given session token is active.
+    pub fn is_valid(&self, token: &str) -> bool {
+        !token.is_empty()
+    }
+
+    /**
+     * Terminate the given session.
+     */
+    pub fn terminate(&mut self, token: &str) {
+        // no-op
+    }
+}
+"""
+    index_res = index_code(code, language="rust")
+    assert not index_res.has_syntax_error
+
+    sym_dict = {s.name: s for s in index_res.symbols}
+    assert "SessionService" in sym_dict
+    assert sym_dict["SessionService"].docstring == "Service managing user sessions."
+
+    assert "is_valid" in sym_dict
+    assert sym_dict["is_valid"].docstring == "Validates whether the given session token is active."
+    assert sym_dict["is_valid"].parent_name == "SessionService"
+
+    assert "terminate" in sym_dict
+    assert "Terminate the given session." in (sym_dict["terminate"].docstring or "")
+
+
+def test_rust_call_graph_extraction():
+    """Test call graph extraction for scoped calls, method calls, free functions, and macros."""
+    code = """
+fn execute_flow() {
+    let mut builder = QueryBuilder::new();
+    builder.with_limit(10);
+    run_query();
+    println!("Query complete");
+}
+"""
+    index_res = index_code(code, language="rust")
+    assert not index_res.has_syntax_error
+
+    calls = [(c.caller_name, c.callee_name, c.line_number) for c in index_res.calls]
+    assert ("execute_flow", "new", 3) in calls
+    assert ("execute_flow", "with_limit", 4) in calls
+    assert ("execute_flow", "run_query", 5) in calls
+    assert ("execute_flow", "println", 6) in calls
+
+
 if __name__ == "__main__":
     test_rust_method_pruning_basic()
     test_rust_trait_implementation_closure()
@@ -243,4 +465,11 @@ if __name__ == "__main__":
     test_rust_zero_semantic_match_skeleton()
     test_rust_symbol_indexing()
     test_cli_prune_rust()
-    print("All 9 Rust tests passed successfully!")
+    test_rust_derive_and_outer_attributes_preservation()
+    test_rust_relative_indentation_preservation()
+    test_rust_constructor_companion_closure()
+    test_rust_getter_setter_companion_pairing()
+    test_rust_multi_hop_dependency_closure()
+    test_rust_docstring_indexing()
+    test_rust_call_graph_extraction()
+    print("All 16 Rust tests passed successfully!")

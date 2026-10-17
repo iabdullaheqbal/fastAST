@@ -1,6 +1,6 @@
 //! Dual-Rubric Scoring and Dependency Closure Engine for Rust
 
-use crate::rust::parser::{split_identifier_subtokens, RustNodeKind, RustScopeItem};
+use crate::rust::parser::{split_identifier_subtokens, strip_type_generics, RustNodeKind, RustScopeItem};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,6 +48,21 @@ const FUNCTIONAL_KEYWORDS: &[&str] = &[
     "remove", "add", "subtract", "multiply", "divide", "new", "reset", "clamp",
     "call", "send", "receive", "write", "read",
 ];
+
+fn is_constructor_name(name: &str) -> bool {
+    matches!(
+        name,
+        "new"
+            | "default"
+            | "with_capacity"
+            | "build"
+            | "builder"
+            | "create"
+            | "from"
+            | "try_from"
+            | "init"
+    )
+}
 
 pub fn analyze_query(query: &str) -> QueryProfile {
     let mut raw_tokens = HashSet::new();
@@ -102,7 +117,8 @@ pub fn evaluate_scopes(
     let mut any_semantic_match = false;
 
     for item in items {
-        let (sem_score, dep_score) = compute_item_scores(item, &profile);
+        let sem_score = compute_semantic_score(item, &profile);
+        let dep_score = compute_structural_score(item, &profile);
         let final_score = (1.0 - profile.gate) * sem_score + profile.gate * dep_score;
 
         let keep_full = final_score >= threshold && (sem_score > 0.0 || dep_score > 0.0);
@@ -129,7 +145,9 @@ pub fn evaluate_scopes(
                     decisions[i].keep_full = true;
                     decisions[i].keep_skeleton = false;
                 }
-                RustNodeKind::Trait { .. } | RustNodeKind::Impl { .. } | RustNodeKind::Mod { is_inline: true, .. } => {
+                RustNodeKind::Trait { .. }
+                | RustNodeKind::Impl { .. }
+                | RustNodeKind::Mod { is_inline: true, .. } => {
                     decisions[i].keep_full = false;
                     decisions[i].keep_skeleton = true;
                 }
@@ -148,65 +166,180 @@ pub fn evaluate_scopes(
         };
     }
 
-    // Ancestor Closure: If any item is kept, enclosing impl, trait, or mod is kept as skeleton
-    for i in 0..items.len() {
-        if decisions[i].keep_full {
-            let mut curr = items[i].parent_id;
-            while let Some(pid) = curr {
-                if !decisions[pid].keep_full {
-                    decisions[pid].keep_skeleton = true;
+    // Fixed-Point Transitive Closure Loop
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        // Rule 1: Ancestor Closure: If any item is kept, enclosing impl, trait, or mod is kept as skeleton
+        for i in 0..items.len() {
+            if decisions[i].keep_full || decisions[i].keep_skeleton {
+                let mut curr = items[i].parent_id;
+                while let Some(pid) = curr {
+                    if !decisions[pid].keep_full && !decisions[pid].keep_skeleton {
+                        decisions[pid].keep_skeleton = true;
+                        changed = true;
+                    }
+                    curr = items[pid].parent_id;
                 }
-                curr = items[pid].parent_id;
             }
         }
-    }
 
-    // Companion Closure for Impl and Trait blocks:
-    // If an impl or trait block is kept as a skeleton container, any unkept
-    // methods inside it are stubbed with { todo!() } to preserve the API surface.
-    for i in 0..items.len() {
-        match &items[i].kind {
-            RustNodeKind::Impl { .. } | RustNodeKind::Trait { .. } => {
-                if decisions[i].keep_full || decisions[i].keep_skeleton {
-                    for &cid in &items[i].children_ids {
-                        if !decisions[cid].keep_full {
-                            decisions[cid].keep_skeleton = true;
+        // Rule 2: Impl <-> Struct / Trait linking
+        for i in 0..items.len() {
+            if decisions[i].keep_full || decisions[i].keep_skeleton {
+                if let RustNodeKind::Impl { target_type, trait_name } = &items[i].kind {
+                    let base_type = strip_type_generics(target_type);
+                    for (j, other) in items.iter().enumerate() {
+                        if !decisions[j].keep_full {
+                            match &other.kind {
+                                RustNodeKind::Struct { name } | RustNodeKind::Enum { name, .. } => {
+                                    if name == base_type {
+                                        decisions[j].keep_full = true;
+                                        changed = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    if let Some(tr) = trait_name {
+                        let base_tr = strip_type_generics(tr);
+                        for (j, other) in items.iter().enumerate() {
+                            if !decisions[j].keep_full {
+                                if let RustNodeKind::Trait { name } = &other.kind {
+                                    if name == base_tr {
+                                        decisions[j].keep_full = true;
+                                        changed = true;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
-            _ => {}
         }
-    }
 
-    // Dependency Tracing: If a kept item references a type or function defined in the file
-    let mut referenced_names = HashSet::new();
-    for (i, item) in items.iter().enumerate() {
-        if decisions[i].keep_full || decisions[i].keep_skeleton {
-            for ref_sym in &item.referenced_symbols {
-                referenced_names.insert(ref_sym.clone());
+        // Rule 3: Trait implementation completeness & Impl skeleton companions
+        for i in 0..items.len() {
+            match &items[i].kind {
+                RustNodeKind::Impl { .. } | RustNodeKind::Trait { .. } => {
+                    if decisions[i].keep_full || decisions[i].keep_skeleton {
+                        for &cid in &items[i].children_ids {
+                            if !decisions[cid].keep_full && !decisions[cid].keep_skeleton {
+                                decisions[cid].keep_skeleton = true;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
-            if let RustNodeKind::Impl { target_type, trait_name } = &item.kind {
-                referenced_names.insert(target_type.clone());
-                if let Some(tr) = trait_name {
-                    referenced_names.insert(tr.clone());
+        }
+
+        // Rule 4: If a struct/enum is kept full, find inherent impl blocks and keep
+        // constructor methods as skeleton so consumers know how to instantiate it
+        for i in 0..items.len() {
+            if decisions[i].keep_full {
+                let struct_name = match &items[i].kind {
+                    RustNodeKind::Struct { name } | RustNodeKind::Enum { name, .. } => name.clone(),
+                    _ => continue,
+                };
+
+                for j in 0..items.len() {
+                    if let RustNodeKind::Impl { target_type, trait_name: None } = &items[j].kind {
+                        if strip_type_generics(target_type) == struct_name {
+                            if !decisions[j].keep_full && !decisions[j].keep_skeleton {
+                                decisions[j].keep_skeleton = true;
+                                changed = true;
+                            }
+                            for &cid in &items[j].children_ids {
+                                if let RustNodeKind::Function { name, .. } = &items[cid].kind {
+                                    if is_constructor_name(name) && !decisions[cid].keep_full && !decisions[cid].keep_skeleton {
+                                        decisions[cid].keep_skeleton = true;
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-    }
 
-    for (i, item) in items.iter().enumerate() {
-        if !decisions[i].keep_full {
-            let matches_dep = item.defined_symbols.iter().any(|d| referenced_names.contains(d));
-            if matches_dep {
-                match &item.kind {
-                    RustNodeKind::Struct { .. } | RustNodeKind::Enum { .. } | RustNodeKind::Trait { .. } | RustNodeKind::Const { .. } | RustNodeKind::Static { .. } => {
-                        decisions[i].keep_full = true;
+        // Rule 5: Companion Getter/Setter Pairing
+        for i in 0..items.len() {
+            if decisions[i].keep_full {
+                if let RustNodeKind::Function { name: fn_name, is_method: true, .. } = &items[i].kind {
+                    if let Some(pid) = items[i].parent_id {
+                        let companion_name = if fn_name.starts_with("set_") {
+                            Some(fn_name.strip_prefix("set_").unwrap().to_string())
+                        } else if fn_name.starts_with("get_") {
+                            Some(format!("set_{}", fn_name.strip_prefix("get_").unwrap()))
+                        } else {
+                            Some(format!("set_{}", fn_name))
+                        };
+
+                        if let Some(ref comp) = companion_name {
+                            for &cid in &items[pid].children_ids {
+                                if cid != i && !decisions[cid].keep_full && !decisions[cid].keep_skeleton {
+                                    if let RustNodeKind::Function { name: c_name, .. } = &items[cid].kind {
+                                        if c_name == comp || (comp.starts_with("set_") && c_name == comp.strip_prefix("set_").unwrap()) {
+                                            decisions[cid].keep_skeleton = true;
+                                            changed = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    RustNodeKind::Use => {
-                        decisions[i].keep_full = true;
+                }
+            }
+        }
+
+        // Rule 6: Transitive Symbol Dependency Tracing
+        let mut referenced_names = HashSet::new();
+        for (i, item) in items.iter().enumerate() {
+            if decisions[i].keep_full || decisions[i].keep_skeleton {
+                for ref_sym in &item.referenced_symbols {
+                    referenced_names.insert(ref_sym.clone());
+                    referenced_names.insert(strip_type_generics(ref_sym).to_string());
+                }
+                if let RustNodeKind::Impl { target_type, trait_name } = &item.kind {
+                    referenced_names.insert(target_type.clone());
+                    referenced_names.insert(strip_type_generics(target_type).to_string());
+                    if let Some(tr) = trait_name {
+                        referenced_names.insert(tr.clone());
+                        referenced_names.insert(strip_type_generics(tr).to_string());
                     }
-                    _ => {}
+                }
+            }
+        }
+
+        for (i, item) in items.iter().enumerate() {
+            if !decisions[i].keep_full {
+                let matches_dep = item.defined_symbols.iter().any(|d| {
+                    referenced_names.contains(d) || referenced_names.contains(strip_type_generics(d))
+                });
+                if matches_dep {
+                    match &item.kind {
+                        RustNodeKind::Struct { .. }
+                        | RustNodeKind::Enum { .. }
+                        | RustNodeKind::Trait { .. }
+                        | RustNodeKind::Const { .. }
+                        | RustNodeKind::Static { .. }
+                        | RustNodeKind::TypeAlias { .. }
+                        | RustNodeKind::Use => {
+                            decisions[i].keep_full = true;
+                            changed = true;
+                        }
+                        RustNodeKind::Function { is_method: false, .. } => {
+                            decisions[i].keep_full = true;
+                            changed = true;
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -219,29 +352,70 @@ pub fn evaluate_scopes(
     }
 }
 
-fn compute_item_scores(item: &RustScopeItem, profile: &QueryProfile) -> (f64, f64) {
+fn compute_semantic_score(item: &RustScopeItem, profile: &QueryProfile) -> f64 {
     if profile.raw_tokens.is_empty() {
-        return (0.0, 0.0);
+        return 0.0;
     }
 
-    let mut defined_hits = 0;
-    let mut sig_hits = 0;
-    let mut body_hits = 0;
+    let mut best_score: f64 = 0.0;
 
-    for qt in &profile.all_tokens {
-        if item.defined_symbols.iter().any(|d| d.to_lowercase() == *qt) {
-            defined_hits += 1;
-        } else if item.signature_tokens.iter().any(|s| s.to_lowercase() == *qt) {
-            sig_hits += 1;
-        } else if item.tokens.iter().any(|t| t.to_lowercase() == *qt) {
-            body_hits += 1;
+    // 1. Direct name match against defined symbols
+    for d in &item.defined_symbols {
+        let d_low = d.to_lowercase();
+        for q in &profile.raw_tokens {
+            if d_low == *q {
+                best_score = best_score.max(0.95);
+            }
+        }
+
+        let d_subtokens = split_identifier_subtokens(d);
+        let mut sub_hits = 0;
+        for sub in &d_subtokens {
+            if profile.all_tokens.contains(sub) {
+                sub_hits += 1;
+            }
+        }
+        if !d_subtokens.is_empty() && sub_hits > 0 {
+            let coverage = sub_hits as f64 / profile.raw_tokens.len().max(1) as f64;
+            let sub_score = 0.70 + 0.20 * coverage.min(1.0);
+            best_score = best_score.max(sub_score);
         }
     }
 
-    let total_q = profile.raw_tokens.len().max(1) as f64;
-    let sem_score = ((defined_hits as f64 * 1.5 + sig_hits as f64 * 1.0 + body_hits as f64 * 0.4) / total_q).min(1.0);
+    // 2. Signature match
+    let mut sig_hits = 0;
+    for st in &item.signature_tokens {
+        if profile.all_tokens.contains(st) {
+            sig_hits += 1;
+        }
+    }
+    if sig_hits > 0 {
+        let sig_ratio = (sig_hits as f64 / profile.all_tokens.len().max(1) as f64).min(1.0);
+        best_score = best_score.max(0.55 + 0.25 * sig_ratio);
+    }
 
-    let dep_score = match &item.kind {
+    // 3. Body token match (intent-gated)
+    let mut body_hits = 0;
+    for bt in &item.tokens {
+        if profile.all_tokens.contains(bt) {
+            body_hits += 1;
+        }
+    }
+    if body_hits > 0 {
+        let body_ratio = (body_hits as f64 / profile.all_tokens.len().max(1) as f64).min(1.0);
+        let max_body_score = match profile.intent {
+            QueryIntent::Functional => 0.40,
+            QueryIntent::Structural => 0.60,
+            QueryIntent::Balanced => 0.50,
+        };
+        best_score = best_score.max(0.20 + (max_body_score - 0.20) * body_ratio);
+    }
+
+    best_score.min(1.0)
+}
+
+fn compute_structural_score(item: &RustScopeItem, profile: &QueryProfile) -> f64 {
+    match &item.kind {
         RustNodeKind::Use => {
             if profile.intent == QueryIntent::Structural {
                 0.85
@@ -266,7 +440,5 @@ fn compute_item_scores(item: &RustScopeItem, profile: &QueryProfile) -> (f64, f6
         RustNodeKind::Const { .. } | RustNodeKind::Static { .. } => 0.30,
         RustNodeKind::Function { .. } => 0.20,
         _ => 0.0,
-    };
-
-    (sem_score, dep_score)
+    }
 }
