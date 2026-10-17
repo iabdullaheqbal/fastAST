@@ -58,6 +58,8 @@ def detect_language_from_path(path: Path) -> Optional[str]:
         "htm": "html",
         "css": "css",
         "rs": "rust",
+        "json": "json",
+        "toml": "toml",
     }
     return mapping.get(ext)
 
@@ -92,12 +94,26 @@ def run_prune(
 
     # Validate output syntax
     syntax_ok = not res.has_syntax_error
-    if syntax_ok and (detected_lang in ("python", None)):
-        try:
-            ast.parse(res.pruned_code)
-            syntax_ok = True
-        except SyntaxError:
-            syntax_ok = False
+    if syntax_ok:
+        if detected_lang in ("python", None):
+            try:
+                ast.parse(res.pruned_code)
+                syntax_ok = True
+            except SyntaxError:
+                syntax_ok = False
+        elif detected_lang == "json":
+            try:
+                json.loads(res.pruned_code)
+                syntax_ok = True
+            except Exception:
+                syntax_ok = False
+        elif detected_lang == "toml":
+            try:
+                import tomllib
+                tomllib.loads(res.pruned_code)
+                syntax_ok = True
+            except Exception:
+                syntax_ok = False
 
     line_savings = 0.0
     if res.total_lines > 0:

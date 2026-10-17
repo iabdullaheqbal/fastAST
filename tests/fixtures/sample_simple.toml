@@ -1,0 +1,36 @@
+# FastAST Package Configuration
+[package]
+name = "fastast"
+version = "0.1.0"
+edition = "2021"
+description = "Fast AST context engine for coding agents"
+license = "Apache-2.0"
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["extension-module", "abi3-py310"] }
+tree-sitter = "0.22"
+tree-sitter-python = "0.21"
+tree-sitter-rust = "0.21"
+serde_json = "1.0"
+toml = "1.1"
+tiktoken-rs = "0.5"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[[bin]]
+name = "fastast-cli"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "fastast-bench"
+path = "src/bin/bench.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

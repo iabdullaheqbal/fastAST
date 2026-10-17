@@ -404,6 +404,54 @@ class TestLanguageDetection:
         result = prune_file(code, "body", language="css")
         assert result.has_syntax_error is False
 
+    def test_language_detection_json(self):
+        """Test JSON file detection"""
+        code = '{"name": "fastast"}\n'
+        result = prune_file(code, "name", language="json")
+        assert result.has_syntax_error is False
+
+    def test_language_detection_toml(self):
+        """Test TOML file detection"""
+        code = '[package]\nname = "fastast"\n'
+        result = prune_file(code, "name", language="toml")
+        assert result.has_syntax_error is False
+
+
+class TestJSONSupport:
+    """Test JSON language support"""
+
+    def test_prune_json_file(self):
+        code = '{"name": "fastast", "scripts": {"build": "tsc", "test": "jest"}}'
+        result = prune_file(code, "scripts test", threshold=0.3, language="json")
+        assert result.has_syntax_error is False
+        assert result.original_tokens > 0
+        assert "test" in result.pruned_code
+
+    def test_index_json_file(self):
+        code = '{"name": "fastast", "dependencies": {"express": "^4.19"}}'
+        result = index_code(code, language="json")
+        assert result.has_syntax_error is False
+        assert len(result.symbols) > 0
+        assert len(result.imports) > 0
+
+
+class TestTOMLSupport:
+    """Test TOML language support"""
+
+    def test_prune_toml_file(self):
+        code = '[package]\nname = "fastast"\n[dependencies]\npyo3 = "0.21"\nserde = "1.0"'
+        result = prune_file(code, "dependencies pyo3", threshold=0.3, language="toml")
+        assert result.has_syntax_error is False
+        assert result.original_tokens > 0
+        assert "pyo3" in result.pruned_code
+
+    def test_index_toml_file(self):
+        code = '[package]\nname = "fastast"\n[dependencies]\npyo3 = "0.21"'
+        result = index_code(code, language="toml")
+        assert result.has_syntax_error is False
+        assert len(result.symbols) > 0
+        assert len(result.imports) > 0
+
 
 class TestErrorHandling:
     """Test error handling for invalid languages"""
@@ -427,12 +475,21 @@ class TestErrorHandling:
         # Invalid Java syntax
         code = "public class Broken {"
         result = prune_file(code, "Broken", language="java")
-        # Should handle gracefully without raising
         assert isinstance(result, type(result))
+
+        # Invalid JSON syntax
+        code = '{"broken": '
+        result = prune_file(code, "broken", language="json")
+        assert result.has_syntax_error is True
+
+        # Invalid TOML syntax
+        code = '[broken'
+        result = prune_file(code, "broken", language="toml")
+        assert result.has_syntax_error is True
 
     def test_empty_code_handling(self):
         """Test handling of empty code"""
-        for lang in ["python", "java", "javascript", "typescript", "html", "css", "rust"]:
+        for lang in ["python", "java", "javascript", "typescript", "html", "css", "rust", "json", "toml"]:
             result = prune_file("", "query", language=lang)
             assert result.pruned_tokens == 0
             assert result.kept_lines == 0
@@ -450,6 +507,8 @@ if __name__ == "__main__":
             TestHTMLSupport,
             TestCSSSupport,
             TestRustSupport,
+            TestJSONSupport,
+            TestTOMLSupport,
             TestLanguageDetection,
             TestErrorHandling,
         ]

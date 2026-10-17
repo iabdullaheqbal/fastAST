@@ -59,7 +59,7 @@ pub fn collect_scopes_multi(
         Language::JavaScript | Language::TypeScript => collect_js_scopes(tree, source_bytes, lines),
         Language::HTML => collect_html_scopes(tree, source_bytes, lines),
         Language::CSS => collect_css_scopes(tree, source_bytes, lines),
-        Language::Rust => Vec::new(),
+        Language::Rust | Language::JSON | Language::TOML => Vec::new(),
     }
 }
 

@@ -10,6 +10,8 @@ pub enum Language {
     HTML,
     CSS,
     Rust,
+    JSON,
+    TOML,
 }
 
 impl Language {
@@ -23,6 +25,8 @@ impl Language {
             "html" | "htm" => Some(Language::HTML),
             "css" => Some(Language::CSS),
             "rs" => Some(Language::Rust),
+            "json" => Some(Language::JSON),
+            "toml" => Some(Language::TOML),
             _ => None,
         }
     }
@@ -41,6 +45,8 @@ impl Language {
             Language::Python => "pass",
             Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust => "/* empty */",
             Language::HTML => "<!-- empty -->",
+            Language::JSON => "{}",
+            Language::TOML => "",
         }
     }
 
@@ -48,8 +54,9 @@ impl Language {
     pub fn block_start(&self) -> Option<char> {
         match self {
             Language::Python => None, // Python uses indentation
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust => Some('{'),
+            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust | Language::JSON => Some('{'),
             Language::HTML => Some('<'),
+            Language::TOML => Some('['),
         }
     }
 
@@ -57,8 +64,9 @@ impl Language {
     pub fn block_end(&self) -> Option<char> {
         match self {
             Language::Python => None,
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust => Some('}'),
+            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust | Language::JSON => Some('}'),
             Language::HTML => Some('>'),
+            Language::TOML => Some(']'),
         }
     }
 
@@ -72,6 +80,8 @@ impl Language {
             Language::HTML => tree_sitter_html::language(),
             Language::CSS => tree_sitter_css::language(),
             Language::Rust => tree_sitter_rust::language(),
+            Language::JSON => panic!("JSON uses native serde_json parser instead of Tree-sitter"),
+            Language::TOML => panic!("TOML uses native toml parser instead of Tree-sitter"),
         }
     }
 
@@ -79,7 +89,7 @@ impl Language {
     pub fn uses_braces(&self) -> bool {
         matches!(
             self,
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust
+            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust | Language::JSON
         )
     }
 
@@ -103,6 +113,8 @@ impl Language {
             Language::HTML => "HTML",
             Language::CSS => "CSS",
             Language::Rust => "Rust",
+            Language::JSON => "JSON",
+            Language::TOML => "TOML",
         }
     }
 }
@@ -122,6 +134,8 @@ mod tests {
         assert_eq!(Language::from_extension("htm"), Some(Language::HTML));
         assert_eq!(Language::from_extension("css"), Some(Language::CSS));
         assert_eq!(Language::from_extension("rs"), Some(Language::Rust));
+        assert_eq!(Language::from_extension("json"), Some(Language::JSON));
+        assert_eq!(Language::from_extension("toml"), Some(Language::TOML));
         assert_eq!(Language::from_extension("unknown"), None);
     }
 
@@ -150,6 +164,14 @@ mod tests {
         assert_eq!(
             Language::from_path("lib.rs"),
             Some(Language::Rust)
+        );
+        assert_eq!(
+            Language::from_path("package.json"),
+            Some(Language::JSON)
+        );
+        assert_eq!(
+            Language::from_path("Cargo.toml"),
+            Some(Language::TOML)
         );
     }
 }

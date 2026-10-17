@@ -3,12 +3,14 @@ pub mod html;
 pub mod indexer;
 pub mod java;
 pub mod javascript;
+pub mod json;
 pub mod language;
 pub mod multi_parser;
 pub mod parser;
 pub mod repair;
 pub mod rust;
 pub mod scorer;
+pub mod toml;
 pub mod typescript;
 
 pub use indexer::{ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult};
@@ -94,9 +96,11 @@ pub fn prune_file(
             "html" | "htm" => Language::HTML,
             "css" => Language::CSS,
             "rust" | "rs" => Language::Rust,
+            "json" => Language::JSON,
+            "toml" => Language::TOML,
             _ => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("Unsupported language: {}. Supported: python, java, javascript, jsx, typescript, tsx, html, css, rust", lang_str)
+                    format!("Unsupported language: {}. Supported: python, java, javascript, jsx, typescript, tsx, html, css, rust, json, toml", lang_str)
                 ));
             }
         }
@@ -190,6 +194,14 @@ pub fn prune_file(
             // Dedicated Rust pruning engine
             rust::prune_file(code_text, focus_query, threshold)
         }
+        Language::JSON => {
+            // Dedicated JSON pruning engine
+            json::prune_file(code_text, focus_query, threshold)
+        }
+        Language::TOML => {
+            // Dedicated TOML pruning engine
+            toml::prune_file(code_text, focus_query, threshold)
+        }
     }
 }
 
@@ -206,6 +218,8 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
             "html" | "htm" => Language::HTML,
             "css" => Language::CSS,
             "rust" | "rs" => Language::Rust,
+            "json" => Language::JSON,
+            "toml" => Language::TOML,
             _ => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                     format!("Unsupported language: {}", lang_str)
@@ -245,6 +259,8 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
         Language::HTML => html::index_code(code_text),
         Language::CSS => css::index_code(code_text),
         Language::Rust => rust::index_code(code_text),
+        Language::JSON => json::index_code(code_text),
+        Language::TOML => toml::index_code(code_text),
     }
 }
 
