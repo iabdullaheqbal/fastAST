@@ -6,6 +6,7 @@ pub mod multi_parser;
 pub mod parser;
 pub mod repair;
 pub mod scorer;
+pub mod typescript;
 
 pub use indexer::{ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult};
 pub use language::Language;
@@ -86,12 +87,12 @@ pub fn prune_file(
             "python" | "py" => Language::Python,
             "java" => Language::Java,
             "javascript" | "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
-            "typescript" | "ts" => Language::TypeScript,
+            "typescript" | "ts" | "tsx" | "mts" | "cts" => Language::TypeScript,
             "html" | "htm" => Language::HTML,
             "css" => Language::CSS,
             _ => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("Unsupported language: {}. Supported: python, java, javascript, jsx, typescript, html, css", lang_str)
+                    format!("Unsupported language: {}. Supported: python, java, javascript, jsx, typescript, tsx, html, css", lang_str)
                 ));
             }
         }
@@ -168,6 +169,10 @@ pub fn prune_file(
         Language::JavaScript => {
             // Dedicated JavaScript + JSX pruning engine
             javascript::prune_file(code_text, focus_query, threshold)
+        }
+        Language::TypeScript => {
+            // Dedicated TypeScript + TSX pruning engine
+            typescript::prune_file(code_text, focus_query, threshold)
         }
         _ => {
             // For other languages (JS, TS, HTML, CSS), use simplified multi-language parser
@@ -352,7 +357,7 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
             "python" | "py" => Language::Python,
             "java" => Language::Java,
             "javascript" | "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
-            "typescript" | "ts" => Language::TypeScript,
+            "typescript" | "ts" | "tsx" | "mts" | "cts" => Language::TypeScript,
             "html" | "htm" => Language::HTML,
             "css" => Language::CSS,
             _ => {
@@ -392,6 +397,11 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
     // For JavaScript + JSX, use dedicated indexer
     if detected_lang == Language::JavaScript {
         return javascript::index_code(code_text);
+    }
+
+    // For TypeScript + TSX, use dedicated indexer
+    if detected_lang == Language::TypeScript {
+        return typescript::index_code(code_text);
     }
 
     // For other languages, use simplified multi-language parser

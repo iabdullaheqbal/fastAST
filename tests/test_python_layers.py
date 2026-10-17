@@ -5,7 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    pytest = None
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -184,7 +187,10 @@ def test_server_imports():
             srv = server.create_server()
             assert srv is not None
     except ImportError as e:
-        pytest.skip(f"Server module import failed: {e}")
+        if pytest:
+            pytest.skip(f"Server module import failed: {e}")
+        else:
+            print(f"Skipping server tests: {e}")
 
 
 def test_cli_imports():
@@ -195,3 +201,16 @@ def test_cli_imports():
     assert hasattr(cli, 'cmd_index')
     assert hasattr(cli, 'cmd_symbols')
     assert hasattr(cli, 'cmd_calls')
+
+
+if __name__ == "__main__":
+    test_cli_prune_json_output()
+    test_cli_prune_human_readable()
+    test_cli_index_command()
+    test_cli_symbols_command()
+    test_cli_calls_command()
+    test_cli_show_code_flag()
+    test_cli_nonexistent_file()
+    test_server_imports()
+    test_cli_imports()
+    print("All Python layer tests passed successfully!")
