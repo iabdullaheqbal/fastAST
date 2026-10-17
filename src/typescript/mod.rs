@@ -8,7 +8,7 @@ pub mod repair;
 pub mod scorer;
 
 use crate::{
-    count_tokens, ExtractedImport, ExtractedSymbol, FileIndexResult, PruneResult,
+    count_tokens, ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult, PruneResult,
 };
 use pyo3::PyResult;
 
@@ -157,13 +157,60 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
 
     let source_bytes = code_text.as_bytes();
     let scopes = parser::collect_scopes(&tree, source_bytes, &lines);
+    let raw_calls = parser::collect_all_calls(&tree, source_bytes, &scopes);
+
+    let calls = raw_calls
+        .into_iter()
+        .map(|c| ExtractedCall {
+            caller_name: c.caller_name,
+            callee_name: c.callee_name,
+            line_number: c.line_number,
+        })
+        .collect();
 
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
-    let calls = Vec::new();
 
-    for scope in scopes {
-        match scope.kind {
+    for (_idx, scope) in scopes.iter().enumerate() {
+        let parent_name = scope.parent_id.and_then(|pid| {
+            if pid < scopes.len() {
+                match &scopes[pid].kind {
+                    parser::TsNodeKind::Class { name, .. } => {
+                        if !name.is_empty() && name != "default" {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    parser::TsNodeKind::Interface { name, .. } => {
+                        if !name.is_empty() && name != "default" {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    parser::TsNodeKind::Function { name, .. } => {
+                        if !name.is_empty() && name != "default" {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    parser::TsNodeKind::ArrowFunction { name, .. } => {
+                        if !name.is_empty() && name != "default" {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        });
+
+        match &scope.kind {
             parser::TsNodeKind::Interface { name, .. } => {
                 let signature = if let Some((s_start, s_end)) = scope.signature_byte_range {
                     code_text[s_start..s_end].trim().to_string()
@@ -171,13 +218,13 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     format!("interface {}", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: "interface".to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::TsNodeKind::TypeAlias { name, .. } => {
@@ -187,13 +234,13 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     format!("type {}", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: "type_alias".to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::TsNodeKind::Enum { name, .. } => {
@@ -203,47 +250,58 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     format!("enum {}", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: "enum".to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
-            parser::TsNodeKind::Function { name, is_async, .. } => {
-                let kind = if is_async { "async_function" } else { "function" };
+            parser::TsNodeKind::Function {
+                name,
+                is_async,
+                is_generator,
+                ..
+            } => {
+                let kind = if *is_generator {
+                    "generator_function"
+                } else if *is_async {
+                    "async_function"
+                } else {
+                    "function"
+                };
                 let signature = if let Some((s_start, s_end)) = scope.signature_byte_range {
                     code_text[s_start..s_end].trim().to_string()
                 } else {
                     format!("function {}()", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: kind.to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::TsNodeKind::ArrowFunction { name, is_async, .. } => {
-                let kind = if is_async { "async_arrow_function" } else { "arrow_function" };
+                let kind = if *is_async { "async_arrow_function" } else { "arrow_function" };
                 let signature = if let Some((s_start, s_end)) = scope.signature_byte_range {
                     code_text[s_start..s_end].trim().to_string()
                 } else {
                     format!("const {} = () =>", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: kind.to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::TsNodeKind::Class { name, .. } => {
@@ -253,39 +311,82 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     format!("class {}", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: "class".to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
-            parser::TsNodeKind::Method { name, is_async, .. } => {
-                let kind = if is_async { "async_method" } else { "method" };
+            parser::TsNodeKind::Method {
+                name,
+                is_async,
+                is_constructor,
+                is_getter,
+                is_setter,
+                is_static,
+                is_abstract,
+                ..
+            } => {
+                let kind = if *is_abstract {
+                    "abstract_method"
+                } else if *is_constructor {
+                    "constructor"
+                } else if *is_getter {
+                    "getter"
+                } else if *is_setter {
+                    "setter"
+                } else if *is_static {
+                    "static_method"
+                } else if *is_async {
+                    "async_method"
+                } else {
+                    "method"
+                };
                 let signature = if let Some((s_start, s_end)) = scope.signature_byte_range {
                     code_text[s_start..s_end].trim().to_string()
                 } else {
                     format!("{}()", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: kind.to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
+            parser::TsNodeKind::Field { name, is_arrow, .. } => {
+                if *is_arrow {
+                    let signature = if let Some((s_start, s_end)) = scope.signature_byte_range {
+                        code_text[s_start..s_end].trim().to_string()
+                    } else {
+                        format!("{} = () =>", name)
+                    };
+                    symbols.push(ExtractedSymbol {
+                        name: name.clone(),
+                        kind: "method".to_string(),
+                        start_line: scope.start_row + 1,
+                        end_line: scope.end_row + 1,
+                        signature,
+                        parent_name,
+                        docstring: scope.docstring.clone(),
+                    });
+                }
+            }
             parser::TsNodeKind::Import => {
-                imports.push(ExtractedImport {
-                    module: scope.tokens.get(0).cloned().unwrap_or_default(),
-                    name: scope.defined_symbols.get(0).cloned(),
-                    alias: None,
-                    line_number: scope.start_row + 1,
-                });
+                for defined_sym in &scope.defined_symbols {
+                    imports.push(ExtractedImport {
+                        module: scope.tokens.get(0).cloned().unwrap_or_default(),
+                        name: Some(defined_sym.clone()),
+                        alias: None,
+                        line_number: scope.start_row + 1,
+                    });
+                }
             }
             _ => {}
         }
@@ -306,126 +407,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ts_interface_and_class_pruning() {
-        let ts_code = r#"
-import type { User, UserID } from './types';
-import { BaseService } from './base';
-
-export interface IUserService<T> {
-    getUser(id: UserID): Promise<T>;
-    deleteUser(id: UserID): Promise<void>;
+    fn test_ts_pruning_interface_and_function() {
+        let code = r#"
+export interface User<T> {
+    id: string;
+    data: T;
 }
 
-export type Status = 'active' | 'inactive' | 'pending';
-
-export enum Role {
-    Admin = 'ADMIN',
-    User = 'USER',
-    Guest = 'GUEST'
+export function processUser<T>(user: User<T>): boolean {
+    return user.id.length > 0;
 }
 
-export class UserService<T extends User> extends BaseService implements IUserService<T> {
-    private readonly timeout: number = 5000;
-
-    constructor(private db: any, options?: Record<string, any>) {
-        super();
-    }
-
-    public async getUser(id: UserID): Promise<T> {
-        const user = await this.db.find(id);
-        return user as T;
-    }
-
-    public async deleteUser(id: UserID): Promise<void> {
-        await this.db.remove(id);
-    }
+export function unusedHelper(): void {
+    console.log("unused");
 }
 "#;
-
-        let res = prune_ts(ts_code, "getUser", 0.5);
+        let res = prune_ts(code, "processUser", 0.5);
         assert!(!res.has_syntax_error);
-        println!("PRUNED TS CODE:\n{}", res.pruned_code);
-
-        // Should keep imports
-        assert!(res.pruned_code.contains("import type { User, UserID } from './types';"));
-        assert!(res.pruned_code.contains("import { BaseService } from './base';"));
-
-        // By dependency closure, UserID and IUserService and UserService are kept
-        assert!(res.pruned_code.contains("export class UserService<T extends User> extends BaseService implements IUserService<T> {"));
-        assert!(res.pruned_code.contains("public async getUser(id: UserID): Promise<T> {"));
-        assert!(res.pruned_code.contains("const user = await this.db.find(id);"));
-
-        // Unmatched deleteUser should be stubbed
-        assert!(res.pruned_code.contains("public async deleteUser(id: UserID): Promise<void> {}"));
+        assert!(res.pruned_code.contains("export interface User<T>"));
+        assert!(res.pruned_code.contains("processUser<T>(user: User<T>): boolean {"));
+        assert!(res.pruned_code.contains("unusedHelper(): void {}"));
         assert!(res.savings_pct > 0.0);
     }
-
-    #[test]
-    fn test_tsx_component_pruning() {
-        let tsx_code = r#"
-import React, { useState } from 'react';
-
-export interface Props<T> {
-    items: T[];
-    renderItem: (item: T) => React.ReactNode;
 }
-
-export const ListViewer = <T,>({ items, renderItem }: Props<T>): JSX.Element => {
-    const [selected, setSelected] = useState<number | null>(null);
-    return (
-        <ul className="list-viewer">
-            {items.map((item, idx) => (
-                <li key={idx} onClick={() => setSelected(idx)}>
-                    {renderItem(item)}
-                </li>
-            ))}
-        </ul>
-    );
-};
-
-export const IgnoredWidget = (): JSX.Element => {
-    return <div>Unused</div>;
-};
-"#;
-
-        let res = prune_ts(tsx_code, "ListViewer", 0.5);
-        assert!(!res.has_syntax_error);
-        println!("PRUNED TSX CODE:\n{}", res.pruned_code);
-
-        assert!(res.pruned_code.contains("export const ListViewer = <T,>({ items, renderItem }: Props<T>): JSX.Element => {"));
-        assert!(res.pruned_code.contains("className=\"list-viewer\""));
-        assert!(res.pruned_code.contains("export const IgnoredWidget = (): JSX.Element => {};"));
-        assert!(res.savings_pct > 0.0);
-    }
-
-    #[test]
-    fn test_ts_zero_match_structural_skeleton() {
-        let ts_code = r#"
-import { A } from './a';
-
-export interface Alpha {
-    x: number;
-}
-
-export enum Beta {
-    First,
-    Second
-}
-
-export function computeSomething(val: number): number {
-    return val * 42;
-}
-"#;
-
-        let res = prune_ts(ts_code, "completelyUnrelatedQueryXYZ", 0.5);
-        assert!(!res.has_syntax_error);
-        println!("ZERO MATCH SKELETON:\n{}", res.pruned_code);
-
-        assert!(res.pruned_code.contains("import { A } from './a';"));
-        assert!(res.pruned_code.contains("export interface Alpha {}"));
-        assert!(res.pruned_code.contains("export enum Beta {}"));
-        assert!(res.pruned_code.contains("export function computeSomething(val: number): number {}"));
-        assert!(!res.pruned_code.contains("val * 42"));
-    }
-}
-

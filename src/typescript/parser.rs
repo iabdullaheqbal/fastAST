@@ -35,6 +35,7 @@ pub enum TsNodeKind {
     Enum {
         name: String,
         is_export: bool,
+        is_const: bool,
     },
     Function {
         name: String,
@@ -47,6 +48,7 @@ pub enum TsNodeKind {
         name: String,
         is_async: bool,
         is_export: bool,
+        is_default: bool,
         is_concise: bool,
     },
     Class {
@@ -54,18 +56,35 @@ pub enum TsNodeKind {
         heritage: Option<String>,
         is_export: bool,
         is_default: bool,
+        is_abstract: bool,
     },
     Method {
         name: String,
         is_async: bool,
+        is_generator: bool,
         is_static: bool,
         accessibility: Option<String>,
         is_getter: bool,
         is_setter: bool,
+        is_constructor: bool,
+        is_abstract: bool,
+    },
+    Field {
+        name: String,
+        is_static: bool,
+        is_arrow: bool,
+        accessibility: Option<String>,
     },
     Statement,
     Block,
     Other,
+}
+
+#[derive(Debug, Clone)]
+pub struct TsCall {
+    pub caller_name: Option<String>,
+    pub callee_name: String,
+    pub line_number: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +109,7 @@ pub struct TsScopeItem {
     /// Referenced identifiers in this scope
     pub referenced_symbols: Vec<String>,
     pub children_ids: Vec<usize>,
+    pub docstring: Option<String>,
 }
 
 pub fn parse_ast(code: &str) -> Result<Tree, String> {
@@ -118,6 +138,72 @@ pub fn collect_scopes(tree: &Tree, source_bytes: &[u8], lines: &[&str]) -> Vec<T
     let root = tree.root_node();
     walk_node(root, source_bytes, lines, None, &mut items);
     items
+}
+
+pub fn collect_all_calls(tree: &Tree, source_bytes: &[u8], scopes: &[TsScopeItem]) -> Vec<TsCall> {
+    let mut calls = Vec::new();
+    let root = tree.root_node();
+    walk_calls_recursive(root, source_bytes, None, scopes, &mut calls);
+    calls
+}
+
+fn walk_calls_recursive(
+    node: Node,
+    source_bytes: &[u8],
+    current_caller: Option<&str>,
+    scopes: &[TsScopeItem],
+    calls: &mut Vec<TsCall>,
+) {
+    let mut active_caller = current_caller;
+
+    let node_start = node.start_byte();
+    let node_end = node.end_byte();
+    for scope in scopes {
+        if scope.start_byte == node_start && scope.end_byte == node_end {
+            match &scope.kind {
+                TsNodeKind::Function { name, .. }
+                | TsNodeKind::ArrowFunction { name, .. }
+                | TsNodeKind::Method { name, .. } => {
+                    if !name.is_empty() && name != "default" {
+                        active_caller = Some(name.as_str());
+                    }
+                }
+                _ => {}
+            }
+            break;
+        }
+    }
+
+    if node.kind() == "call_expression" {
+        if let Some(func_node) = node.child_by_field_name("function") {
+            let callee_name = match func_node.kind() {
+                "identifier" => func_node.utf8_text(source_bytes).ok().map(|s| s.to_string()),
+                "member_expression" => {
+                    if let Some(prop) = func_node.child_by_field_name("property") {
+                        prop.utf8_text(source_bytes).ok().map(|s| s.to_string())
+                    } else {
+                        func_node.utf8_text(source_bytes).ok().map(|s| s.to_string())
+                    }
+                }
+                _ => None,
+            };
+
+            if let Some(name) = callee_name {
+                if !name.is_empty() {
+                    calls.push(TsCall {
+                        caller_name: active_caller.map(|s| s.to_string()),
+                        callee_name: name,
+                        line_number: node.start_position().row + 1,
+                    });
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_calls_recursive(child, source_bytes, active_caller, scopes, calls);
+    }
 }
 
 fn walk_node(
@@ -155,6 +241,7 @@ fn walk_node(
                 defined_symbols: defined,
                 referenced_symbols: Vec::new(),
                 children_ids: Vec::new(),
+                docstring: None,
             });
 
             if let Some(pid) = parent_id {
@@ -165,25 +252,34 @@ fn walk_node(
         "export_statement" => {
             let mut is_default = false;
             let mut decl_node = None;
+            let mut id_export = None;
+            let mut named_clause = None;
+
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "default" {
                     is_default = true;
                 } else if is_declaration_node(child.kind()) {
                     decl_node = Some(child);
+                } else if child.kind() == "identifier" {
+                    id_export = Some(child);
+                } else if child.kind() == "export_clause" || child.kind() == "named_exports" {
+                    named_clause = Some(child);
                 }
             }
 
             if let Some(decl) = decl_node {
                 process_declaration(decl, Some(node), is_default, source_bytes, lines, parent_id, items);
                 return;
-            } else {
-                // Named export like `export { A, B };` or `export type { X };`
+            } else if is_default && id_export.is_some() {
+                // e.g. export default App;
+                let id_node = id_export.unwrap();
+                let sym_name = id_node.utf8_text(source_bytes).unwrap_or("").to_string();
                 let start_byte = node.start_byte();
                 let end_byte = node.end_byte();
                 let start_row = node.start_position().row;
                 let end_row = node.end_position().row;
-                let tokens = extract_all_identifiers(node, source_bytes);
+                let tokens = vec![sym_name.to_lowercase()];
 
                 items.push(TsScopeItem {
                     id: current_id,
@@ -198,8 +294,71 @@ fn walk_node(
                     signature_tokens: tokens.clone(),
                     tokens: tokens.clone(),
                     defined_symbols: Vec::new(),
-                    referenced_symbols: tokens,
+                    referenced_symbols: vec![sym_name],
                     children_ids: Vec::new(),
+                    docstring: None,
+                });
+
+                if let Some(pid) = parent_id {
+                    items[pid].children_ids.push(current_id);
+                }
+                return;
+            } else {
+                // Named export like `export { A, B };` or `export type { X };`
+                let start_byte = node.start_byte();
+                let end_byte = node.end_byte();
+                let start_row = node.start_position().row;
+                let end_row = node.end_position().row;
+                let tokens = extract_all_identifiers(node, source_bytes);
+                let mut refs = Vec::new();
+                let mut defs = Vec::new();
+
+                if let Some(clause) = named_clause {
+                    let mut c_cursor = clause.walk();
+                    for spec in clause.children(&mut c_cursor) {
+                        if spec.kind() == "export_specifier" {
+                            let mut s_cursor = spec.walk();
+                            let mut s_name = None;
+                            let mut s_alias = None;
+                            for s_child in spec.children(&mut s_cursor) {
+                                if s_child.kind() == "identifier" || s_child.kind() == "type_identifier" {
+                                    if s_name.is_none() {
+                                        s_name = s_child.utf8_text(source_bytes).ok().map(|s| s.to_string());
+                                    } else {
+                                        s_alias = s_child.utf8_text(source_bytes).ok().map(|s| s.to_string());
+                                    }
+                                }
+                            }
+                            if let Some(n) = s_name {
+                                refs.push(n.clone());
+                                if let Some(a) = s_alias {
+                                    defs.push(a);
+                                } else {
+                                    defs.push(n);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    refs = tokens.clone();
+                }
+
+                items.push(TsScopeItem {
+                    id: current_id,
+                    parent_id,
+                    kind: TsNodeKind::Statement,
+                    start_byte,
+                    end_byte,
+                    start_row,
+                    end_row,
+                    body_byte_range: None,
+                    signature_byte_range: Some((start_byte, end_byte)),
+                    signature_tokens: tokens.clone(),
+                    tokens: tokens.clone(),
+                    defined_symbols: defs,
+                    referenced_symbols: refs,
+                    children_ids: Vec::new(),
+                    docstring: None,
                 });
 
                 if let Some(pid) = parent_id {
@@ -213,7 +372,8 @@ fn walk_node(
         | "enum_declaration"
         | "function_declaration"
         | "generator_function_declaration"
-        | "class_declaration" => {
+        | "class_declaration"
+        | "abstract_class_declaration" => {
             process_declaration(node, None, false, source_bytes, lines, parent_id, items);
             return;
         }
@@ -240,9 +400,17 @@ fn is_declaration_node(kind: &str) -> bool {
             | "enum_declaration"
             | "function_declaration"
             | "generator_function_declaration"
+            | "function_expression"
+            | "function"
             | "class_declaration"
+            | "abstract_class_declaration"
+            | "class"
             | "lexical_declaration"
             | "variable_declaration"
+            | "arrow_function"
+            | "internal_module"
+            | "module"
+            | "ambient_declaration"
     )
 }
 
@@ -260,11 +428,15 @@ fn process_declaration(
     let start_row = export_parent.map(|p| p.start_position().row).unwrap_or_else(|| decl_node.start_position().row);
     let end_row = export_parent.map(|p| p.end_position().row).unwrap_or_else(|| decl_node.end_position().row);
     let is_export = export_parent.is_some();
+    let doc_target = export_parent.unwrap_or(decl_node);
+    let docstring = extract_jsdoc(doc_target, source_bytes);
 
     match decl_node.kind() {
         "interface_declaration" => {
             let mut name = String::new();
             let mut body_node = None;
+            let mut type_params_node = None;
+            let mut extends_clause = None;
 
             let mut cursor = decl_node.walk();
             for child in decl_node.children(&mut cursor) {
@@ -274,6 +446,8 @@ fn process_declaration(
                             name = child.utf8_text(source_bytes).unwrap_or("").to_string();
                         }
                     }
+                    "type_parameters" => type_params_node = Some(child),
+                    "extends_type_clause" | "extends_clause" => extends_clause = Some(child),
                     "object_type" | "interface_body" => body_node = Some(child),
                     _ => {}
                 }
@@ -292,11 +466,26 @@ fn process_declaration(
             if !name.is_empty() {
                 signature_tokens.push(name.to_lowercase());
             }
+            if let Some(tp) = type_params_node {
+                signature_tokens.extend(extract_all_identifiers(tp, source_bytes));
+            }
+            if let Some(ext) = extends_clause {
+                signature_tokens.extend(extract_all_identifiers(ext, source_bytes));
+            }
 
-            let all_tokens = extract_all_identifiers(decl_node, source_bytes);
+            let all_tokens = extract_all_identifiers(export_parent.unwrap_or(decl_node), source_bytes);
             let mut defined = Vec::new();
             if !name.is_empty() {
                 defined.push(name.clone());
+            }
+
+            // Referenced symbols: types in extends clause and interface body
+            let mut referenced = Vec::new();
+            if let Some(body) = body_node {
+                referenced.extend(collect_referenced_symbols(body, source_bytes, &defined));
+            }
+            if let Some(ext) = extends_clause {
+                referenced.extend(collect_referenced_symbols(ext, source_bytes, &defined));
             }
 
             let current_id = items.len();
@@ -317,8 +506,9 @@ fn process_declaration(
                 signature_tokens,
                 tokens: all_tokens,
                 defined_symbols: defined,
-                referenced_symbols: Vec::new(),
+                referenced_symbols: referenced,
                 children_ids: Vec::new(),
+                docstring,
             });
 
             if let Some(pid) = parent_id {
@@ -327,11 +517,22 @@ fn process_declaration(
         }
         "type_alias_declaration" => {
             let mut name = String::new();
+            let mut type_params_node = None;
+            let mut value_node = None;
+
             let mut cursor = decl_node.walk();
             for child in decl_node.children(&mut cursor) {
-                if child.kind() == "type_identifier" || child.kind() == "identifier" {
-                    if name.is_empty() {
-                        name = child.utf8_text(source_bytes).unwrap_or("").to_string();
+                match child.kind() {
+                    "type_identifier" | "identifier" => {
+                        if name.is_empty() {
+                            name = child.utf8_text(source_bytes).unwrap_or("").to_string();
+                        }
+                    }
+                    "type_parameters" => type_params_node = Some(child),
+                    _ => {
+                        if child.is_named() && child.kind() != "type_identifier" && child.kind() != "identifier" && child.kind() != "type_parameters" {
+                            value_node = Some(child);
+                        }
                     }
                 }
             }
@@ -340,11 +541,21 @@ fn process_declaration(
             if !name.is_empty() {
                 signature_tokens.push(name.to_lowercase());
             }
-            let all_tokens = extract_all_identifiers(decl_node, source_bytes);
+            if let Some(tp) = type_params_node {
+                signature_tokens.extend(extract_all_identifiers(tp, source_bytes));
+            }
+
+            let all_tokens = extract_all_identifiers(export_parent.unwrap_or(decl_node), source_bytes);
             let mut defined = Vec::new();
             if !name.is_empty() {
                 defined.push(name.clone());
             }
+
+            let referenced = if let Some(val) = value_node {
+                collect_referenced_symbols(val, source_bytes, &defined)
+            } else {
+                Vec::new()
+            };
 
             let current_id = items.len();
             items.push(TsScopeItem {
@@ -360,8 +571,9 @@ fn process_declaration(
                 signature_tokens,
                 tokens: all_tokens,
                 defined_symbols: defined,
-                referenced_symbols: Vec::new(),
+                referenced_symbols: referenced,
                 children_ids: Vec::new(),
+                docstring,
             });
 
             if let Some(pid) = parent_id {
@@ -371,10 +583,12 @@ fn process_declaration(
         "enum_declaration" => {
             let mut name = String::new();
             let mut body_node = None;
+            let mut is_const = false;
 
             let mut cursor = decl_node.walk();
             for child in decl_node.children(&mut cursor) {
                 match child.kind() {
+                    "const" => is_const = true,
                     "identifier" => {
                         if name.is_empty() {
                             name = child.utf8_text(source_bytes).unwrap_or("").to_string();
@@ -398,7 +612,7 @@ fn process_declaration(
             if !name.is_empty() {
                 signature_tokens.push(name.to_lowercase());
             }
-            let all_tokens = extract_all_identifiers(decl_node, source_bytes);
+            let all_tokens = extract_all_identifiers(export_parent.unwrap_or(decl_node), source_bytes);
             let mut defined = Vec::new();
             if !name.is_empty() {
                 defined.push(name.clone());
@@ -408,7 +622,7 @@ fn process_declaration(
             items.push(TsScopeItem {
                 id: current_id,
                 parent_id,
-                kind: TsNodeKind::Enum { name, is_export },
+                kind: TsNodeKind::Enum { name, is_export, is_const },
                 start_byte,
                 end_byte,
                 start_row,
@@ -420,14 +634,19 @@ fn process_declaration(
                 defined_symbols: defined,
                 referenced_symbols: Vec::new(),
                 children_ids: Vec::new(),
+                docstring,
             });
 
             if let Some(pid) = parent_id {
                 items[pid].children_ids.push(current_id);
             }
         }
-        "function_declaration" | "generator_function_declaration" => {
-            let is_generator = decl_node.kind() == "generator_function_declaration";
+        "function_declaration"
+        | "generator_function_declaration"
+        | "function_expression"
+        | "function" => {
+            let is_generator = decl_node.kind() == "generator_function_declaration"
+                || decl_node.children(&mut decl_node.walk()).any(|c| c.kind() == "*");
             let mut name = String::new();
             let mut is_async = false;
             let mut body_node = None;
@@ -474,11 +693,20 @@ fn process_declaration(
                 signature_tokens.extend(extract_all_identifiers(params, source_bytes));
             }
 
-            let all_tokens = extract_all_identifiers(decl_node, source_bytes);
+            let all_tokens = extract_all_identifiers(export_parent.unwrap_or(decl_node), source_bytes);
             let mut defined = Vec::new();
             if !name.is_empty() {
                 defined.push(name.clone());
             }
+            if let Some(params) = params_node {
+                collect_pattern_identifiers(params, source_bytes, &mut defined);
+            }
+
+            let referenced_symbols = collect_referenced_symbols(
+                export_parent.unwrap_or(decl_node),
+                source_bytes,
+                &defined,
+            );
 
             let current_id = items.len();
             items.push(TsScopeItem {
@@ -500,15 +728,123 @@ fn process_declaration(
                 signature_tokens,
                 tokens: all_tokens,
                 defined_symbols: defined,
-                referenced_symbols: Vec::new(),
+                referenced_symbols,
                 children_ids: Vec::new(),
+                docstring,
+            });
+
+            if let Some(pid) = parent_id {
+                items[pid].children_ids.push(current_id);
+            }
+
+            // Walk body to discover nested helper functions and nested components
+            if let Some(body) = body_node {
+                let mut b_cursor = body.walk();
+                for child in body.children(&mut b_cursor) {
+                    if child.is_named() && is_declaration_node(child.kind()) {
+                        walk_node(child, source_bytes, lines, Some(current_id), items);
+                    }
+                }
+            }
+        }
+        "arrow_function" => {
+            let mut is_async = false;
+            let mut body_node = None;
+            let mut params_node = None;
+            let mut is_concise = true;
+
+            let mut f_cursor = decl_node.walk();
+            for f_child in decl_node.children(&mut f_cursor) {
+                match f_child.kind() {
+                    "async" => is_async = true,
+                    "formal_parameters" | "identifier" => {
+                        if params_node.is_none() {
+                            params_node = Some(f_child);
+                        }
+                    }
+                    "statement_block" => {
+                        body_node = Some(f_child);
+                        is_concise = false;
+                    }
+                    _ => {
+                        if f_child.is_named()
+                            && f_child.kind() != "formal_parameters"
+                            && f_child.kind() != "identifier"
+                            && f_child.kind() != "type_annotation"
+                            && f_child.kind() != "type_parameters"
+                            && body_node.is_none()
+                        {
+                            body_node = Some(f_child);
+                        }
+                    }
+                }
+            }
+
+            let (body_byte_range, signature_byte_range) = if let Some(body) = body_node {
+                (
+                    Some((body.start_byte(), body.end_byte())),
+                    Some((start_byte, body.start_byte())),
+                )
+            } else {
+                (None, Some((start_byte, end_byte)))
+            };
+
+            let name = if is_default { "default".to_string() } else { String::new() };
+            let mut signature_tokens = Vec::new();
+            if !name.is_empty() {
+                signature_tokens.push(name.to_lowercase());
+            }
+            if let Some(params) = params_node {
+                signature_tokens.extend(extract_all_identifiers(params, source_bytes));
+            }
+
+            let all_tokens = extract_all_identifiers(export_parent.unwrap_or(decl_node), source_bytes);
+            let mut defined = Vec::new();
+            if !name.is_empty() {
+                defined.push(name.clone());
+            }
+            if let Some(params) = params_node {
+                collect_pattern_identifiers(params, source_bytes, &mut defined);
+            }
+
+            let referenced_symbols = collect_referenced_symbols(
+                export_parent.unwrap_or(decl_node),
+                source_bytes,
+                &defined,
+            );
+
+            let current_id = items.len();
+            items.push(TsScopeItem {
+                id: current_id,
+                parent_id,
+                kind: TsNodeKind::ArrowFunction {
+                    name,
+                    is_async,
+                    is_export,
+                    is_default,
+                    is_concise,
+                },
+                start_byte,
+                end_byte,
+                start_row,
+                end_row,
+                body_byte_range,
+                signature_byte_range,
+                signature_tokens,
+                tokens: all_tokens,
+                defined_symbols: defined,
+                referenced_symbols,
+                children_ids: Vec::new(),
+                docstring,
             });
 
             if let Some(pid) = parent_id {
                 items[pid].children_ids.push(current_id);
             }
         }
-        "class_declaration" => {
+        "class_declaration" | "abstract_class_declaration" | "class" => {
+            let is_abstract = decl_node.kind() == "abstract_class_declaration"
+                || decl_node.children(&mut decl_node.walk()).any(|c| c.kind() == "abstract");
             let mut name = String::new();
             let mut heritage = None;
             let mut body_node = None;
@@ -560,6 +896,15 @@ fn process_declaration(
                 defined.push(name.clone());
             }
 
+            let mut referenced = Vec::new();
+            if let Some(ref h) = heritage {
+                for w in tokenize_words(h) {
+                    if !defined.contains(&w) {
+                        referenced.push(w);
+                    }
+                }
+            }
+
             let current_id = items.len();
             items.push(TsScopeItem {
                 id: current_id,
@@ -569,6 +914,7 @@ fn process_declaration(
                     heritage,
                     is_export,
                     is_default,
+                    is_abstract,
                 },
                 start_byte,
                 end_byte,
@@ -579,20 +925,27 @@ fn process_declaration(
                 signature_tokens: signature_tokens.clone(),
                 tokens: signature_tokens,
                 defined_symbols: defined,
-                referenced_symbols: Vec::new(),
+                referenced_symbols: referenced,
                 children_ids: Vec::new(),
+                docstring,
             });
 
             if let Some(pid) = parent_id {
                 items[pid].children_ids.push(current_id);
             }
 
-            // Walk class body to extract methods
+            // Walk class body to extract methods, abstract methods, and class fields
             if let Some(body) = body_node {
                 let mut b_cursor = body.walk();
                 for member in body.children(&mut b_cursor) {
-                    if member.kind() == "method_definition" {
-                        process_method_definition(member, source_bytes, current_id, items);
+                    match member.kind() {
+                        "method_definition" | "abstract_method_signature" => {
+                            process_method_definition(member, source_bytes, current_id, items);
+                        }
+                        "field_definition" | "public_field_definition" => {
+                            process_field_definition(member, source_bytes, current_id, items);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -614,15 +967,21 @@ fn process_method_definition(
     let end_byte = method_node.end_byte();
     let start_row = method_node.start_position().row;
     let end_row = method_node.end_position().row;
+    let docstring = extract_jsdoc(method_node, source_bytes);
+
+    let is_abstract = method_node.kind() == "abstract_method_signature"
+        || method_node.children(&mut method_node.walk()).any(|c| c.kind() == "abstract");
 
     let mut name = String::new();
     let mut is_async = false;
+    let mut is_generator = false;
     let mut is_static = false;
     let mut is_getter = false;
     let mut is_setter = false;
     let mut accessibility = None;
     let mut body_node = None;
     let mut params_node = None;
+    let mut type_params_node = None;
 
     let mut cursor = method_node.walk();
     for child in method_node.children(&mut cursor) {
@@ -631,19 +990,23 @@ fn process_method_definition(
                 accessibility = child.utf8_text(source_bytes).ok().map(|s| s.to_string());
             }
             "async" => is_async = true,
+            "*" => is_generator = true,
             "static" => is_static = true,
             "get" => is_getter = true,
             "set" => is_setter = true,
-            "property_identifier" | "identifier" => {
+            "property_identifier" | "private_property_identifier" | "identifier" => {
                 if name.is_empty() {
                     name = child.utf8_text(source_bytes).unwrap_or("").to_string();
                 }
             }
+            "type_parameters" => type_params_node = Some(child),
             "formal_parameters" => params_node = Some(child),
             "statement_block" => body_node = Some(child),
             _ => {}
         }
     }
+
+    let is_constructor = name == "constructor";
 
     let (body_byte_range, signature_byte_range) = if let Some(body) = body_node {
         (
@@ -658,6 +1021,9 @@ fn process_method_definition(
     if !name.is_empty() {
         signature_tokens.push(name.to_lowercase());
     }
+    if let Some(tp) = type_params_node {
+        signature_tokens.extend(extract_all_identifiers(tp, source_bytes));
+    }
     if let Some(params) = params_node {
         signature_tokens.extend(extract_all_identifiers(params, source_bytes));
     }
@@ -667,6 +1033,11 @@ fn process_method_definition(
     if !name.is_empty() {
         defined.push(name.clone());
     }
+    if let Some(params) = params_node {
+        collect_pattern_identifiers(params, source_bytes, &mut defined);
+    }
+
+    let referenced_symbols = collect_referenced_symbols(method_node, source_bytes, &defined);
 
     let current_id = items.len();
     items.push(TsScopeItem {
@@ -675,10 +1046,13 @@ fn process_method_definition(
         kind: TsNodeKind::Method {
             name,
             is_async,
+            is_generator,
             is_static,
             accessibility,
             is_getter,
             is_setter,
+            is_constructor,
+            is_abstract,
         },
         start_byte,
         end_byte,
@@ -689,19 +1063,173 @@ fn process_method_definition(
         signature_tokens,
         tokens: all_tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols,
         children_ids: Vec::new(),
+        docstring,
     });
 
     items[parent_class_id].children_ids.push(current_id);
 }
 
+fn process_field_definition(
+    field_node: Node,
+    source_bytes: &[u8],
+    parent_class_id: usize,
+    items: &mut Vec<TsScopeItem>,
+) {
+    let start_byte = field_node.start_byte();
+    let end_byte = field_node.end_byte();
+    let start_row = field_node.start_position().row;
+    let end_row = field_node.end_position().row;
+    let docstring = extract_jsdoc(field_node, source_bytes);
+
+    let mut name = String::new();
+    let mut is_static = false;
+    let mut accessibility = None;
+    let mut arrow_val = None;
+
+    let mut cursor = field_node.walk();
+    for child in field_node.children(&mut cursor) {
+        match child.kind() {
+            "accessibility_modifier" => {
+                accessibility = child.utf8_text(source_bytes).ok().map(|s| s.to_string());
+            }
+            "static" => is_static = true,
+            "property_identifier" | "private_property_identifier" | "identifier" => {
+                if name.is_empty() {
+                    name = child.utf8_text(source_bytes).unwrap_or("").to_string();
+                }
+            }
+            "arrow_function" | "function_expression" => {
+                arrow_val = Some(child);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(arrow) = arrow_val {
+        let mut params_node = None;
+        let mut body_node = None;
+        let mut a_cursor = arrow.walk();
+        for a_child in arrow.children(&mut a_cursor) {
+            match a_child.kind() {
+                "formal_parameters" | "identifier" => {
+                    if params_node.is_none() {
+                        params_node = Some(a_child);
+                    }
+                }
+                "statement_block" => {
+                    body_node = Some(a_child);
+                }
+                _ => {
+                    if a_child.is_named()
+                        && body_node.is_none()
+                        && a_child.kind() != "formal_parameters"
+                        && a_child.kind() != "identifier"
+                        && a_child.kind() != "type_annotation"
+                        && a_child.kind() != "type_parameters"
+                    {
+                        body_node = Some(a_child);
+                    }
+                }
+            }
+        }
+
+        let (body_byte_range, signature_byte_range) = if let Some(body) = body_node {
+            (
+                Some((body.start_byte(), body.end_byte())),
+                Some((start_byte, body.start_byte())),
+            )
+        } else {
+            (None, Some((start_byte, end_byte)))
+        };
+
+        let mut sig_tokens = Vec::new();
+        if !name.is_empty() {
+            sig_tokens.push(name.to_lowercase());
+        }
+        if let Some(params) = params_node {
+            sig_tokens.extend(extract_all_identifiers(params, source_bytes));
+        }
+
+        let mut defined = Vec::new();
+        if !name.is_empty() {
+            defined.push(name.clone());
+        }
+        if let Some(params) = params_node {
+            collect_pattern_identifiers(params, source_bytes, &mut defined);
+        }
+
+        let refs = collect_referenced_symbols(field_node, source_bytes, &defined);
+
+        let current_id = items.len();
+        items.push(TsScopeItem {
+            id: current_id,
+            parent_id: Some(parent_class_id),
+            kind: TsNodeKind::Field {
+                name,
+                is_static,
+                is_arrow: true,
+                accessibility,
+            },
+            start_byte,
+            end_byte,
+            start_row,
+            end_row,
+            body_byte_range,
+            signature_byte_range,
+            signature_tokens: sig_tokens.clone(),
+            tokens: extract_all_identifiers(field_node, source_bytes),
+            defined_symbols: defined,
+            referenced_symbols: refs,
+            children_ids: Vec::new(),
+            docstring,
+        });
+
+        items[parent_class_id].children_ids.push(current_id);
+    } else {
+        let tokens = extract_all_identifiers(field_node, source_bytes);
+        let mut defined = Vec::new();
+        if !name.is_empty() {
+            defined.push(name.clone());
+        }
+
+        let refs = collect_referenced_symbols(field_node, source_bytes, &defined);
+
+        let current_id = items.len();
+        items.push(TsScopeItem {
+            id: current_id,
+            parent_id: Some(parent_class_id),
+            kind: TsNodeKind::Field {
+                name,
+                is_static,
+                is_arrow: false,
+                accessibility,
+            },
+            start_byte,
+            end_byte,
+            start_row,
+            end_row,
+            body_byte_range: None,
+            signature_byte_range: Some((start_byte, end_byte)),
+            signature_tokens: tokens.clone(),
+            tokens: tokens.clone(),
+            defined_symbols: defined,
+            referenced_symbols: refs,
+            children_ids: Vec::new(),
+            docstring,
+        });
+
+        items[parent_class_id].children_ids.push(current_id);
+    }
+}
+
 fn process_variable_declaration(
     var_decl_node: Node,
     export_parent: Option<Node>,
-    _is_default: bool,
+    is_default: bool,
     source_bytes: &[u8],
-    _lines: &[&str],
+    lines: &[&str],
     parent_id: Option<usize>,
     items: &mut Vec<TsScopeItem>,
 ) {
@@ -710,8 +1238,9 @@ fn process_variable_declaration(
     let start_row = export_parent.map(|p| p.start_position().row).unwrap_or_else(|| var_decl_node.start_position().row);
     let end_row = export_parent.map(|p| p.end_position().row).unwrap_or_else(|| var_decl_node.end_position().row);
     let is_export = export_parent.is_some();
+    let doc_target = export_parent.unwrap_or(var_decl_node);
+    let docstring = extract_jsdoc(doc_target, source_bytes);
 
-    // Check if variable declarator contains an arrow function
     let mut cursor = var_decl_node.walk();
     for child in var_decl_node.children(&mut cursor) {
         if child.kind() == "variable_declarator" {
@@ -729,6 +1258,18 @@ fn process_variable_declaration(
                     "arrow_function" | "function_expression" => {
                         value_node = Some(v_child);
                     }
+                    "call_expression" => {
+                        // Check for React.memo(...) or forwardRef(...) wrapping an arrow/function
+                        if let Some(args) = v_child.child_by_field_name("arguments") {
+                            let mut a_cursor = args.walk();
+                            for a_child in args.children(&mut a_cursor) {
+                                if a_child.kind() == "arrow_function" || a_child.kind() == "function_expression" {
+                                    value_node = Some(a_child);
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -744,7 +1285,11 @@ fn process_variable_declaration(
                     for f_child in val.children(&mut f_cursor) {
                         match f_child.kind() {
                             "async" => is_async = true,
-                            "formal_parameters" => params_node = Some(f_child),
+                            "formal_parameters" | "identifier" => {
+                                if params_node.is_none() {
+                                    params_node = Some(f_child);
+                                }
+                            }
                             "statement_block" => {
                                 body_node = Some(f_child);
                                 is_concise = false;
@@ -785,6 +1330,15 @@ fn process_variable_declaration(
                     if !var_name.is_empty() {
                         defined.push(var_name.clone());
                     }
+                    if let Some(params) = params_node {
+                        collect_pattern_identifiers(params, source_bytes, &mut defined);
+                    }
+
+                    let referenced_symbols = collect_referenced_symbols(
+                        export_parent.unwrap_or(var_decl_node),
+                        source_bytes,
+                        &defined,
+                    );
 
                     let current_id = items.len();
                     items.push(TsScopeItem {
@@ -794,6 +1348,7 @@ fn process_variable_declaration(
                             name: var_name,
                             is_async,
                             is_export,
+                            is_default,
                             is_concise,
                         },
                         start_byte,
@@ -805,12 +1360,25 @@ fn process_variable_declaration(
                         signature_tokens,
                         tokens: all_tokens,
                         defined_symbols: defined,
-                        referenced_symbols: Vec::new(),
+                        referenced_symbols,
                         children_ids: Vec::new(),
+                        docstring,
                     });
 
                     if let Some(pid) = parent_id {
                         items[pid].children_ids.push(current_id);
+                    }
+
+                    // Walk block body for nested helper declarations
+                    if let Some(body) = body_node {
+                        if !is_concise {
+                            let mut b_cursor = body.walk();
+                            for b_child in body.children(&mut b_cursor) {
+                                if b_child.is_named() && is_declaration_node(b_child.kind()) {
+                                    walk_node(b_child, source_bytes, lines, Some(current_id), items);
+                                }
+                            }
+                        }
                     }
                     return;
                 }
@@ -821,7 +1389,9 @@ fn process_variable_declaration(
     // Regular statement
     let tokens = extract_all_identifiers(export_parent.unwrap_or(var_decl_node), source_bytes);
     let mut defined = Vec::new();
-    collect_declaration_identifiers(var_decl_node, source_bytes, &mut defined);
+    collect_pattern_identifiers(var_decl_node, source_bytes, &mut defined);
+
+    let referenced_symbols = collect_referenced_symbols(export_parent.unwrap_or(var_decl_node), source_bytes, &defined);
 
     let current_id = items.len();
     items.push(TsScopeItem {
@@ -837,8 +1407,9 @@ fn process_variable_declaration(
         signature_tokens: tokens.clone(),
         tokens: tokens.clone(),
         defined_symbols: defined,
-        referenced_symbols: tokens,
+        referenced_symbols,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -846,29 +1417,258 @@ fn process_variable_declaration(
     }
 }
 
+fn extract_jsdoc(node: Node, source_bytes: &[u8]) -> Option<String> {
+    let mut prev = node.prev_named_sibling();
+    if prev.is_none() {
+        prev = node.prev_sibling();
+    }
+    if let Some(comment_node) = prev {
+        if comment_node.kind() == "comment" {
+            if let Ok(text) = comment_node.utf8_text(source_bytes) {
+                let trimmed = text.trim();
+                if trimmed.starts_with("/**") {
+                    let inner = trimmed
+                        .strip_prefix("/**")
+                        .unwrap_or(trimmed)
+                        .strip_suffix("*/")
+                        .unwrap_or(trimmed);
+                    let cleaned_lines: Vec<String> = inner
+                        .lines()
+                        .map(|l| {
+                            let t = l.trim();
+                            if t.starts_with('*') {
+                                t[1..].trim().to_string()
+                            } else {
+                                t.to_string()
+                            }
+                        })
+                        .filter(|l| !l.is_empty())
+                        .collect();
+                    if !cleaned_lines.is_empty() {
+                        return Some(cleaned_lines.join("\n"));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn collect_import_identifiers(node: Node, source_bytes: &[u8], defined: &mut Vec<String>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "import_clause" || child.kind() == "named_imports" || child.kind() == "import_specifier" {
-            collect_import_identifiers(child, source_bytes, defined);
-        } else if child.kind() == "identifier" || child.kind() == "type_identifier" {
-            if let Ok(name) = child.utf8_text(source_bytes) {
-                defined.push(name.to_string());
+        match child.kind() {
+            "import_clause" | "named_imports" | "namespace_import" => {
+                collect_import_identifiers(child, source_bytes, defined);
             }
+            "import_specifier" => {
+                let mut s_cursor = child.walk();
+                let mut orig_name = None;
+                let mut alias_name = None;
+                for s_child in child.children(&mut s_cursor) {
+                    if s_child.kind() == "identifier" || s_child.kind() == "type_identifier" {
+                        if orig_name.is_none() {
+                            orig_name = s_child.utf8_text(source_bytes).ok().map(|s| s.to_string());
+                        } else {
+                            alias_name = s_child.utf8_text(source_bytes).ok().map(|s| s.to_string());
+                        }
+                    }
+                }
+                if let Some(alias) = alias_name {
+                    if !defined.contains(&alias) {
+                        defined.push(alias);
+                    }
+                } else if let Some(orig) = orig_name {
+                    if !defined.contains(&orig) {
+                        defined.push(orig);
+                    }
+                }
+            }
+            "identifier" | "type_identifier" => {
+                if let Ok(name) = child.utf8_text(source_bytes) {
+                    let s = name.trim().to_string();
+                    if !s.is_empty() && !defined.contains(&s) {
+                        defined.push(s);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
 
-fn collect_declaration_identifiers(node: Node, source_bytes: &[u8], defined: &mut Vec<String>) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "variable_declarator" {
-            if let Some(name_node) = child.child_by_field_name("name") {
-                if let Ok(name) = name_node.utf8_text(source_bytes) {
-                    defined.push(name.to_string());
+pub fn collect_pattern_identifiers(node: Node, source_bytes: &[u8], defined: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            if let Ok(name) = node.utf8_text(source_bytes) {
+                let s = name.trim().to_string();
+                if !s.is_empty() && !defined.contains(&s) {
+                    defined.push(s);
                 }
             }
         }
+        "pair_pattern" => {
+            if let Some(val_node) = node.child_by_field_name("value") {
+                collect_pattern_identifiers(val_node, source_bytes, defined);
+            }
+        }
+        "assignment_pattern" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_pattern_identifiers(left, source_bytes, defined);
+            }
+        }
+        "rest_pattern" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                collect_pattern_identifiers(child, source_bytes, defined);
+            }
+        }
+        "object_pattern" | "array_pattern" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let k = child.kind();
+                if k != ":" && k != "=" && k != "{" && k != "}" && k != "[" && k != "]" && k != "," {
+                    collect_pattern_identifiers(child, source_bytes, defined);
+                }
+            }
+        }
+        "formal_parameters" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let k = child.kind();
+                if k != "(" && k != ")" && k != "," {
+                    collect_pattern_identifiers(child, source_bytes, defined);
+                }
+            }
+        }
+        "required_parameter" | "optional_parameter" => {
+            if let Some(pattern) = child_by_first_non_decorator(node) {
+                collect_pattern_identifiers(pattern, source_bytes, defined);
+            }
+        }
+        "variable_declarator" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                collect_pattern_identifiers(name_node, source_bytes, defined);
+            }
+        }
+        "lexical_declaration" | "variable_declaration" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "variable_declarator" {
+                    collect_pattern_identifiers(child, source_bytes, defined);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn child_by_first_non_decorator(node: Node) -> Option<Node> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "decorator" && child.kind() != "accessibility_modifier" && child.kind() != "readonly" {
+            if child.kind() == "identifier" || child.kind() == "object_pattern" || child.kind() == "array_pattern" {
+                return Some(child);
+            } else if let Some(pattern) = child.child_by_field_name("pattern") {
+                return Some(pattern);
+            }
+        }
+    }
+    node.child_by_field_name("pattern")
+}
+
+pub fn collect_referenced_symbols(
+    node: Node,
+    source_bytes: &[u8],
+    defined_in_scope: &[String],
+) -> Vec<String> {
+    let mut refs = Vec::new();
+    let mut seen = HashSet::new();
+    let defined_set: HashSet<String> = defined_in_scope.iter().map(|s| s.to_lowercase()).collect();
+
+    collect_refs_recursive(node, source_bytes, &defined_set, &mut seen, &mut refs);
+    refs
+}
+
+const TS_PRIMITIVES: &[&str] = &[
+    "string", "number", "boolean", "any", "void", "unknown", "never",
+    "null", "undefined", "object", "symbol", "bigint", "true", "false",
+];
+
+fn is_defining_name_node(node: &Node) -> bool {
+    if let Some(parent) = node.parent() {
+        match parent.kind() {
+            "method_signature"
+            | "property_signature"
+            | "method_definition"
+            | "abstract_method_signature"
+            | "field_definition"
+            | "public_field_definition"
+            | "function_declaration"
+            | "generator_function_declaration"
+            | "class_declaration"
+            | "abstract_class_declaration"
+            | "interface_declaration"
+            | "type_alias_declaration"
+            | "enum_declaration"
+            | "variable_declarator" => {
+                if let Some(name_child) = parent.child_by_field_name("name") {
+                    if name_child.id() == node.id() {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn collect_refs_recursive(
+    node: Node,
+    source_bytes: &[u8],
+    defined_set: &HashSet<String>,
+    seen: &mut HashSet<String>,
+    refs: &mut Vec<String>,
+) {
+    match node.kind() {
+        "identifier"
+        | "type_identifier"
+        | "property_identifier"
+        | "shorthand_property_identifier_pattern" => {
+            if !is_defining_name_node(&node) {
+                if let Ok(text) = node.utf8_text(source_bytes) {
+                    let trimmed = text.trim();
+                    let lower = trimmed.to_lowercase();
+                    if trimmed.len() >= 2
+                        && !TS_PRIMITIVES.contains(&lower.as_str())
+                        && !defined_set.contains(&lower)
+                        && seen.insert(trimmed.to_string())
+                    {
+                        refs.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        "jsx_identifier" => {
+            if let Ok(text) = node.utf8_text(source_bytes) {
+                let trimmed = text.trim();
+                let lower = trimmed.to_lowercase();
+                if trimmed.len() >= 2
+                    && !TS_PRIMITIVES.contains(&lower.as_str())
+                    && !defined_set.contains(&lower)
+                    && seen.insert(trimmed.to_string())
+                {
+                    refs.push(trimmed.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_refs_recursive(child, source_bytes, defined_set, seen, refs);
     }
 }
 
@@ -889,7 +1689,9 @@ fn collect_tokens_recursive(
         "identifier"
         | "type_identifier"
         | "property_identifier"
-        | "shorthand_property_identifier_pattern" => {
+        | "private_property_identifier"
+        | "shorthand_property_identifier_pattern"
+        | "jsx_identifier" => {
             if let Ok(text) = node.utf8_text(source_bytes) {
                 let lower = text.to_lowercase();
                 if lower.len() >= 2 && seen.insert(lower.clone()) {
@@ -922,4 +1724,3 @@ fn tokenize_words(s: &str) -> Vec<String> {
         .filter(|w| w.len() >= 2)
         .collect()
 }
-

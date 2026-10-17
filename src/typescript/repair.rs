@@ -28,7 +28,7 @@ pub fn reconstruct_code(
     let mut first = output.is_empty();
     for (i, item) in items.iter().enumerate() {
         if item.parent_id.is_some() {
-            // Nested items (e.g. methods) are handled by their parent container
+            // Nested items (e.g. methods or inner helpers) are handled by their parent container
             continue;
         }
 
@@ -53,9 +53,13 @@ pub fn reconstruct_code(
                     output.push_str(snippet.trim_end());
                 } else if decision.keep_skeleton {
                     if let Some((sig_start, sig_end)) = item.signature_byte_range {
-                        let sig = &source_code[sig_start..sig_end];
-                        output.push_str(sig.trim_end());
-                        output.push_str(" {}");
+                        let sig = source_code[sig_start..sig_end].trim_end();
+                        if sig.ends_with('}') {
+                            output.push_str(sig);
+                        } else {
+                            output.push_str(sig);
+                            output.push_str(" {}");
+                        }
                     } else {
                         let snippet = &source_code[item.start_byte..item.end_byte];
                         output.push_str(snippet.trim_end());
@@ -73,9 +77,13 @@ pub fn reconstruct_code(
                     output.push_str(snippet.trim_end());
                 } else if decision.keep_skeleton {
                     if let Some((sig_start, sig_end)) = item.signature_byte_range {
-                        let sig = &source_code[sig_start..sig_end];
-                        output.push_str(sig.trim_end());
-                        output.push_str(" {}");
+                        let sig = source_code[sig_start..sig_end].trim_end();
+                        if sig.ends_with('}') {
+                            output.push_str(sig);
+                        } else {
+                            output.push_str(sig);
+                            output.push_str(" {}");
+                        }
                     } else {
                         let snippet = &source_code[item.start_byte..item.end_byte];
                         output.push_str(snippet.trim_end());
@@ -87,11 +95,14 @@ pub fn reconstruct_code(
                     let snippet = &source_code[item.start_byte..item.end_byte];
                     output.push_str(snippet.trim_end());
                 } else if decision.keep_skeleton {
-                    // Emit signature + {}
                     if let Some((sig_start, sig_end)) = item.signature_byte_range {
-                        let sig = &source_code[sig_start..sig_end];
-                        output.push_str(sig.trim_end());
-                        output.push_str(" {}");
+                        let sig = source_code[sig_start..sig_end].trim_end();
+                        if sig.ends_with('}') {
+                            output.push_str(sig);
+                        } else {
+                            output.push_str(sig);
+                            output.push_str(" {}");
+                        }
                     } else {
                         let snippet = &source_code[item.start_byte..item.end_byte];
                         output.push_str(snippet.trim_end());
@@ -104,9 +115,16 @@ pub fn reconstruct_code(
                     output.push_str(snippet.trim_end());
                 } else if decision.keep_skeleton {
                     if let Some((sig_start, sig_end)) = item.signature_byte_range {
-                        let sig = &source_code[sig_start..sig_end];
-                        output.push_str(sig.trim_end());
-                        output.push_str(" {};");
+                        let sig = source_code[sig_start..sig_end].trim_end();
+                        if sig.ends_with("};") || sig.ends_with('}') {
+                            output.push_str(sig);
+                        } else if sig.ends_with(';') {
+                            output.push_str(sig.trim_end_matches(';').trim_end());
+                            output.push_str(" {};");
+                        } else {
+                            output.push_str(sig);
+                            output.push_str(" {};");
+                        }
                     } else {
                         let snippet = &source_code[item.start_byte..item.end_byte];
                         output.push_str(snippet.trim_end());
@@ -118,8 +136,7 @@ pub fn reconstruct_code(
                     let snippet = &source_code[item.start_byte..item.end_byte];
                     output.push_str(snippet.trim_end());
                 } else if decision.keep_skeleton {
-                    // Check if any child methods are kept
-                    let has_child_methods = item
+                    let has_child_members = item
                         .children_ids
                         .iter()
                         .any(|&cid| decisions[cid].keep_full || decisions[cid].keep_skeleton);
@@ -130,43 +147,83 @@ pub fn reconstruct_code(
                         "class"
                     };
 
-                    if !has_child_methods {
-                        // Empty class skeleton
+                    if !has_child_members {
                         output.push_str(sig.trim_end());
                         output.push_str(" {}");
                     } else {
-                        // Reconstruct class with kept methods
                         output.push_str(sig.trim_end());
                         output.push_str(" {\n");
 
-                        let mut first_method = true;
+                        let mut first_member = true;
                         for &cid in &item.children_ids {
-                            let method_item = &items[cid];
-                            let method_decision = &decisions[cid];
+                            let member_item = &items[cid];
+                            let member_decision = &decisions[cid];
 
-                            if !method_decision.keep_full && !method_decision.keep_skeleton {
+                            if !member_decision.keep_full && !member_decision.keep_skeleton {
                                 continue;
                             }
 
-                            if !first_method {
+                            if !first_member {
                                 output.push_str("\n\n");
                             }
-                            first_method = false;
+                            first_member = false;
 
                             let indent = "    ";
-                            if method_decision.keep_full {
-                                let m_snippet = &source_code[method_item.start_byte..method_item.end_byte];
-                                if !m_snippet.starts_with(char::is_whitespace) {
-                                    output.push_str(indent);
+                            match &member_item.kind {
+                                TsNodeKind::Method { is_abstract, .. } => {
+                                    if member_decision.keep_full {
+                                        let m_snippet = &source_code[member_item.start_byte..member_item.end_byte];
+                                        if !m_snippet.starts_with(char::is_whitespace) {
+                                            output.push_str(indent);
+                                        }
+                                        let trimmed = m_snippet.trim_end();
+                                        output.push_str(trimmed);
+                                        if *is_abstract && !trimmed.ends_with(';') {
+                                            output.push(';');
+                                        }
+                                    } else if member_decision.keep_skeleton {
+                                        if let Some((ms_start, ms_end)) = member_item.signature_byte_range {
+                                            let ms = &source_code[ms_start..ms_end];
+                                            let trimmed = ms.trim();
+                                            output.push_str(indent);
+                                            if *is_abstract {
+                                                // Abstract method: never emit implementation body `{}`!
+                                                output.push_str(trimmed);
+                                                if !trimmed.ends_with(';') {
+                                                    output.push(';');
+                                                }
+                                            } else {
+                                                output.push_str(trimmed);
+                                                output.push_str(" {}");
+                                            }
+                                        }
+                                    }
                                 }
-                                output.push_str(m_snippet.trim_end());
-                            } else if method_decision.keep_skeleton {
-                                if let Some((ms_start, ms_end)) = method_item.signature_byte_range {
-                                    let ms = &source_code[ms_start..ms_end];
-                                    let trimmed = ms.trim();
-                                    output.push_str(indent);
-                                    output.push_str(trimmed);
-                                    output.push_str(" {}");
+                                TsNodeKind::Field { is_arrow, .. } => {
+                                    if member_decision.keep_full {
+                                        let f_snippet = &source_code[member_item.start_byte..member_item.end_byte];
+                                        if !f_snippet.starts_with(char::is_whitespace) {
+                                            output.push_str(indent);
+                                        }
+                                        output.push_str(f_snippet.trim_end());
+                                    } else if member_decision.keep_skeleton && *is_arrow {
+                                        if let Some((fs_start, fs_end)) = member_item.signature_byte_range {
+                                            let fs = &source_code[fs_start..fs_end];
+                                            let trimmed = fs.trim();
+                                            output.push_str(indent);
+                                            output.push_str(trimmed);
+                                            output.push_str(" {};");
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    if member_decision.keep_full {
+                                        let snippet = &source_code[member_item.start_byte..member_item.end_byte];
+                                        if !snippet.starts_with(char::is_whitespace) {
+                                            output.push_str(indent);
+                                        }
+                                        output.push_str(snippet.trim_end());
+                                    }
                                 }
                             }
                         }
@@ -192,4 +249,3 @@ pub fn reconstruct_code(
     output.push('\n');
     output
 }
-
