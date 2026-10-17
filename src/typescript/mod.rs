@@ -428,3 +428,4 @@ export function computeSomething(val: number): number {
         assert!(!res.pruned_code.contains("val * 42"));
     }
 }
+

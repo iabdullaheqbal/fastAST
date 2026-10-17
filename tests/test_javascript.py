@@ -222,3 +222,4 @@ if __name__ == "__main__":
     test_js_symbol_indexing()
     test_cli_prune_js()
     print("All 9 JavaScript & JSX tests passed successfully!")
+

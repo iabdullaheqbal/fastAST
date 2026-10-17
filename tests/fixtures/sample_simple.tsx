@@ -68,3 +68,4 @@ export const AdminDashboard = (): JSX.Element => {
 export default function App(): JSX.Element {
     return <AdminDashboard />;
 }
+
