@@ -141,12 +141,12 @@ fn extract_scopes_with_hierarchy(lines: &[&str]) -> Vec<JavaScope> {
             || trimmed.starts_with("private class ")
             || trimmed.starts_with("protected class ")
             || trimmed.starts_with("class ")
-            || trimmed.contains(" class ") && trimmed.contains('{');
+            || (trimmed.contains(" class ") && trimmed.contains('{'));
 
         // Check for interface start  
         let is_interface_start = trimmed.starts_with("public interface ")
             || trimmed.starts_with("interface ")
-            || trimmed.contains(" interface ") && trimmed.contains('{');
+            || (trimmed.contains(" interface ") && trimmed.contains('{'));
 
         if is_class_start || is_interface_start {
             let keyword = if is_class_start { "class " } else { "interface " };
@@ -298,10 +298,17 @@ fn extract_method_name(line: &str) -> Option<String> {
 fn extract_identifier(line: &str, keyword: &str) -> String {
     if let Some(pos) = line.find(keyword) {
         let after = &line[pos + keyword.len()..];
+        // Find end of identifier (alphanumeric, underscore, or period for package names)
         let end = after
-            .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+            .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.' && c != '<')
             .unwrap_or(after.len());
-        after[..end].trim().to_string()
+        let ident = after[..end].trim();
+        // If we have generics like <T>, remove them for now
+        if let Some(angle_pos) = ident.find('<') {
+            ident[..angle_pos].trim().to_string()
+        } else {
+            ident.to_string()
+        }
     } else {
         String::new()
     }
