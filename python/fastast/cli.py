@@ -356,6 +356,9 @@ def run_index(
             f"Graph:    {bold}{res['total_symbols']:,}{reset} symbols, "
             f"{res['total_imports']:,} imports, {res['total_calls']:,} calls"
         )
+        if res.get("languages"):
+            lang_summary = ", ".join(f"{k} ({v})" for k, v in res["languages"].items())
+            print(f"Languages: {lang_summary}")
 
     return 0
 
@@ -363,6 +366,7 @@ def run_index(
 def run_symbols(
     query: str,
     kind: Optional[str] = None,
+    language: Optional[str] = None,
     limit: int = 50,
     dir_path: str = ".",
     quiet: bool = False,
@@ -377,6 +381,7 @@ def run_symbols(
                     {
                         "error": f"Directory not found: {dir_path}",
                         "query": query,
+                        "language": language,
                         "symbols": [],
                     },
                     indent=2,
@@ -397,7 +402,9 @@ def run_symbols(
 
     conn = get_connection(db_path)
     try:
-        symbols = search_symbols(conn, query, kind=kind, limit=limit)
+        symbols = search_symbols(
+            conn, query, kind=kind, language=language, limit=limit
+        )
     finally:
         conn.close()
 
@@ -405,6 +412,7 @@ def run_symbols(
         output = {
             "query": query,
             "kind": kind,
+            "language": language,
             "count": len(symbols),
             "symbols": symbols,
         }
@@ -419,15 +427,19 @@ def run_symbols(
 
     if not quiet:
         kind_str = f" [{kind}]" if kind else ""
+        lang_str = f" [{language}]" if language else ""
         if not symbols:
-            print(f"No symbols found matching '{query}'{kind_str}.")
+            print(f"No symbols found matching '{query}'{kind_str}{lang_str}.")
             return 0
 
-        print(f"{bold}Found {len(symbols)} symbol(s) matching '{query}'{kind_str}:{reset}")
+        print(
+            f"{bold}Found {len(symbols)} symbol(s) matching '{query}'{kind_str}{lang_str}:{reset}"
+        )
         for s in symbols:
             parent = f"{s['parent_name']}." if s.get("parent_name") else ""
+            lang_badge = f"{cyan}[{s['language']}]{reset} " if s.get("language") else ""
             print(
-                f"  {yellow}[{s['kind']}]{reset} {bold}{parent}{s['name']}{reset}{s['signature']} "
+                f"  {lang_badge}{yellow}[{s['kind']}]{reset} {bold}{parent}{s['name']}{reset}{s['signature']} "
                 f"-> {cyan}{s['file_path']}:{s['start_line']}-{s['end_line']}{reset}"
             )
             if s.get("docstring"):
@@ -504,8 +516,9 @@ def run_calls(
             print("  (no callers found in indexed files)")
         else:
             for c in graph["callers"]:
+                lang_tag = f"[{c['language']}] " if c.get("language") else ""
                 print(
-                    f"  <- {bold}{c['caller']}{reset} ({c['caller_kind']}) "
+                    f"  <- {bold}{lang_tag}{c['caller']}{reset} ({c['caller_kind']}) "
                     f"in {cyan}{c['file_path']}:{c['line_number']}{reset}"
                 )
 
@@ -514,8 +527,9 @@ def run_calls(
             print("  (no callees invoked)")
         else:
             for c in graph["callees"]:
+                lang_tag = f"[{c['language']}] " if c.get("language") else ""
                 print(
-                    f"  -> {bold}{c['callee']}{reset}() "
+                    f"  -> {bold}{lang_tag}{c['callee']}{reset}() "
                     f"at {cyan}{c['file_path']}:{c['line_number']}{reset}"
                 )
 
@@ -668,6 +682,11 @@ def main() -> None:
         help="Maximum number of symbols to return (default: 50)",
     )
     symbols_parser.add_argument(
+        "-L",
+        "--language",
+        help="Filter symbols by programming language (python, rust, javascript, typescript, java, etc.)",
+    )
+    symbols_parser.add_argument(
         "-d",
         "--dir",
         default=".",
@@ -759,6 +778,7 @@ def main() -> None:
             run_symbols(
                 args.query,
                 kind=args.kind,
+                language=getattr(args, "language", None),
                 limit=args.limit,
                 dir_path=args.dir,
                 quiet=getattr(args, "quiet", False),

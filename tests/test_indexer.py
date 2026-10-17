@@ -152,8 +152,109 @@ def test_repository_indexing():
         assert res2["skipped_files"] == 2
 
 
+def test_multi_language_repository_indexing():
+    """Verify repository indexing across all 9 supported languages."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+
+        # 1. Python file
+        (root / "app.py").write_text("def py_main():\n    return 1\n")
+
+        # 2. Rust file
+        (root / "lib.rs").write_text("pub fn rust_compute(x: i32) -> i32 {\n    x * 2\n}\npub struct Config;\n")
+
+        # 3. JavaScript file
+        (root / "index.js").write_text("function jsHandler(req, res) {\n    return res;\n}\n")
+
+        # 4. TypeScript file
+        (root / "types.ts").write_text("interface UserProfile {\n    id: string;\n}\nfunction tsValidator() {}\n")
+
+        # 5. Java file
+        (root / "Service.java").write_text("public class Service {\n    public void executeTask() {}\n}\n")
+
+        # 6. HTML file
+        (root / "index.html").write_text("<!DOCTYPE html>\n<html><body><div id=\"content\"><form name=\"search\"></form></div></body></html>\n")
+
+        # 7. CSS file
+        (root / "styles.css").write_text(".main-header { font-size: 16px; }\n")
+
+        # 8. JSON file
+        (root / "package.json").write_text('{\n  "appName": "fastast-test",\n  "version": "1.0.0"\n}\n')
+
+        # 9. TOML file
+        (root / "config.toml").write_text('[database]\nport = 5432\n')
+
+        # Run multi-language index
+        res = index_repository(str(root), db_name="multi.db")
+        assert res["total_files"] == 9
+        assert res["indexed_files"] == 9
+        assert res["error_files"] == 0
+        assert res["total_symbols"] >= 9
+
+        # Verify language breakdown
+        langs = res["languages"]
+        for expected in ["python", "rust", "javascript", "typescript", "java", "html", "css", "json", "toml"]:
+            assert expected in langs
+            assert langs[expected] == 1
+
+        # Query symbols with language filter
+        conn = get_connection(root / "multi.db")
+        try:
+            # Rust symbol search
+            rust_syms = search_symbols(conn, "rust_compute", language="rust")
+            assert len(rust_syms) == 1
+            assert rust_syms[0]["name"] == "rust_compute"
+            assert rust_syms[0]["language"] == "rust"
+
+            # Filter by wrong language returns nothing
+            wrong_lang = search_symbols(conn, "rust_compute", language="python")
+            assert len(wrong_lang) == 0
+
+            # TypeScript symbol search
+            ts_syms = search_symbols(conn, "UserProfile", language="typescript")
+            assert len(ts_syms) == 1
+            assert ts_syms[0]["language"] == "typescript"
+
+            # Java symbol search
+            java_syms = search_symbols(conn, "Service", language="java")
+            assert len(java_syms) == 1
+            assert java_syms[0]["kind"] == "class"
+            assert java_syms[0]["language"] == "java"
+
+            # Cross-language search without filter
+            all_syms = search_symbols(conn, "executeTask")
+            assert len(all_syms) == 1
+            assert all_syms[0]["name"] == "executeTask"
+            assert all_syms[0]["language"] == "java"
+
+        finally:
+            conn.close()
+
+        # Incremental skip check: reindexing with no modifications
+        res2 = index_repository(str(root), db_name="multi.db")
+        assert res2["indexed_files"] == 0
+        assert res2["skipped_files"] == 9
+
+        # Modify a single file (Rust) and verify partial reindexing
+        time.sleep(0.01)
+        (root / "lib.rs").write_text("pub fn rust_compute(x: i32) -> i32 {\n    x * 3\n}\npub fn new_helper() {}\n")
+        res3 = index_repository(str(root), db_name="multi.db")
+        assert res3["indexed_files"] == 1
+        assert res3["skipped_files"] == 8
+
+        conn2 = get_connection(root / "multi.db")
+        try:
+            updated = search_symbols(conn2, "new_helper", language="rust")
+            assert len(updated) == 1
+            assert updated[0]["name"] == "new_helper"
+        finally:
+            conn2.close()
+
+
 if __name__ == "__main__":
+    import time
     test_native_symbol_and_call_extraction()
     test_sqlite_schema_and_queries()
     test_repository_indexing()
+    test_multi_language_repository_indexing()
     print("All indexer & SQLite tests passed successfully!")

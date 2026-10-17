@@ -298,28 +298,33 @@ def query_symbols(
     kind: Optional[str] = None,
     directory_path: str = ".",
     limit: int = 50,
+    language: Optional[str] = None,
 ) -> str:
     """Search for symbols (functions, classes, methods) across the indexed codebase.
 
     Use this tool to locate symbol definitions, their exact line numbers, parameters,
-    and docstrings. If the repository is not yet indexed, it automatically indexes it first.
+    and docstrings across all supported languages (Python, JS, TS, Java, Rust, HTML, CSS, JSON, TOML).
+    If the repository is not yet indexed, it automatically indexes it first.
 
     Args:
         query: Symbol name or substring to search for (e.g. 'authenticate_user', 'Config', 'process').
         kind: Optional symbol kind to filter by ('function', 'async_function', 'class', 'method').
         directory_path: Path to the repository directory (default: current directory '.').
         limit: Maximum number of matching symbols to return (default: 50).
+        language: Optional language to filter by ('python', 'javascript', 'typescript', 'java', 'rust', etc.).
 
     Returns:
         JSON string containing:
             - query (str): The search query.
             - kind (str, optional): The filter applied.
+            - language (str, optional): The language filter applied.
             - count (int): Number of matching symbols found.
             - symbols (list): List of matching symbol dictionaries with fields:
                 - name: Symbol identifier.
                 - kind: Symbol kind ('function', 'class', 'method', etc.).
                 - signature: Argument signature (e.g. '(self, request: Request) -> Response').
                 - file_path: Relative file path where defined.
+                - language: Programming language of the containing file.
                 - start_line: 1-indexed start line.
                 - end_line: 1-indexed end line.
                 - docstring: First line or full docstring (if available).
@@ -331,6 +336,7 @@ def query_symbols(
                 "error": "Query cannot be empty",
                 "query": query,
                 "kind": kind,
+                "language": language,
                 "count": 0,
                 "symbols": [],
             },
@@ -344,6 +350,7 @@ def query_symbols(
                 "error": f"Directory not found: '{directory_path}'",
                 "query": query,
                 "kind": kind,
+                "language": language,
                 "count": 0,
                 "symbols": [],
             },
@@ -360,11 +367,14 @@ def query_symbols(
 
         conn = get_connection(db_path)
         try:
-            results = search_symbols(conn, query.strip(), kind=kind, limit=limit)
+            results = search_symbols(
+                conn, query.strip(), kind=kind, language=language, limit=limit
+            )
             return json.dumps(
                 {
                     "query": query,
                     "kind": kind,
+                    "language": language,
                     "count": len(results),
                     "symbols": results,
                 },
@@ -378,6 +388,7 @@ def query_symbols(
                 "error": str(exc),
                 "query": query,
                 "kind": kind,
+                "language": language,
                 "count": 0,
                 "symbols": [],
             },
