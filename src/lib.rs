@@ -172,11 +172,11 @@ pub fn prune_file(
         }
         Language::Java => {
             // Java language engine
-            java::prune_file(code_text, focus_query, threshold)
+            Ok(java::prune_file(code_text, focus_query, threshold))
         }
         Language::JavaScript => {
             // Dedicated JavaScript + JSX pruning engine
-            javascript::prune_file(code_text, focus_query, threshold)
+            Ok(javascript::prune_file(code_text, focus_query, threshold))
         }
         Language::TypeScript => {
             // Dedicated TypeScript + TSX pruning engine
@@ -253,8 +253,8 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
             let res = indexer::extract_file_index(&tree, source_bytes, &lines, total_tokens);
             Ok(res)
         }
-        Language::Java => java::index_code(code_text),
-        Language::JavaScript => javascript::index_code(code_text),
+        Language::Java => Ok(java::index_code(code_text)),
+        Language::JavaScript => Ok(javascript::index_code(code_text)),
         Language::TypeScript => typescript::index_code(code_text),
         Language::HTML => html::index_code(code_text),
         Language::CSS => css::index_code(code_text),
