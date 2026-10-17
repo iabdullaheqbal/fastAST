@@ -7,6 +7,7 @@ pub mod language;
 pub mod multi_parser;
 pub mod parser;
 pub mod repair;
+pub mod rust;
 pub mod scorer;
 pub mod typescript;
 
@@ -92,9 +93,10 @@ pub fn prune_file(
             "typescript" | "ts" | "tsx" | "mts" | "cts" => Language::TypeScript,
             "html" | "htm" => Language::HTML,
             "css" => Language::CSS,
+            "rust" | "rs" => Language::Rust,
             _ => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("Unsupported language: {}. Supported: python, java, javascript, jsx, typescript, tsx, html, css", lang_str)
+                    format!("Unsupported language: {}. Supported: python, java, javascript, jsx, typescript, tsx, html, css, rust", lang_str)
                 ));
             }
         }
@@ -184,6 +186,10 @@ pub fn prune_file(
             // Dedicated CSS pruning engine
             css::prune_file(code_text, focus_query, threshold)
         }
+        Language::Rust => {
+            // Dedicated Rust pruning engine
+            rust::prune_file(code_text, focus_query, threshold)
+        }
     }
 }
 
@@ -199,6 +205,7 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
             "typescript" | "ts" | "tsx" | "mts" | "cts" => Language::TypeScript,
             "html" | "htm" => Language::HTML,
             "css" => Language::CSS,
+            "rust" | "rs" => Language::Rust,
             _ => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                     format!("Unsupported language: {}", lang_str)
@@ -237,6 +244,7 @@ pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileInd
         Language::TypeScript => typescript::index_code(code_text),
         Language::HTML => html::index_code(code_text),
         Language::CSS => css::index_code(code_text),
+        Language::Rust => rust::index_code(code_text),
     }
 }
 

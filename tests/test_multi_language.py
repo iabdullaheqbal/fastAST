@@ -316,8 +316,57 @@ footer {
         assert result.total_tokens > 0
 
 
+class TestRustSupport:
+    """Test Rust language support"""
+
+    def test_prune_rust_file(self):
+        """Test pruning a Rust file"""
+        code = """
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+pub fn subtract(a: i32, b: i32) -> i32 {
+    a - b
+}
+"""
+        result = prune_file(code, "add", threshold=0.3, language="rust")
+        assert result.has_syntax_error is False
+        assert result.original_tokens > 0
+        assert "pub fn add" in result.pruned_code
+
+    def test_index_rust_file(self):
+        """Test indexing a Rust file"""
+        code = """
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Point {
+    pub fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+}
+
+pub fn distance(p1: &Point, p2: &Point) -> f64 {
+    0.0
+}
+"""
+        result = index_code(code, language="rust")
+        assert result.has_syntax_error is False
+        assert result.total_lines > 0
+        assert len(result.symbols) >= 3
+
+
 class TestLanguageDetection:
     """Test language detection from file extensions"""
+
+    def test_language_detection_rust(self):
+        """Test Rust file detection"""
+        code = "fn main() {}\n"
+        result = prune_file(code, "main", language="rs")
+        assert result.has_syntax_error is False
 
     def test_language_detection_python(self):
         """Test Python file detection"""
@@ -383,7 +432,7 @@ class TestErrorHandling:
 
     def test_empty_code_handling(self):
         """Test handling of empty code"""
-        for lang in ["python", "java", "javascript", "typescript", "html", "css"]:
+        for lang in ["python", "java", "javascript", "typescript", "html", "css", "rust"]:
             result = prune_file("", "query", language=lang)
             assert result.pruned_tokens == 0
             assert result.kept_lines == 0
@@ -400,6 +449,7 @@ if __name__ == "__main__":
             TestTypeScriptSupport,
             TestHTMLSupport,
             TestCSSSupport,
+            TestRustSupport,
             TestLanguageDetection,
             TestErrorHandling,
         ]

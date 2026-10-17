@@ -9,6 +9,7 @@ pub enum Language {
     TypeScript,
     HTML,
     CSS,
+    Rust,
 }
 
 impl Language {
@@ -21,6 +22,7 @@ impl Language {
             "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
             "html" | "htm" => Some(Language::HTML),
             "css" => Some(Language::CSS),
+            "rs" => Some(Language::Rust),
             _ => None,
         }
     }
@@ -37,9 +39,8 @@ impl Language {
     pub fn empty_block_placeholder(&self) -> &'static str {
         match self {
             Language::Python => "pass",
-            Language::Java | Language::JavaScript | Language::TypeScript => "/* empty */",
+            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust => "/* empty */",
             Language::HTML => "<!-- empty -->",
-            Language::CSS => "/* empty */",
         }
     }
 
@@ -47,7 +48,7 @@ impl Language {
     pub fn block_start(&self) -> Option<char> {
         match self {
             Language::Python => None, // Python uses indentation
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS => Some('{'),
+            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust => Some('{'),
             Language::HTML => Some('<'),
         }
     }
@@ -56,7 +57,7 @@ impl Language {
     pub fn block_end(&self) -> Option<char> {
         match self {
             Language::Python => None,
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS => Some('}'),
+            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust => Some('}'),
             Language::HTML => Some('>'),
         }
     }
@@ -70,6 +71,7 @@ impl Language {
             Language::TypeScript => tree_sitter_typescript::language_typescript(),
             Language::HTML => tree_sitter_html::language(),
             Language::CSS => tree_sitter_css::language(),
+            Language::Rust => tree_sitter_rust::language(),
         }
     }
 
@@ -77,7 +79,7 @@ impl Language {
     pub fn uses_braces(&self) -> bool {
         matches!(
             self,
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS
+            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust
         )
     }
 
@@ -100,6 +102,7 @@ impl Language {
             Language::TypeScript => "TypeScript",
             Language::HTML => "HTML",
             Language::CSS => "CSS",
+            Language::Rust => "Rust",
         }
     }
 }
@@ -118,6 +121,7 @@ mod tests {
         assert_eq!(Language::from_extension("html"), Some(Language::HTML));
         assert_eq!(Language::from_extension("htm"), Some(Language::HTML));
         assert_eq!(Language::from_extension("css"), Some(Language::CSS));
+        assert_eq!(Language::from_extension("rs"), Some(Language::Rust));
         assert_eq!(Language::from_extension("unknown"), None);
     }
 
@@ -142,6 +146,10 @@ mod tests {
         assert_eq!(
             Language::from_path("style.css"),
             Some(Language::CSS)
+        );
+        assert_eq!(
+            Language::from_path("lib.rs"),
+            Some(Language::Rust)
         );
     }
 }

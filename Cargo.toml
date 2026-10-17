@@ -17,6 +17,7 @@ tree-sitter-typescript = "0.21"
 tree-sitter-html = "0.20"
 tree-sitter-css = "0.21"
 tiktoken-rs = "0.5"
+tree-sitter-rust = "0.21"
 
 [profile.release]
 opt-level = 3

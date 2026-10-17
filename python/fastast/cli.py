@@ -57,6 +57,7 @@ def detect_language_from_path(path: Path) -> Optional[str]:
         "html": "html",
         "htm": "html",
         "css": "css",
+        "rs": "rust",
     }
     return mapping.get(ext)
 
