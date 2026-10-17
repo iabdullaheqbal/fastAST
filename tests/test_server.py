@@ -92,12 +92,81 @@ def test_get_call_graph_tool(tmp_path: Path):
     assert data["callers"][0]["caller"] == "step_b"
 
 
+def test_prune_context_json():
+    json_code = '{"name": "fastast", "version": "0.1.0", "unused": {"a": 1, "b": 2}}'
+    raw = prune_context(json_code, "version", 0.5, language="json")
+    data = json.loads(raw)
+
+    assert data["syntax_valid"] is True
+    assert "version" in data["pruned_code"]
+    assert data["language"] == "json"
+
+
+def test_prune_context_toml():
+    toml_code = """
+[package]
+name = "fastast"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+"""
+    raw = prune_context(toml_code, "dependencies", 0.5, language="toml")
+    data = json.loads(raw)
+
+    assert data["syntax_valid"] is True
+    assert "dependencies" in data["pruned_code"]
+    assert data["language"] == "toml"
+
+
+def test_prune_context_unsupported_language():
+    code = "fn main() {}"
+    raw = prune_context(code, "main", 0.5, language="unsupported_lang")
+    data = json.loads(raw)
+
+    assert data["syntax_valid"] is False
+    assert data["error"] == "UNSUPPORTED_LANGUAGE"
+    assert "Unsupported language" in data["message"]
+
+
+def test_index_repository_not_found():
+    raw = index_repository("/nonexistent/directory/path/here")
+    data = json.loads(raw)
+
+    assert "error" in data
+    assert "Directory not found" in data["error"]
+
+
+def test_query_symbols_empty():
+    raw = query_symbols("")
+    data = json.loads(raw)
+
+    assert "error" in data
+    assert "Query cannot be empty" in data["error"]
+    assert data["count"] == 0
+
+
+def test_get_call_graph_empty():
+    raw = get_call_graph("")
+    data = json.loads(raw)
+
+    assert "error" in data
+    assert "Symbol name cannot be empty" in data["error"]
+    assert data["caller_count"] == 0
+
+
 if __name__ == "__main__":
     import tempfile
 
     test_prune_context_valid()
     test_prune_context_syntax_error()
     test_prune_context_empty()
+    test_prune_context_json()
+    test_prune_context_toml()
+    test_prune_context_unsupported_language()
+    test_index_repository_not_found()
+    test_query_symbols_empty()
+    test_get_call_graph_empty()
 
     with tempfile.TemporaryDirectory() as td:
         test_index_repository_tool(Path(td))
@@ -108,5 +177,6 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as td:
         test_get_call_graph_tool(Path(td))
 
-    print("All 6 server tests passed!")
+    print("All 12 server tests passed!")
+
 

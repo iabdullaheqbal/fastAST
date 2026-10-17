@@ -6,11 +6,56 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
+from fastast import __version__
 from fastast._core import prune_file
 from fastast.db import get_call_graph, get_connection, search_symbols
 from fastast.indexer import index_repository
+
+# Supported file extensions mapped to canonical language identifiers
+SUPPORTED_EXTENSIONS = {
+    "py": "python",
+    "pyi": "python",
+    "pyw": "python",
+    "js": "javascript",
+    "jsx": "javascript",
+    "mjs": "javascript",
+    "cjs": "javascript",
+    "ts": "typescript",
+    "tsx": "typescript",
+    "mts": "typescript",
+    "cts": "typescript",
+    "java": "java",
+    "html": "html",
+    "htm": "html",
+    "xhtml": "html",
+    "css": "css",
+    "rs": "rust",
+    "json": "json",
+    "jsonc": "json",
+    "toml": "toml",
+}
+
+# User-friendly aliases for --language flag
+LANGUAGE_ALIASES = {
+    "py": "python",
+    "python": "python",
+    "js": "javascript",
+    "javascript": "javascript",
+    "jsx": "javascript",
+    "ts": "typescript",
+    "typescript": "typescript",
+    "tsx": "typescript",
+    "java": "java",
+    "rs": "rust",
+    "rust": "rust",
+    "html": "html",
+    "htm": "html",
+    "css": "css",
+    "json": "json",
+    "toml": "toml",
+}
 
 
 # Module-level function aliases for backward compatibility
@@ -42,26 +87,39 @@ def supports_color() -> bool:
 
 
 def detect_language_from_path(path: Path) -> Optional[str]:
+    """Auto-detect canonical language identifier from file extension."""
     ext = path.suffix.lower().lstrip(".")
-    mapping = {
-        "py": "python",
-        "pyi": "python",
-        "pyw": "python",
-        "js": "javascript",
-        "jsx": "javascript",
-        "mjs": "javascript",
-        "cjs": "javascript",
-        "ts": "typescript",
-        "tsx": "typescript",
-        "java": "java",
-        "html": "html",
-        "htm": "html",
-        "css": "css",
-        "rs": "rust",
-        "json": "json",
-        "toml": "toml",
-    }
-    return mapping.get(ext)
+    return SUPPORTED_EXTENSIONS.get(ext)
+
+
+def validate_syntax(code: str, language: Optional[str]) -> Tuple[bool, str]:
+    """Validate syntax using language-specific runtime parser when available.
+
+    Returns:
+        (is_valid, status_message)
+    """
+    lang = (language or "python").strip().lower()
+    if lang in ("python", "py"):
+        try:
+            ast.parse(code)
+            return True, "ast.parse OK"
+        except SyntaxError as exc:
+            return False, f"SyntaxError at line {exc.lineno}"
+    elif lang == "json":
+        try:
+            json.loads(code)
+            return True, "json.loads OK"
+        except Exception:
+            return False, "Invalid JSON"
+    elif lang == "toml":
+        try:
+            import tomllib
+            tomllib.loads(code)
+            return True, "tomllib.loads OK"
+        except Exception:
+            return False, "Invalid TOML"
+    # For JS, TS, Java, Rust, HTML, CSS: Tree-Sitter error checking handled in native engine
+    return True, "Tree-sitter OK"
 
 
 def run_prune(
@@ -77,43 +135,98 @@ def run_prune(
     """Read a source file, prune using native engine, and report metrics."""
     path = Path(file_path)
     if not path.is_file():
-        sys.stderr.write(f"Error: File not found: {file_path}\n")
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": f"File not found: {file_path}",
+                        "file": file_path,
+                        "syntax_valid": False,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: File not found: {file_path}\n")
         return 1
 
     try:
         source_code = path.read_text(encoding="utf-8")
     except Exception as exc:
-        sys.stderr.write(f"Error reading {file_path}: {exc}\n")
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": f"Error reading {file_path}: {exc}",
+                        "file": file_path,
+                        "syntax_valid": False,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error reading {file_path}: {exc}\n")
         return 1
 
-    # Detect language from file path if not explicitly provided
-    detected_lang = language or detect_language_from_path(path)
+    # Resolve language (explicit flag takes precedence, else auto-detect from extension)
+    if language:
+        canonical_lang = LANGUAGE_ALIASES.get(language.strip().lower())
+        if not canonical_lang:
+            supported = ", ".join(sorted(set(LANGUAGE_ALIASES.values())))
+            if json_output:
+                print(
+                    json.dumps(
+                        {
+                            "error": f"Unsupported language '{language}'. Supported: {supported}",
+                            "file": file_path,
+                            "syntax_valid": False,
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                sys.stderr.write(
+                    f"Error: Unsupported language '{language}'.\n"
+                    f"Supported languages: {supported}\n"
+                )
+            return 1
+        detected_lang = canonical_lang
+    else:
+        detected_lang = detect_language_from_path(path) or "python"
 
-    # Execute pruning via native Rust Tree-Sitter engine
-    res = prune_file(source_code, query, threshold, language=detected_lang)
+    # Clamp threshold between 0.0 and 1.0
+    try:
+        norm_threshold = float(threshold)
+        if norm_threshold > 1.0:
+            norm_threshold = norm_threshold / 100.0 if norm_threshold <= 100.0 else 1.0
+        norm_threshold = max(0.0, min(1.0, norm_threshold))
+    except (ValueError, TypeError):
+        norm_threshold = 0.5
+
+    # Execute pruning via native Tree-Sitter engine
+    try:
+        res = prune_file(source_code, query, norm_threshold, language=detected_lang)
+    except Exception as exc:
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": f"Pruning failed: {exc}",
+                        "file": file_path,
+                        "syntax_valid": False,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: Pruning failed: {exc}\n")
+        return 1
 
     # Validate output syntax
     syntax_ok = not res.has_syntax_error
+    validator_detail = "Syntax error in code"
     if syntax_ok:
-        if detected_lang in ("python", None):
-            try:
-                ast.parse(res.pruned_code)
-                syntax_ok = True
-            except SyntaxError:
-                syntax_ok = False
-        elif detected_lang == "json":
-            try:
-                json.loads(res.pruned_code)
-                syntax_ok = True
-            except Exception:
-                syntax_ok = False
-        elif detected_lang == "toml":
-            try:
-                import tomllib
-                tomllib.loads(res.pruned_code)
-                syntax_ok = True
-            except Exception:
-                syntax_ok = False
+        syntax_ok, validator_detail = validate_syntax(res.pruned_code, detected_lang)
 
     line_savings = 0.0
     if res.total_lines > 0:
@@ -124,12 +237,16 @@ def run_prune(
     # JSON output mode
     if json_output:
         output_dict = {
+            "language": detected_lang,
+            "query": query,
+            "threshold": norm_threshold,
             "pruned_code": res.pruned_code,
             "original_tokens": res.original_tokens,
             "pruned_tokens": res.pruned_tokens,
             "savings_pct": res.savings_pct,
             "total_lines": res.total_lines,
             "kept_lines": res.kept_lines,
+            "line_savings_pct": round(line_savings, 2),
             "latency_ms": res.latency_ms,
             "has_syntax_error": res.has_syntax_error,
             "syntax_valid": syntax_ok,
@@ -145,13 +262,14 @@ def run_prune(
     reset = "\033[0m" if color else ""
 
     if syntax_ok:
-        badge = f"{green}{bold}VALID: ast.parse OK{reset}"
+        badge = f"{green}{bold}VALID: {validator_detail}{reset}"
     else:
         badge = f"{red}{bold}SYNTAX ERROR{reset}"
 
     if not quiet:
+        lang_tag = f" [Language: {bold}{detected_lang}{reset} | {badge}]"
         print(
-            f"{bold}FastAST Pruning Complete in {cyan}{res.latency_ms:.2f}ms{reset} [{badge}]"
+            f"{bold}FastAST Pruning Complete in {cyan}{res.latency_ms:.2f}ms{reset}{lang_tag}"
         )
         print(
             f"Tokens: {res.original_tokens:,} -> {res.pruned_tokens:,} "
@@ -171,7 +289,7 @@ def run_prune(
 
     # Display preview if requested
     if show_preview and not quiet:
-        print(f"\n{bold}PRUNED CODE:{reset}")
+        print(f"\n{bold}PRUNED CODE:{reset} ({detected_lang})")
         lines = res.pruned_code.splitlines()
         for line in lines:
             print(line)
@@ -185,26 +303,31 @@ def run_index(
     quiet: bool = False,
     json_output: bool = False,
 ) -> int:
-    """Index a repository or file into SQLite."""
-    color = supports_color() and not json_output
-    bold = "\033[1m" if color else ""
-    cyan = "\033[36m" if color else ""
-    green = "\033[32m" if color else ""
-    reset = "\033[0m" if color else ""
+    """Index a repository or directory into SQLite."""
+    path = Path(repo_path).resolve()
+    if not path.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": f"Path not found: {repo_path}",
+                        "repo_path": repo_path,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: Path not found: {repo_path}\n")
+        return 1
 
-    # If a file path is given, use its parent directory for indexing
-    path = Path(repo_path)
-    if path.is_file():
-        index_path = str(path.parent)
-    else:
-        index_path = repo_path
+    index_path = str(path.parent if path.is_file() else path)
 
     try:
         res = index_repository(index_path, force_reindex=force)
     except Exception as exc:
         error_msg = {"error": str(exc)}
         if json_output:
-            print(json.dumps(error_msg))
+            print(json.dumps(error_msg, indent=2))
         else:
             sys.stderr.write(f"Error during indexing: {exc}\n")
         return 1
@@ -212,6 +335,12 @@ def run_index(
     if json_output:
         print(json.dumps(res, indent=2))
         return 0
+
+    color = supports_color() and not quiet
+    bold = "\033[1m" if color else ""
+    cyan = "\033[36m" if color else ""
+    green = "\033[32m" if color else ""
+    reset = "\033[0m" if color else ""
 
     if not quiet:
         print(
@@ -240,13 +369,26 @@ def run_symbols(
     json_output: bool = False,
 ) -> int:
     """Search symbols across indexed repository."""
-    color = supports_color() and not json_output
-    bold = "\033[1m" if color else ""
-    cyan = "\033[36m" if color else ""
-    yellow = "\033[33m" if color else ""
-    reset = "\033[0m" if color else ""
-
     root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": f"Directory not found: {dir_path}",
+                        "query": query,
+                        "symbols": [],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    if root.is_file():
+        root = root.parent
+
     db_path = root / ".fastast.db"
     if not db_path.exists():
         if not quiet and not json_output:
@@ -269,11 +411,21 @@ def run_symbols(
         print(json.dumps(output, indent=2))
         return 0
 
+    color = supports_color() and not quiet
+    bold = "\033[1m" if color else ""
+    cyan = "\033[36m" if color else ""
+    yellow = "\033[33m" if color else ""
+    reset = "\033[0m" if color else ""
+
     if not quiet:
         kind_str = f" [{kind}]" if kind else ""
+        if not symbols:
+            print(f"No symbols found matching '{query}'{kind_str}.")
+            return 0
+
         print(f"{bold}Found {len(symbols)} symbol(s) matching '{query}'{kind_str}:{reset}")
         for s in symbols:
-            parent = f"{s['parent_name']}." if s["parent_name"] else ""
+            parent = f"{s['parent_name']}." if s.get("parent_name") else ""
             print(
                 f"  {yellow}[{s['kind']}]{reset} {bold}{parent}{s['name']}{reset}{s['signature']} "
                 f"-> {cyan}{s['file_path']}:{s['start_line']}-{s['end_line']}{reset}"
@@ -293,14 +445,26 @@ def run_calls(
     json_output: bool = False,
 ) -> int:
     """Display callers and callees for a symbol."""
-    color = supports_color() and not json_output
-    bold = "\033[1m" if color else ""
-    cyan = "\033[36m" if color else ""
-    green = "\033[32m" if color else ""
-    yellow = "\033[33m" if color else ""
-    reset = "\033[0m" if color else ""
-
     root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": f"Directory not found: {dir_path}",
+                        "symbol": symbol_name,
+                        "call_graph": {},
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    if root.is_file():
+        root = root.parent
+
     db_path = root / ".fastast.db"
     if not db_path.exists():
         if not quiet and not json_output:
@@ -314,12 +478,24 @@ def run_calls(
         conn.close()
 
     if json_output:
-        # Wrap the call graph in a top-level "call_graph" key for consistency
+        # Wrap call graph for backward compatibility while providing top-level fields
         output = {
-            "call_graph": graph
+            "call_graph": graph,
+            "symbol": graph["symbol"],
+            "caller_count": graph["caller_count"],
+            "callee_count": graph["callee_count"],
+            "callers": graph["callers"],
+            "callees": graph["callees"],
         }
         print(json.dumps(output, indent=2))
         return 0
+
+    color = supports_color() and not quiet
+    bold = "\033[1m" if color else ""
+    cyan = "\033[36m" if color else ""
+    green = "\033[32m" if color else ""
+    yellow = "\033[33m" if color else ""
+    reset = "\033[0m" if color else ""
 
     if not quiet:
         print(f"{bold}Call Graph for '{symbol_name}':{reset}")
@@ -350,44 +526,98 @@ def main() -> None:
     """CLI entrypoint for fastast."""
     parser = argparse.ArgumentParser(
         prog="fastast",
-        description="FastAST: High-performance syntax-guaranteed context pruning and repository symbol engine",
+        description=(
+            "FastAST: Ultra-fast, syntax-guaranteed context pruner & codebase intelligence engine.\n"
+            "Prunes source code across 8 languages (Python, JS/TS, Java, Rust, HTML, CSS, JSON, TOML)\n"
+            "by 40-80% to fit LLM context windows while guaranteeing structural validity."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast prune src/app.py -q 'login_user' --preview\n"
+            "  fastast prune config.json -q 'database' --json\n"
+            "  fastast prune Cargo.toml -q 'dependencies' --preview\n"
+            "  fastast index .\n"
+            "  fastast symbols 'handle_request' --kind function\n"
+            "  fastast calls 'execute_query'\n"
+            "  fastast src/handler.py -q 'validate'  # shorthand prune"
+        ),
     )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"fastast {__version__}",
+    )
+
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # `prune` subcommand
     prune_parser = subparsers.add_parser(
-        "prune", help="Prune a Python source file based on a focus query"
+        "prune",
+        help="Prune a source file based on a focus query while guaranteeing syntax",
+        description=(
+            "Prune source code (Python, JS/JSX, TS/TSX, Java, Rust, HTML, CSS, JSON, TOML)\n"
+            "by removing query-irrelevant function/class/block bodies and replacing them\n"
+            "with valid language stubs (e.g. 'pass', empty blocks, '{}')."
+        ),
     )
-    prune_parser.add_argument("file", help="Path to Python source file")
     prune_parser.add_argument(
-        "-q", "--query", required=True, help="Semantic search query or symbol identifier"
+        "file",
+        help="Path to source file to prune",
+    )
+    prune_parser.add_argument(
+        "-q",
+        "--query",
+        required=True,
+        help="Target symbol name, keywords, or semantic intent to retain",
     )
     prune_parser.add_argument(
         "-t",
         "--threshold",
         type=float,
         default=0.5,
-        help="Relevance threshold (0.0 - 1.0, default: 0.5)",
+        help="Relevance threshold between 0.0 and 1.0 (default: 0.5)",
     )
     prune_parser.add_argument(
-        "-o", "--output", help="Optional path to write pruned code"
+        "-o",
+        "--output",
+        help="Optional path to write pruned code",
     )
     prune_parser.add_argument(
-        "--preview", action="store_true", help="Print preview of pruned code to stdout"
+        "--preview",
+        action="store_true",
+        help="Print preview of pruned code to stdout",
     )
     prune_parser.add_argument(
-        "--show-code", action="store_true", help="Show pruned code on stdout"
+        "--show-code",
+        action="store_true",
+        help="Show pruned code on stdout (alias for --preview)",
     )
     prune_parser.add_argument(
-        "--json", action="store_true", help="Output results as JSON"
+        "--json",
+        action="store_true",
+        help="Output results as JSON with token metrics, reduction stats, and code",
     )
     prune_parser.add_argument(
-        "-l", "--language", help="Source code language (python, javascript, jsx, java, etc.)"
+        "-l",
+        "--language",
+        help="Explicit language override (python, javascript, typescript, java, rust, html, css, json, toml)",
+    )
+    prune_parser.add_argument(
+        "-s",
+        "--silent",
+        "--quiet",
+        dest="quiet",
+        action="store_true",
+        help="Suppress non-error status output",
     )
 
     # `index` subcommand
     index_parser = subparsers.add_parser(
-        "index", help="Index a repository into a local SQLite symbol graph"
+        "index",
+        help="Index a repository into a local SQLite symbol graph (.fastast.db)",
+        description="Recursively scan and extract functions, classes, methods, imports, and calls into SQLite.",
     )
     index_parser.add_argument(
         "dir",
@@ -396,17 +626,34 @@ def main() -> None:
         help="Root directory of the repository (default: current directory)",
     )
     index_parser.add_argument(
-        "--force", action="store_true", help="Force reindexing all files"
+        "--force",
+        action="store_true",
+        help="Force reindexing all files even if unchanged",
     )
     index_parser.add_argument(
-        "--json", action="store_true", help="Output results as JSON"
+        "--json",
+        action="store_true",
+        help="Output indexing statistics in JSON format",
+    )
+    index_parser.add_argument(
+        "-s",
+        "--silent",
+        "--quiet",
+        dest="quiet",
+        action="store_true",
+        help="Suppress progress output",
     )
 
     # `symbols` subcommand
     symbols_parser = subparsers.add_parser(
-        "symbols", help="Search for symbols in the indexed repository"
+        "symbols",
+        help="Search for symbols in the indexed repository",
+        description="Search symbols by name or substring. Automatically creates index if not present.",
     )
-    symbols_parser.add_argument("query", help="Symbol name or substring to search")
+    symbols_parser.add_argument(
+        "query",
+        help="Symbol name or substring to search for",
+    )
     symbols_parser.add_argument(
         "-k",
         "--kind",
@@ -427,14 +674,29 @@ def main() -> None:
         help="Repository root directory (default: current directory)",
     )
     symbols_parser.add_argument(
-        "--json", action="store_true", help="Output results as JSON"
+        "--json",
+        action="store_true",
+        help="Output results as JSON",
+    )
+    symbols_parser.add_argument(
+        "-s",
+        "--silent",
+        "--quiet",
+        dest="quiet",
+        action="store_true",
+        help="Suppress status output",
     )
 
     # `calls` subcommand
     calls_parser = subparsers.add_parser(
-        "calls", help="Display call graph (callers and callees) for a symbol"
+        "calls",
+        help="Display call graph (callers and callees) for a symbol",
+        description="Inspect invocation hierarchy: callers (who calls this) and callees (what this calls).",
     )
-    calls_parser.add_argument("symbol", help="Function or method name")
+    calls_parser.add_argument(
+        "symbol",
+        help="Function or method name to inspect",
+    )
     calls_parser.add_argument(
         "-d",
         "--dir",
@@ -442,25 +704,32 @@ def main() -> None:
         help="Repository root directory (default: current directory)",
     )
     calls_parser.add_argument(
-        "--json", action="store_true", help="Output results as JSON"
+        "--json",
+        action="store_true",
+        help="Output results as JSON",
+    )
+    calls_parser.add_argument(
+        "-s",
+        "--silent",
+        "--quiet",
+        dest="quiet",
+        action="store_true",
+        help="Suppress status output",
     )
 
-    # Support top-level argument fallback if invoked without 'prune' keyword
-    parser.add_argument("file_fallback", nargs="?", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "-q", "--query", dest="top_query", help=argparse.SUPPRESS
-    )
-    parser.add_argument(
-        "-t", "--threshold", dest="top_threshold", type=float, default=0.5, help=argparse.SUPPRESS
-    )
-    parser.add_argument(
-        "-o", "--output", dest="top_output", help=argparse.SUPPRESS
-    )
-    parser.add_argument(
-        "--preview", dest="top_preview", action="store_true", help=argparse.SUPPRESS
-    )
+    # Check for shorthand invocation: `fastast <file> -q <query>`
+    subcommands = {"prune", "index", "symbols", "calls"}
+    help_version = {"-h", "--help", "-v", "--version"}
+    raw_args = sys.argv[1:]
 
-    args = parser.parse_args()
+    if (
+        raw_args
+        and not any(a in subcommands for a in raw_args)
+        and not any(a in help_version for a in raw_args)
+    ):
+        args = parser.parse_args(["prune"] + raw_args)
+    else:
+        args = parser.parse_args()
 
     if args.command == "prune":
         sys.exit(
@@ -469,9 +738,11 @@ def main() -> None:
                 args.query,
                 args.threshold,
                 args.output,
-                getattr(args, 'show_code', False) or getattr(args, 'preview', False),
-                json_output=getattr(args, 'json', False),
-                language=getattr(args, 'language', None),
+                show_preview=getattr(args, "show_code", False)
+                or getattr(args, "preview", False),
+                quiet=getattr(args, "quiet", False),
+                json_output=getattr(args, "json", False),
+                language=getattr(args, "language", None),
             )
         )
     elif args.command == "index":
@@ -479,7 +750,8 @@ def main() -> None:
             run_index(
                 args.dir,
                 force=args.force,
-                json_output=getattr(args, 'json', False),
+                quiet=getattr(args, "quiet", False),
+                json_output=getattr(args, "json", False),
             )
         )
     elif args.command == "symbols":
@@ -489,7 +761,8 @@ def main() -> None:
                 kind=args.kind,
                 limit=args.limit,
                 dir_path=args.dir,
-                json_output=getattr(args, 'json', False),
+                quiet=getattr(args, "quiet", False),
+                json_output=getattr(args, "json", False),
             )
         )
     elif args.command == "calls":
@@ -497,17 +770,8 @@ def main() -> None:
             run_calls(
                 args.symbol,
                 dir_path=args.dir,
-                json_output=getattr(args, 'json', False),
-            )
-        )
-    elif args.file_fallback and args.top_query:
-        sys.exit(
-            run_prune(
-                args.file_fallback,
-                args.top_query,
-                args.top_threshold,
-                args.top_output,
-                args.top_preview,
+                quiet=getattr(args, "quiet", False),
+                json_output=getattr(args, "json", False),
             )
         )
     else:
@@ -517,4 +781,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
