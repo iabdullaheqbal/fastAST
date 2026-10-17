@@ -121,23 +121,26 @@ FastAST is structured as a hybrid Rust/Python system leveraging PyO3 with Python
 
 ### Prerequisites
 - **Python:** `>= 3.10`
-- **Rust Toolchain:** `rustc` and `cargo` `>= 1.70`
-- **uv:** (Recommended) Fast Python package manager
+- **Rust Toolchain:** (Only needed when building from source) `cargo` `>= 1.70`
 
-### 1. Installation & Build
+### 1. Installation
 
-Clone the repository and install dependencies:
-
+#### From PyPI (Pre-built Binary Wheels - No Rust required)
 ```bash
-git clone https://github.com/your-username/fastAST.git
+pip install fastast
+# or with uv:
+uv pip install fastast
+```
+
+#### From Source
+```bash
+git clone https://github.com/iabdullaheqbal/fastAST.git
 cd fastAST
 
-# Create virtual environment and install build tools
-./.bin/uv venv
-source .venv/bin/activate
-
-# Build and install native Rust extension in release mode
-PATH="$PWD/.bin:$PATH" PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop --uv --release
+# Install in development mode
+pip install -e .
+# or build wheel with maturin
+maturin build --release
 ```
 
 ### 2. Verify Installation

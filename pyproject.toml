@@ -5,12 +5,58 @@ build-backend = "maturin"
 [project]
 name = "fastast"
 version = "0.1.0"
-description = "High-performance syntax-guaranteed context pruning MCP server for AI coding agents"
+description = "High-performance syntax-guaranteed context engine and symbol indexer for coding agents"
 readme = "README.md"
+authors = [
+    { name = "Abdullah Eqbal", email = "iabdullaheqbal@gmail.com" }
+]
+license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
+keywords = [
+    "ast",
+    "tree-sitter",
+    "pruning",
+    "context-engine",
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "llm",
+    "code-analysis",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "mcp>=1.0.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/iabdullaheqbal/fastAST"
+Repository = "https://github.com/iabdullaheqbal/fastAST"
+Issues = "https://github.com/iabdullaheqbal/fastAST/issues"
+Documentation = "https://github.com/iabdullaheqbal/fastAST#readme"
 
 [project.scripts]
 fastast = "fastast.cli:main"
@@ -20,3 +66,5 @@ fastast-mcp = "fastast.server:main"
 python-source = "python"
 module-name = "fastast._core"
 features = ["pyo3/extension-module", "pyo3/abi3-py310"]
+strip = true
+include = ["LICENSE", "README.md", "python/fastast/py.typed", "python/fastast/_core.pyi"]

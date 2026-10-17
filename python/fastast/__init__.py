@@ -2,6 +2,8 @@
 
 from typing import Optional
 
+__version__ = "0.1.0"
+
 try:
     from fastast._core import (
         ExtractedCall,
@@ -35,6 +37,7 @@ except ImportError:
     get_call_graph = None  # type: ignore
 
 __all__ = [
+    "__version__",
     "PruneResult",
     "prune_file",
     "index_code",
