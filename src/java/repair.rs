@@ -109,6 +109,25 @@ fn reconstruct_type(
     };
 
     if !has_kept_children {
+        if let JavaNodeKind::Enum { constants_range: Some((c_start, c_end)), .. } = &item.kind {
+            let constants_str = &source_code[*c_start..*c_end];
+            let trimmed = constants_str.trim();
+            if !trimmed.is_empty() {
+                output.push_str(sig.trim_end());
+                output.push_str(" {\n");
+                let indent = "    ".repeat(indent_level + 1);
+                output.push_str(&indent);
+                output.push_str(trimmed);
+                if !trimmed.ends_with(';') {
+                    output.push(';');
+                }
+                output.push('\n');
+                let closing_indent = "    ".repeat(indent_level);
+                output.push_str(&closing_indent);
+                output.push('}');
+                return;
+            }
+        }
         output.push_str(sig.trim_end());
         output.push_str(" {}");
         return;
@@ -118,6 +137,21 @@ fn reconstruct_type(
     output.push_str(" {\n");
 
     let indent = "    ".repeat(indent_level + 1);
+
+    // If this is an enum with constants, preserve the constants block before methods
+    if let JavaNodeKind::Enum { constants_range: Some((c_start, c_end)), .. } = &item.kind {
+        let constants_str = &source_code[*c_start..*c_end];
+        let trimmed = constants_str.trim();
+        if !trimmed.is_empty() {
+            output.push_str(&indent);
+            output.push_str(trimmed);
+            if !trimmed.ends_with(';') {
+                output.push(';');
+            }
+            output.push_str("\n\n");
+        }
+    }
+
     let mut first_member = true;
 
     for &cid in &item.children_ids {
@@ -144,34 +178,38 @@ fn reconstruct_type(
                     let snippet = &source_code[child.start_byte..child.end_byte];
                     output.push_str(&indent);
                     output.push_str(snippet.trim());
-                } else {
-                    if let Some((sig_start, sig_end)) = child.signature_byte_range {
-                        let ms = &source_code[sig_start..sig_end];
-                        output.push_str(&indent);
-                        output.push_str(ms.trim());
-                        output.push_str(" {}");
-                    }
+                } else if let Some((sig_start, sig_end)) = child.signature_byte_range {
+                    let ms = &source_code[sig_start..sig_end];
+                    output.push_str(&indent);
+                    output.push_str(ms.trim());
+                    output.push_str(" {}");
                 }
             }
-            JavaNodeKind::Method { return_type, .. } => {
+            JavaNodeKind::Method { return_type, is_abstract, .. } => {
                 if c_dec.keep_full {
                     let snippet = &source_code[child.start_byte..child.end_byte];
                     output.push_str(&indent);
-                    output.push_str(snippet.trim());
-                } else {
-                    if child.body_byte_range.is_none() {
-                        // Semicolon-terminated signature (interface / abstract method)
-                        let snippet = &source_code[child.start_byte..child.end_byte];
-                        output.push_str(&indent);
-                        output.push_str(snippet.trim());
-                    } else if let Some((sig_start, sig_end)) = child.signature_byte_range {
-                        let ms = &source_code[sig_start..sig_end];
-                        let stub = stub_for_return_type(return_type);
-                        output.push_str(&indent);
-                        output.push_str(ms.trim());
-                        output.push(' ');
-                        output.push_str(stub);
+                    let trimmed = snippet.trim();
+                    output.push_str(trimmed);
+                    if *is_abstract && !trimmed.ends_with(';') {
+                        output.push(';');
                     }
+                } else if child.body_byte_range.is_none() || *is_abstract {
+                    // Semicolon-terminated signature (interface / abstract method)
+                    let snippet = &source_code[child.start_byte..child.end_byte];
+                    output.push_str(&indent);
+                    let trimmed = snippet.trim();
+                    output.push_str(trimmed);
+                    if !trimmed.ends_with(';') {
+                        output.push(';');
+                    }
+                } else if let Some((sig_start, sig_end)) = child.signature_byte_range {
+                    let ms = &source_code[sig_start..sig_end];
+                    let stub = stub_for_return_type(return_type);
+                    output.push_str(&indent);
+                    output.push_str(ms.trim());
+                    output.push(' ');
+                    output.push_str(stub);
                 }
             }
             JavaNodeKind::Class { .. }

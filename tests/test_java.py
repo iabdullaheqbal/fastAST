@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import fastast
 from fastast import index_code, prune_file
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -258,6 +259,326 @@ def test_cli_prune_java():
     assert data["latency_ms"] < 25.0
 
 
+def test_java_abstract_class_and_methods():
+    """Test Java abstract class with abstract methods (must terminate with ;) and concrete methods."""
+    code = """package com.example.service;
+
+public abstract class BaseProcessor<T> {
+    public abstract T process(T input);
+
+    public boolean isValid(T input) {
+        return input != null;
+    }
+
+    public void execute(T input) {
+        if (isValid(input)) {
+            process(input);
+        }
+    }
+}
+"""
+    res = fastast.prune_file(code, "isValid", threshold=0.5, language="java")
+    assert not res.has_syntax_error
+
+    # Abstract method preserved without invalid body
+    assert "public abstract T process(T input);" in res.pruned_code
+    assert "process(T input) {" not in res.pruned_code
+
+    # Matched method preserved
+    assert "public boolean isValid(T input) {" in res.pruned_code
+    assert "return input != null;" in res.pruned_code
+
+    # Unmatched concrete method stubbed
+    assert "public void execute(T input) {}" in res.pruned_code
+
+    reparse = fastast.prune_file(res.pruned_code, "isValid", threshold=0.5, language="java")
+    assert not reparse.has_syntax_error
+
+
+def test_java_deep_transitive_dependency_closure():
+    """Test multi-hop transitive dependency closure across classes, interfaces, and enums."""
+    code = """package com.example.app;
+
+public enum OrderStatus {
+    PENDING, COMPLETED, CANCELLED
+}
+
+public class Order {
+    private OrderStatus status;
+
+    public OrderStatus getStatus() {
+        return status;
+    }
+}
+
+public interface OrderRepository {
+    Order findById(String id);
+}
+
+public class OrderService {
+    private OrderRepository repo;
+
+    public Order getOrder(String id) {
+        return repo.findById(id);
+    }
+
+    public void unneededServiceMethod() {
+        System.out.println("not used");
+    }
+}
+
+public class OrderController {
+    private OrderService service;
+
+    public Order show(String id) {
+        return service.getOrder(id);
+    }
+
+    public void unneededControllerMethod() {
+        System.out.println("also not used");
+    }
+}
+"""
+    res = fastast.prune_file(code, "show", threshold=0.5, language="java")
+    assert not res.has_syntax_error
+
+    # Controller kept with show implementation
+    assert "public class OrderController {" in res.pruned_code
+    assert "return service.getOrder(id);" in res.pruned_code
+    assert "public void unneededControllerMethod() {}" in res.pruned_code
+
+    # Service referenced by controller kept as skeleton with field and stubbed methods
+    assert "public class OrderService {" in res.pruned_code
+    assert "private OrderRepository repo;" in res.pruned_code
+
+    # Repository interface referenced by service kept
+    assert "public interface OrderRepository {" in res.pruned_code
+    assert "Order findById(String id);" in res.pruned_code
+
+    # Order class referenced by repository kept
+    assert "public class Order {" in res.pruned_code
+
+    # OrderStatus enum referenced by Order kept with constants
+    assert "public enum OrderStatus {" in res.pruned_code
+    assert "PENDING, COMPLETED, CANCELLED;" in res.pruned_code
+
+    reparse = fastast.prune_file(res.pruned_code, "show", threshold=0.5, language="java")
+    assert not reparse.has_syntax_error
+
+
+def test_java_getter_setter_companion_pairing():
+    """Test JavaBeans getter/setter companion pairing."""
+    code = """package com.example;
+
+public class Account {
+    private int balance;
+    private boolean active;
+
+    public int getBalance() {
+        return this.balance;
+    }
+
+    public void setBalance(int balance) {
+        this.balance = balance;
+    }
+
+    public boolean isActive() {
+        return this.active;
+    }
+
+    public void setActive(boolean active) {
+        this.active = active;
+    }
+
+    public void auditLog() {
+        System.out.println("Auditing account...");
+    }
+}
+"""
+    res = fastast.prune_file(code, "getBalance", threshold=0.5, language="java")
+    assert not res.has_syntax_error
+
+    # Both getter and setter for balance kept full
+    assert "public int getBalance() {" in res.pruned_code
+    assert "return this.balance;" in res.pruned_code
+    assert "public void setBalance(int balance) {" in res.pruned_code
+    assert "this.balance = balance;" in res.pruned_code
+
+    # Other property methods stubbed with appropriate return type
+    assert "public boolean isActive() { return false; }" in res.pruned_code
+    assert "public void setActive(boolean active) {}" in res.pruned_code
+    assert "public void auditLog() {}" in res.pruned_code
+
+    reparse = fastast.prune_file(res.pruned_code, "getBalance", threshold=0.5, language="java")
+    assert not reparse.has_syntax_error
+
+
+def test_java_enum_with_methods_and_constants():
+    """Test enums with constants and member methods."""
+    code = """package com.example.math;
+
+public enum Operation {
+    PLUS("+") {
+        public double apply(double x, double y) { return x + y; }
+    },
+    MINUS("-") {
+        public double apply(double x, double y) { return x - y; }
+    };
+
+    private final String symbol;
+
+    Operation(String symbol) {
+        this.symbol = symbol;
+    }
+
+    public String getSymbol() {
+        return this.symbol;
+    }
+
+    public void unusedHelper() {
+        System.out.println("helper");
+    }
+}
+"""
+    res = fastast.prune_file(code, "getSymbol", threshold=0.5, language="java")
+    assert not res.has_syntax_error
+
+    # Constants block preserved before methods
+    assert "PLUS(\"+\")" in res.pruned_code
+    assert "MINUS(\"-\")" in res.pruned_code
+
+    # Matched method kept
+    assert "public String getSymbol() {" in res.pruned_code
+    assert "return this.symbol;" in res.pruned_code
+
+    # Unmatched helper method stubbed
+    assert "public void unusedHelper() {}" in res.pruned_code
+
+    reparse = fastast.prune_file(res.pruned_code, "getSymbol", threshold=0.5, language="java")
+    assert not reparse.has_syntax_error
+
+
+def test_java_overloads():
+    """Test constructors and method overloads."""
+    code = """package com.example.model;
+
+public class User {
+    private String id;
+    private String email;
+
+    public User(String id) {
+        this.id = id;
+        this.email = "default@example.com";
+    }
+
+    public User(String id, String email) {
+        this.id = id;
+        this.email = email;
+    }
+
+    public void log(String msg) {
+        System.out.println("INFO: " + msg);
+    }
+
+    public void log(String msg, int level) {
+        System.out.println("LEVEL " + level + ": " + msg);
+    }
+}
+"""
+    res = fastast.prune_file(code, "log level", threshold=0.3, language="java")
+    assert not res.has_syntax_error
+
+    # Constructors kept as skeletons
+    assert "public User(String id) {}" in res.pruned_code
+    assert "public User(String id, String email) {}" in res.pruned_code
+
+    # Overloaded methods matched
+    assert "public void log(String msg, int level) {" in res.pruned_code
+    assert "LEVEL " in res.pruned_code
+
+    reparse = fastast.prune_file(res.pruned_code, "log level", threshold=0.3, language="java")
+    assert not reparse.has_syntax_error
+
+
+def test_java_interface_default_and_static_methods():
+    """Test Java interfaces with abstract, default, and static methods."""
+    code = """package com.example.service;
+
+public interface Greeter {
+    void greet(String name);
+
+    default String formatName(String name) {
+        return name != null ? name.trim().toUpperCase() : "ANONYMOUS";
+    }
+
+    static Greeter createDefault() {
+        return null;
+    }
+}
+"""
+    res = fastast.prune_file(code, "formatName", threshold=0.5, language="java")
+    assert not res.has_syntax_error
+
+    # Abstract method preserved with semicolon
+    assert "void greet(String name);" in res.pruned_code
+
+    # Default method kept full
+    assert "default String formatName(String name) {" in res.pruned_code
+    assert "return name != null ? name.trim().toUpperCase() : \"ANONYMOUS\";" in res.pruned_code
+
+    # Static method stubbed with return type
+    assert "static Greeter createDefault() { return null; }" in res.pruned_code
+
+    reparse = fastast.prune_file(res.pruned_code, "formatName", threshold=0.5, language="java")
+    assert not reparse.has_syntax_error
+
+
+def test_java_docstring_and_call_graph_indexing():
+    """Test Javadoc extraction and static call graph extraction."""
+    code = """package com.example;
+
+/**
+ * Service for handling user authentication.
+ */
+public class AuthService {
+    private String secretKey;
+
+    /**
+     * Authenticates a user.
+     */
+    public boolean login(String username, String password) {
+        String hash = hashPassword(password);
+        return verify(hash);
+    }
+
+    private String hashPassword(String raw) {
+        return raw + secretKey;
+    }
+
+    private boolean verify(String hash) {
+        return hash != null;
+    }
+}
+"""
+    res = fastast.index_code(code, language="java")
+    assert not res.has_syntax_error
+
+    sym_map = {s.name: s for s in res.symbols}
+    assert "AuthService" in sym_map
+    assert sym_map["AuthService"].docstring == "Service for handling user authentication."
+
+    assert "login" in sym_map
+    assert sym_map["login"].docstring == "Authenticates a user."
+    assert sym_map["login"].parent_name == "AuthService"
+
+    assert "hashPassword" in sym_map
+    assert sym_map["hashPassword"].parent_name == "AuthService"
+
+    call_pairs = [(c.caller_name, c.callee_name) for c in res.calls]
+    assert ("login", "hashPassword") in call_pairs
+    assert ("login", "verify") in call_pairs
+
+
 if __name__ == "__main__":
     test_java_method_pruning_basic()
     test_java_multiple_query_match()
@@ -268,4 +589,11 @@ if __name__ == "__main__":
     test_java_symbol_indexing()
     test_java_syntax_reparse_validation()
     test_cli_prune_java()
-    print("All 9 Java tests passed successfully!")
+    test_java_abstract_class_and_methods()
+    test_java_deep_transitive_dependency_closure()
+    test_java_getter_setter_companion_pairing()
+    test_java_enum_with_methods_and_constants()
+    test_java_overloads()
+    test_java_interface_default_and_static_methods()
+    test_java_docstring_and_call_graph_indexing()
+    print("All 16 Java tests passed successfully!")

@@ -1,7 +1,8 @@
 //! Java AST Parser using Tree-Sitter
 //!
 //! Extracts packages, imports, classes, interfaces, enums, records,
-//! methods, constructors, fields, and inner classes.
+//! methods, constructors, fields, and inner classes with full symbol
+//! definitions, referenced symbols, call graph, and Javadoc extraction.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -31,6 +32,7 @@ pub enum JavaNodeKind {
     },
     Enum {
         name: String,
+        constants_range: Option<(usize, usize)>,
     },
     Record {
         name: String,
@@ -43,12 +45,21 @@ pub enum JavaNodeKind {
         return_type: String,
         is_static: bool,
         is_abstract: bool,
+        is_getter: bool,
+        is_setter: bool,
     },
     Field {
         name: String,
         field_type: String,
     },
     Other,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaCall {
+    pub caller_name: Option<String>,
+    pub callee_name: String,
+    pub line_number: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +84,7 @@ pub struct JavaScopeItem {
     /// Referenced identifiers in this scope
     pub referenced_symbols: Vec<String>,
     pub children_ids: Vec<usize>,
+    pub docstring: Option<String>,
 }
 
 pub fn parse_ast(code: &str) -> Result<Tree, String> {
@@ -122,6 +134,7 @@ fn walk_node(
                 defined_symbols: tokens,
                 referenced_symbols: Vec::new(),
                 children_ids: Vec::new(),
+                docstring: None,
             });
 
             if let Some(pid) = parent_id {
@@ -156,6 +169,7 @@ fn walk_node(
                 defined_symbols: defined,
                 referenced_symbols: Vec::new(),
                 children_ids: Vec::new(),
+                docstring: None,
             });
 
             if let Some(pid) = parent_id {
@@ -201,6 +215,7 @@ fn process_class_declaration(
     let end_byte = node.end_byte();
     let start_row = node.start_position().row;
     let end_row = node.end_position().row;
+    let docstring = extract_javadoc(node, source_bytes);
 
     let mut name = String::new();
     let mut is_abstract = false;
@@ -271,6 +286,25 @@ fn process_class_declaration(
         defined.push(name.clone());
     }
 
+    let mut referenced_symbols = Vec::new();
+    if let Some(tp) = type_params_node {
+        referenced_symbols.extend(collect_referenced_symbols(tp, source_bytes, &defined));
+    }
+    if let Some(ref sc) = superclass {
+        for w in tokenize_words(sc) {
+            if !defined.contains(&w) && !JAVA_PRIMITIVES.contains(&w.to_lowercase().as_str()) && !referenced_symbols.contains(&w) {
+                referenced_symbols.push(w);
+            }
+        }
+    }
+    for iface in &interfaces {
+        for w in tokenize_words(iface) {
+            if !defined.contains(&w) && !JAVA_PRIMITIVES.contains(&w.to_lowercase().as_str()) && !referenced_symbols.contains(&w) {
+                referenced_symbols.push(w);
+            }
+        }
+    }
+
     let current_id = items.len();
     items.push(JavaScopeItem {
         id: current_id,
@@ -290,8 +324,9 @@ fn process_class_declaration(
         signature_tokens: signature_tokens.clone(),
         tokens: signature_tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -341,6 +376,7 @@ fn process_interface_declaration(
     let end_byte = node.end_byte();
     let start_row = node.start_position().row;
     let end_row = node.end_position().row;
+    let docstring = extract_javadoc(node, source_bytes);
 
     let mut name = String::new();
     let mut interfaces = Vec::new();
@@ -396,6 +432,18 @@ fn process_interface_declaration(
         defined.push(name.clone());
     }
 
+    let mut referenced_symbols = Vec::new();
+    if let Some(tp) = type_params_node {
+        referenced_symbols.extend(collect_referenced_symbols(tp, source_bytes, &defined));
+    }
+    for iface in &interfaces {
+        for w in tokenize_words(iface) {
+            if !defined.contains(&w) && !JAVA_PRIMITIVES.contains(&w.to_lowercase().as_str()) && !referenced_symbols.contains(&w) {
+                referenced_symbols.push(w);
+            }
+        }
+    }
+
     let current_id = items.len();
     items.push(JavaScopeItem {
         id: current_id,
@@ -410,8 +458,9 @@ fn process_interface_declaration(
         signature_tokens: signature_tokens.clone(),
         tokens: signature_tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
@@ -443,7 +492,7 @@ fn process_interface_declaration(
 fn process_enum_declaration(
     node: Node,
     source_bytes: &[u8],
-    _lines: &[&str],
+    lines: &[&str],
     parent_id: Option<usize>,
     items: &mut Vec<JavaScopeItem>,
 ) {
@@ -451,16 +500,28 @@ fn process_enum_declaration(
     let end_byte = node.end_byte();
     let start_row = node.start_position().row;
     let end_row = node.end_position().row;
+    let docstring = extract_javadoc(node, source_bytes);
 
     let mut name = String::new();
     let mut body_node = None;
 
     let mut cursor = node.walk();
+    let mut interfaces = Vec::new();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "identifier" => {
                 if name.is_empty() {
                     name = child.utf8_text(source_bytes).unwrap_or("").to_string();
+                }
+            }
+            "super_interfaces" => {
+                if let Ok(text) = child.utf8_text(source_bytes) {
+                    for part in text.trim_start_matches("implements").split(',') {
+                        let trimmed = part.trim();
+                        if !trimmed.is_empty() {
+                            interfaces.push(trimmed.to_string());
+                        }
+                    }
                 }
             }
             "enum_body" => body_node = Some(child),
@@ -481,40 +542,126 @@ fn process_enum_declaration(
     if !name.is_empty() {
         signature_tokens.push(name.to_lowercase());
     }
+    for iface in &interfaces {
+        signature_tokens.extend(tokenize_words(iface));
+    }
 
-    let all_tokens = extract_all_identifiers(node, source_bytes);
     let mut defined = Vec::new();
     if !name.is_empty() {
         defined.push(name.clone());
+    }
+
+    // Capture enum constants in defined_symbols and calculate constants range
+    let mut constants_range = None;
+    let mut referenced_symbols = Vec::new();
+    if let Some(body) = body_node {
+        let mut first_const_start = None;
+        let mut last_const_end = None;
+        let mut b_cursor = body.walk();
+        for child in body.children(&mut b_cursor) {
+            if child.kind() == "enum_constant" {
+                if first_const_start.is_none() {
+                    first_const_start = Some(child.start_byte());
+                }
+                last_const_end = Some(child.end_byte());
+                if let Some(id_node) = child.child_by_field_name("name").or_else(|| child.children(&mut child.walk()).find(|c| c.kind() == "identifier")) {
+                    if let Ok(c_name) = id_node.utf8_text(source_bytes) {
+                        defined.push(c_name.to_string());
+                        signature_tokens.push(c_name.to_lowercase());
+                    }
+                }
+                if let Some(args) = child.child_by_field_name("arguments") {
+                    referenced_symbols.extend(collect_referenced_symbols(args, source_bytes, &defined));
+                }
+            } else if child.kind() == ";" && first_const_start.is_some() {
+                last_const_end = Some(child.end_byte());
+                break;
+            }
+        }
+        if let (Some(s), Some(e)) = (first_const_start, last_const_end) {
+            constants_range = Some((s, e));
+        }
+    }
+
+    for iface in &interfaces {
+        for w in tokenize_words(iface) {
+            if !defined.contains(&w) && !JAVA_PRIMITIVES.contains(&w.to_lowercase().as_str()) && !referenced_symbols.contains(&w) {
+                referenced_symbols.push(w);
+            }
+        }
     }
 
     let current_id = items.len();
     items.push(JavaScopeItem {
         id: current_id,
         parent_id,
-        kind: JavaNodeKind::Enum { name },
+        kind: JavaNodeKind::Enum { name, constants_range },
         start_byte,
         end_byte,
         start_row,
         end_row,
         body_byte_range,
         signature_byte_range,
-        signature_tokens,
-        tokens: all_tokens,
+        signature_tokens: signature_tokens.clone(),
+        tokens: signature_tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
         items[pid].children_ids.push(current_id);
+    }
+
+    // Process methods and fields inside enum body
+    if let Some(body) = body_node {
+        let mut b_cursor = body.walk();
+        for member in body.children(&mut b_cursor) {
+            if member.kind() == "enum_body_declarations" {
+                let mut d_cursor = member.walk();
+                for decl in member.children(&mut d_cursor) {
+                    match decl.kind() {
+                        "field_declaration" => {
+                            process_field_declaration(decl, source_bytes, current_id, items);
+                        }
+                        "constructor_declaration" => {
+                            process_constructor_declaration(decl, source_bytes, current_id, items);
+                        }
+                        "method_declaration" => {
+                            process_method_declaration(decl, source_bytes, current_id, items);
+                        }
+                        "class_declaration" => {
+                            process_class_declaration(decl, source_bytes, lines, Some(current_id), items);
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                match member.kind() {
+                    "field_declaration" => {
+                        process_field_declaration(member, source_bytes, current_id, items);
+                    }
+                    "constructor_declaration" => {
+                        process_constructor_declaration(member, source_bytes, current_id, items);
+                    }
+                    "method_declaration" => {
+                        process_method_declaration(member, source_bytes, current_id, items);
+                    }
+                    "class_declaration" => {
+                        process_class_declaration(member, source_bytes, lines, Some(current_id), items);
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 }
 
 fn process_record_declaration(
     node: Node,
     source_bytes: &[u8],
-    _lines: &[&str],
+    lines: &[&str],
     parent_id: Option<usize>,
     items: &mut Vec<JavaScopeItem>,
 ) {
@@ -522,10 +669,13 @@ fn process_record_declaration(
     let end_byte = node.end_byte();
     let start_row = node.start_position().row;
     let end_row = node.end_position().row;
+    let docstring = extract_javadoc(node, source_bytes);
 
     let mut name = String::new();
     let mut body_node = None;
+    let mut params_node = None;
 
+    let mut interfaces = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -534,6 +684,17 @@ fn process_record_declaration(
                     name = child.utf8_text(source_bytes).unwrap_or("").to_string();
                 }
             }
+            "super_interfaces" => {
+                if let Ok(text) = child.utf8_text(source_bytes) {
+                    for part in text.trim_start_matches("implements").split(',') {
+                        let trimmed = part.trim();
+                        if !trimmed.is_empty() {
+                            interfaces.push(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+            "formal_parameters" | "record_header" => params_node = Some(child),
             "record_body" => body_node = Some(child),
             _ => {}
         }
@@ -552,11 +713,42 @@ fn process_record_declaration(
     if !name.is_empty() {
         signature_tokens.push(name.to_lowercase());
     }
+    for iface in &interfaces {
+        signature_tokens.extend(tokenize_words(iface));
+    }
+    if let Some(params) = params_node {
+        signature_tokens.extend(extract_all_identifiers(params, source_bytes));
+    }
 
-    let all_tokens = extract_all_identifiers(node, source_bytes);
     let mut defined = Vec::new();
     if !name.is_empty() {
         defined.push(name.clone());
+    }
+
+    // Extract record components as defined symbols
+    if let Some(params) = params_node {
+        let mut p_cursor = params.walk();
+        for comp in params.children(&mut p_cursor) {
+            if comp.kind() == "formal_parameter" || comp.kind() == "record_component" {
+                if let Some(comp_name) = comp.child_by_field_name("name") {
+                    if let Ok(n) = comp_name.utf8_text(source_bytes) {
+                        defined.push(n.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut referenced_symbols = Vec::new();
+    if let Some(params) = params_node {
+        referenced_symbols.extend(collect_referenced_symbols(params, source_bytes, &defined));
+    }
+    for iface in &interfaces {
+        for w in tokenize_words(iface) {
+            if !defined.contains(&w) && !JAVA_PRIMITIVES.contains(&w.to_lowercase().as_str()) && !referenced_symbols.contains(&w) {
+                referenced_symbols.push(w);
+            }
+        }
     }
 
     let current_id = items.len();
@@ -570,15 +762,38 @@ fn process_record_declaration(
         end_row,
         body_byte_range,
         signature_byte_range,
-        signature_tokens,
-        tokens: all_tokens,
+        signature_tokens: signature_tokens.clone(),
+        tokens: signature_tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols,
         children_ids: Vec::new(),
+        docstring,
     });
 
     if let Some(pid) = parent_id {
         items[pid].children_ids.push(current_id);
+    }
+
+    // Process methods, constructors, fields inside record body
+    if let Some(body) = body_node {
+        let mut b_cursor = body.walk();
+        for member in body.children(&mut b_cursor) {
+            match member.kind() {
+                "field_declaration" => {
+                    process_field_declaration(member, source_bytes, current_id, items);
+                }
+                "constructor_declaration" | "compact_constructor_declaration" => {
+                    process_constructor_declaration(member, source_bytes, current_id, items);
+                }
+                "method_declaration" => {
+                    process_method_declaration(member, source_bytes, current_id, items);
+                }
+                "class_declaration" => {
+                    process_class_declaration(member, source_bytes, lines, Some(current_id), items);
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -592,6 +807,7 @@ fn process_method_declaration(
     let end_byte = node.end_byte();
     let start_row = node.start_position().row;
     let end_row = node.end_position().row;
+    let docstring = extract_javadoc(node, source_bytes);
 
     let mut name = String::new();
     let mut return_type = String::from("void");
@@ -635,6 +851,14 @@ fn process_method_declaration(
         }
     }
 
+    if body_node.is_none() {
+        is_abstract = true;
+    }
+
+    let is_getter = (name.starts_with("get") && name.len() > 3)
+        || (name.starts_with("is") && name.len() > 2 && return_type == "boolean");
+    let is_setter = name.starts_with("set") && name.len() > 3;
+
     let (body_byte_range, signature_byte_range) = if let Some(body) = body_node {
         (
             Some((body.start_byte(), body.end_byte())),
@@ -659,6 +883,21 @@ fn process_method_declaration(
         defined.push(name.clone());
     }
 
+    if let Some(params) = params_node {
+        let mut p_cursor = params.walk();
+        for p in params.children(&mut p_cursor) {
+            if p.kind() == "formal_parameter" || p.kind() == "spread_parameter" {
+                if let Some(p_name) = p.child_by_field_name("name") {
+                    if let Ok(p_str) = p_name.utf8_text(source_bytes) {
+                        defined.push(p_str.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let referenced_symbols = collect_referenced_symbols(node, source_bytes, &defined);
+
     let current_id = items.len();
     items.push(JavaScopeItem {
         id: current_id,
@@ -668,6 +907,8 @@ fn process_method_declaration(
             return_type,
             is_static,
             is_abstract,
+            is_getter,
+            is_setter,
         },
         start_byte,
         end_byte,
@@ -678,8 +919,9 @@ fn process_method_declaration(
         signature_tokens,
         tokens: all_tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols,
         children_ids: Vec::new(),
+        docstring,
     });
 
     items[parent_class_id].children_ids.push(current_id);
@@ -695,6 +937,7 @@ fn process_constructor_declaration(
     let end_byte = node.end_byte();
     let start_row = node.start_position().row;
     let end_row = node.end_position().row;
+    let docstring = extract_javadoc(node, source_bytes);
 
     let mut name = String::new();
     let mut body_node = None;
@@ -737,6 +980,21 @@ fn process_constructor_declaration(
         defined.push(name.clone());
     }
 
+    if let Some(params) = params_node {
+        let mut p_cursor = params.walk();
+        for p in params.children(&mut p_cursor) {
+            if p.kind() == "formal_parameter" || p.kind() == "spread_parameter" {
+                if let Some(p_name) = p.child_by_field_name("name") {
+                    if let Ok(p_str) = p_name.utf8_text(source_bytes) {
+                        defined.push(p_str.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let referenced_symbols = collect_referenced_symbols(node, source_bytes, &defined);
+
     let current_id = items.len();
     items.push(JavaScopeItem {
         id: current_id,
@@ -751,8 +1009,9 @@ fn process_constructor_declaration(
         signature_tokens,
         tokens: all_tokens,
         defined_symbols: defined,
-        referenced_symbols: Vec::new(),
+        referenced_symbols,
         children_ids: Vec::new(),
+        docstring,
     });
 
     items[parent_class_id].children_ids.push(current_id);
@@ -768,6 +1027,7 @@ fn process_field_declaration(
     let end_byte = node.end_byte();
     let start_row = node.start_position().row;
     let end_row = node.end_position().row;
+    let docstring = extract_javadoc(node, source_bytes);
 
     let mut field_type = String::new();
     let mut names = Vec::new();
@@ -800,6 +1060,7 @@ fn process_field_declaration(
 
     let name = names.join(", ");
     let tokens = extract_all_identifiers(node, source_bytes);
+    let referenced_symbols = collect_referenced_symbols(node, source_bytes, &names);
 
     let current_id = items.len();
     items.push(JavaScopeItem {
@@ -815,11 +1076,186 @@ fn process_field_declaration(
         signature_tokens: tokens.clone(),
         tokens: tokens.clone(),
         defined_symbols: names,
-        referenced_symbols: Vec::new(),
+        referenced_symbols,
         children_ids: Vec::new(),
+        docstring,
     });
 
     items[parent_class_id].children_ids.push(current_id);
+}
+
+const JAVA_PRIMITIVES: &[&str] = &[
+    "byte", "short", "int", "long", "float", "double", "boolean", "char", "void",
+    "null", "true", "false", "this", "super",
+];
+
+fn is_defining_name_node(node: &Node) -> bool {
+    if let Some(parent) = node.parent() {
+        match parent.kind() {
+            "class_declaration"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "record_declaration"
+            | "method_declaration"
+            | "constructor_declaration"
+            | "compact_constructor_declaration"
+            | "variable_declarator"
+            | "formal_parameter"
+            | "spread_parameter"
+            | "record_component"
+            | "type_parameter"
+            | "enum_constant" => {
+                if let Some(name_child) = parent.child_by_field_name("name") {
+                    if name_child.id() == node.id() {
+                        return true;
+                    }
+                }
+            }
+            "package_declaration" => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+pub fn collect_referenced_symbols(
+    node: Node,
+    source_bytes: &[u8],
+    defined_in_scope: &[String],
+) -> Vec<String> {
+    let mut refs = Vec::new();
+    let mut seen = HashSet::new();
+    let defined_set: HashSet<String> = defined_in_scope.iter().map(|s| s.to_lowercase()).collect();
+
+    collect_refs_recursive(node, source_bytes, &defined_set, &mut seen, &mut refs);
+    refs
+}
+
+fn collect_refs_recursive(
+    node: Node,
+    source_bytes: &[u8],
+    defined_set: &HashSet<String>,
+    seen: &mut HashSet<String>,
+    refs: &mut Vec<String>,
+) {
+    match node.kind() {
+        "identifier" | "type_identifier" => {
+            if !is_defining_name_node(&node) {
+                if let Ok(text) = node.utf8_text(source_bytes) {
+                    let trimmed = text.trim();
+                    let lower = trimmed.to_lowercase();
+                    if trimmed.len() >= 2
+                        && !JAVA_PRIMITIVES.contains(&lower.as_str())
+                        && !defined_set.contains(&lower)
+                        && seen.insert(trimmed.to_string())
+                    {
+                        refs.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_refs_recursive(child, source_bytes, defined_set, seen, refs);
+    }
+}
+
+pub fn extract_javadoc(node: Node, source_bytes: &[u8]) -> Option<String> {
+    let mut prev = node.prev_named_sibling();
+    if prev.is_none() {
+        prev = node.prev_sibling();
+    }
+    if let Some(comment_node) = prev {
+        if comment_node.kind() == "block_comment" || comment_node.kind() == "comment" {
+            if let Ok(text) = comment_node.utf8_text(source_bytes) {
+                let trimmed = text.trim();
+                if trimmed.starts_with("/**") {
+                    let inner = trimmed
+                        .strip_prefix("/**")
+                        .unwrap_or(trimmed)
+                        .strip_suffix("*/")
+                        .unwrap_or(trimmed);
+                    let cleaned_lines: Vec<String> = inner
+                        .lines()
+                        .map(|l| {
+                            let t = l.trim();
+                            if t.starts_with('*') {
+                                t[1..].trim().to_string()
+                            } else {
+                                t.to_string()
+                            }
+                        })
+                        .filter(|l| !l.is_empty())
+                        .collect();
+                    if !cleaned_lines.is_empty() {
+                        return Some(cleaned_lines.join("\n"));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn collect_all_calls(
+    root: Node,
+    source_bytes: &[u8],
+) -> Vec<JavaCall> {
+    let mut calls = Vec::new();
+    collect_calls_recursive(root, source_bytes, None, &mut calls);
+    calls
+}
+
+fn collect_calls_recursive(
+    node: Node,
+    source_bytes: &[u8],
+    current_caller: Option<&str>,
+    calls: &mut Vec<JavaCall>,
+) {
+    let mut caller = current_caller;
+
+    if node.kind() == "method_declaration"
+        || node.kind() == "constructor_declaration"
+        || node.kind() == "compact_constructor_declaration"
+    {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if let Ok(name) = name_node.utf8_text(source_bytes) {
+                caller = Some(name);
+            }
+        }
+    }
+
+    if node.kind() == "method_invocation" {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if let Ok(callee) = name_node.utf8_text(source_bytes) {
+                let line_number = node.start_position().row + 1;
+                calls.push(JavaCall {
+                    caller_name: caller.map(|s| s.to_string()),
+                    callee_name: callee.to_string(),
+                    line_number,
+                });
+            }
+        }
+    } else if node.kind() == "object_creation_expression" {
+        if let Some(type_node) = node.child_by_field_name("type") {
+            if let Ok(callee) = type_node.utf8_text(source_bytes) {
+                let line_number = node.start_position().row + 1;
+                calls.push(JavaCall {
+                    caller_name: caller.map(|s| s.to_string()),
+                    callee_name: callee.to_string(),
+                    line_number,
+                });
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_calls_recursive(child, source_bytes, caller, calls);
+    }
 }
 
 pub fn extract_all_identifiers(node: Node, source_bytes: &[u8]) -> Vec<String> {
@@ -863,7 +1299,7 @@ fn collect_tokens_recursive(
     }
 }
 
-fn tokenize_words(s: &str) -> Vec<String> {
+pub fn tokenize_words(s: &str) -> Vec<String> {
     s.split(|c: char| !c.is_alphanumeric() && c != '_')
         .map(|w| w.trim().to_lowercase())
         .filter(|w| w.len() >= 2)

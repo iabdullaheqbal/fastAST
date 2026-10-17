@@ -8,7 +8,7 @@ pub mod repair;
 pub mod scorer;
 
 use crate::{
-    count_tokens, ExtractedImport, ExtractedSymbol, FileIndexResult, PruneResult,
+    count_tokens, ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult, PruneResult,
 };
 use pyo3::PyResult;
 
@@ -160,25 +160,42 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
 
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
-    let calls = Vec::new();
 
-    for scope in scopes {
-        match scope.kind {
+    let raw_calls = parser::collect_all_calls(tree.root_node(), source_bytes);
+    let calls: Vec<ExtractedCall> = raw_calls
+        .into_iter()
+        .map(|c| ExtractedCall {
+            caller_name: c.caller_name,
+            callee_name: c.callee_name,
+            line_number: c.line_number,
+        })
+        .collect();
+
+    for scope in &scopes {
+        let parent_name = scope.parent_id.and_then(|pid| match &scopes[pid].kind {
+            parser::JavaNodeKind::Class { name, .. }
+            | parser::JavaNodeKind::Interface { name, .. }
+            | parser::JavaNodeKind::Enum { name, .. }
+            | parser::JavaNodeKind::Record { name } => Some(name.clone()),
+            _ => None,
+        });
+
+        match &scope.kind {
             parser::JavaNodeKind::Class { name, is_abstract, .. } => {
-                let kind = if is_abstract { "abstract_class" } else { "class" };
+                let kind = if *is_abstract { "abstract_class" } else { "class" };
                 let signature = if let Some((s_start, s_end)) = scope.signature_byte_range {
                     code_text[s_start..s_end].trim().to_string()
                 } else {
                     format!("class {}", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: kind.to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::JavaNodeKind::Interface { name, .. } => {
@@ -188,29 +205,29 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     format!("interface {}", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: "interface".to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
-            parser::JavaNodeKind::Enum { name } => {
+            parser::JavaNodeKind::Enum { name, .. } => {
                 let signature = if let Some((s_start, s_end)) = scope.signature_byte_range {
                     code_text[s_start..s_end].trim().to_string()
                 } else {
                     format!("enum {}", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: "enum".to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::JavaNodeKind::Record { name } => {
@@ -220,13 +237,13 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     format!("record {}", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: "record".to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::JavaNodeKind::Constructor { name } => {
@@ -236,48 +253,55 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
                     format!("{}()", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: "constructor".to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::JavaNodeKind::Method { name, is_static, .. } => {
-                let kind = if is_static { "static_method" } else { "method" };
+                let kind = if *is_static { "static_method" } else { "method" };
                 let signature = if let Some((s_start, s_end)) = scope.signature_byte_range {
                     code_text[s_start..s_end].trim().to_string()
                 } else {
                     format!("{}()", name)
                 };
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: kind.to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::JavaNodeKind::Field { name, .. } => {
                 let signature = code_text[scope.start_byte..scope.end_byte].trim().to_string();
                 symbols.push(ExtractedSymbol {
-                    name,
+                    name: name.clone(),
                     kind: "field".to_string(),
                     start_line: scope.start_row + 1,
                     end_line: scope.end_row + 1,
                     signature,
-                    parent_name: None,
-                    docstring: None,
+                    parent_name,
+                    docstring: scope.docstring.clone(),
                 });
             }
             parser::JavaNodeKind::Import => {
+                let text = code_text[scope.start_byte..scope.end_byte].trim();
+                let clean = text.trim_start_matches("import").trim_start_matches("static").trim().trim_end_matches(';').trim();
+                let (module, name) = if let Some(dot_idx) = clean.rfind('.') {
+                    (&clean[..dot_idx], Some(clean[dot_idx + 1..].to_string()))
+                } else {
+                    (clean, None)
+                };
                 imports.push(ExtractedImport {
-                    module: scope.tokens.get(0).cloned().unwrap_or_default(),
-                    name: scope.defined_symbols.get(0).cloned(),
+                    module: module.to_string(),
+                    name,
                     alias: None,
                     line_number: scope.start_row + 1,
                 });

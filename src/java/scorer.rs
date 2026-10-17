@@ -1,4 +1,4 @@
-//! Dual-Rubric Scoring and Dependency Closure Engine for Java
+//! Dual-Rubric Scoring and Transitive Dependency Closure Engine for Java
 
 use crate::java::parser::{JavaNodeKind, JavaScopeItem};
 use std::collections::HashSet;
@@ -22,7 +22,7 @@ pub struct QueryProfile {
 pub struct JavaDecision {
     /// True if kept with its full implementation body
     pub keep_full: bool,
-    /// True if kept as a stub (signature + empty/dummy body)
+    /// True if kept as a skeleton stub (signature + `{ ... }`)
     pub keep_skeleton: bool,
     /// Relevance score
     pub score: f64,
@@ -74,18 +74,18 @@ pub fn split_identifier_subtokens(s: &str) -> Vec<String> {
 }
 
 const STRUCTURAL_KEYWORDS: &[&str] = &[
-    "package", "packages", "import", "imports", "class", "classes", "interface",
-    "interfaces", "enum", "enums", "record", "records", "definition", "definitions",
-    "header", "headers", "skeleton", "method", "methods", "field", "fields",
-    "constructor", "constructors", "overview", "api", "architecture", "signature",
-    "signatures", "type", "types",
+    "package", "import", "imports", "class", "classes", "interface", "interfaces",
+    "enum", "enums", "record", "records", "structure", "structural", "definition",
+    "definitions", "header", "headers", "skeleton", "types", "type", "generic",
+    "generics", "signature", "signatures", "api", "overview", "architecture",
+    "abstract", "extends", "implements", "permits",
 ];
 
 const FUNCTIONAL_KEYWORDS: &[&str] = &[
-    "calculate", "compute", "execute", "process", "handle", "run", "logic",
-    "algorithm", "save", "load", "find", "get", "set", "update", "delete",
-    "remove", "add", "call", "send", "receive", "write", "read", "multiply",
-    "subtract", "divide",
+    "execute", "process", "handle", "compute", "calculate", "run", "algorithm",
+    "logic", "implement", "implementation", "return", "data", "fetch", "send",
+    "call", "save", "load", "delete", "create", "update", "find", "search",
+    "get", "set", "validate", "convert", "parse",
 ];
 
 pub fn analyze_query(query: &str) -> QueryProfile {
@@ -166,7 +166,8 @@ pub fn evaluate_scopes(items: &[JavaScopeItem], query: &str, threshold: f64) -> 
             | JavaNodeKind::Enum { .. }
             | JavaNodeKind::Record { .. }
             | JavaNodeKind::Constructor { .. }
-            | JavaNodeKind::Method { .. } => {
+            | JavaNodeKind::Method { .. }
+            | JavaNodeKind::Field { .. } => {
                 let score = compute_semantic_score(item, &profile);
                 let keep_full = score >= effective_threshold && score > 0.0;
                 if keep_full {
@@ -179,7 +180,7 @@ pub fn evaluate_scopes(items: &[JavaScopeItem], query: &str, threshold: f64) -> 
                     score,
                 });
             }
-            JavaNodeKind::Field { .. } | JavaNodeKind::Other => {
+            JavaNodeKind::Other => {
                 let score = compute_semantic_score(item, &profile);
                 let keep = score >= effective_threshold && score > 0.0;
                 if keep {
@@ -231,8 +232,7 @@ pub fn evaluate_scopes(items: &[JavaScopeItem], query: &str, threshold: f64) -> 
         };
     }
 
-    // --- DEPENDENCY CLOSURE ---
-    // If a child (method/constructor/field) is kept full, enclosing class is kept as skeleton container
+    // --- TRANSITIVE DEPENDENCY CLOSURE ---
     let mut keep_full_set: HashSet<usize> = decisions
         .iter()
         .enumerate()
@@ -240,54 +240,119 @@ pub fn evaluate_scopes(items: &[JavaScopeItem], query: &str, threshold: f64) -> 
         .map(|(i, _)| i)
         .collect();
 
-    let mut parent_closure_queue: Vec<usize> = keep_full_set.iter().copied().collect();
-    while let Some(idx) = parent_closure_queue.pop() {
-        if let Some(pid) = items[idx].parent_id {
-            if !decisions[pid].keep_full && !decisions[pid].keep_skeleton {
-                decisions[pid].keep_skeleton = true;
-                parent_closure_queue.push(pid);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let current_kept: Vec<usize> = keep_full_set.iter().copied().collect();
+
+        for idx in current_kept {
+            let item = &items[idx];
+
+            // 1. Enclosing class scope closure:
+            let mut curr = item.parent_id;
+            while let Some(pid) = curr {
+                match &items[pid].kind {
+                    JavaNodeKind::Class { .. }
+                    | JavaNodeKind::Interface { .. }
+                    | JavaNodeKind::Enum { .. }
+                    | JavaNodeKind::Record { .. } => {
+                        if !decisions[pid].keep_full && !decisions[pid].keep_skeleton {
+                            decisions[pid].keep_skeleton = true;
+                            changed = true;
+                        }
+                    }
+                    _ => {}
+                }
+                curr = items[pid].parent_id;
+            }
+
+            // 2. Class companion closure:
+            if let Some(pid) = item.parent_id {
+                // If a method is kept full, ensure class constructors are kept as skeleton
+                for &sibling_id in &items[pid].children_ids {
+                    if sibling_id == idx {
+                        continue;
+                    }
+                    if let JavaNodeKind::Constructor { .. } = items[sibling_id].kind {
+                        if !decisions[sibling_id].keep_full && !decisions[sibling_id].keep_skeleton {
+                            decisions[sibling_id].keep_skeleton = true;
+                            changed = true;
+                        }
+                    }
+
+                    // Getter / setter companion pairing
+                    if let JavaNodeKind::Method { name: ref m_name, is_getter, is_setter, .. } = items[idx].kind {
+                        if is_getter || is_setter {
+                            if let JavaNodeKind::Method { name: ref sib_name, is_getter: sib_g, is_setter: sib_s, .. } = items[sibling_id].kind {
+                                let m_prop = if is_getter {
+                                    m_name.strip_prefix("get").or_else(|| m_name.strip_prefix("is")).unwrap_or(m_name)
+                                } else {
+                                    m_name.strip_prefix("set").unwrap_or(m_name)
+                                };
+                                let sib_prop = if sib_g {
+                                    sib_name.strip_prefix("get").or_else(|| sib_name.strip_prefix("is")).unwrap_or(sib_name)
+                                } else {
+                                    sib_name.strip_prefix("set").unwrap_or(sib_name)
+                                };
+                                if m_prop.eq_ignore_ascii_case(sib_prop) && (sib_g != is_getter || sib_s != is_setter) {
+                                    if keep_full_set.insert(sibling_id) {
+                                        decisions[sibling_id].keep_full = true;
+                                        decisions[sibling_id].keep_skeleton = false;
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Symbol definition closure:
+            for sym in &item.referenced_symbols {
+                let sym_lower = sym.to_lowercase();
+                for (other_idx, other_item) in items.iter().enumerate() {
+                    if other_idx == idx || keep_full_set.contains(&other_idx) {
+                        continue;
+                    }
+                    // Do not pull methods of other classes unless the method belongs to the same class
+                    if let JavaNodeKind::Method { .. } = other_item.kind {
+                        if other_item.parent_id != item.parent_id {
+                            continue;
+                        }
+                    }
+                    if other_item.defined_symbols.iter().any(|d| d.to_lowercase() == sym_lower) {
+                        match &other_item.kind {
+                            JavaNodeKind::Class { .. }
+                            | JavaNodeKind::Interface { .. }
+                            | JavaNodeKind::Record { .. } => {
+                                if !decisions[other_idx].keep_full && !decisions[other_idx].keep_skeleton {
+                                    decisions[other_idx].keep_skeleton = true;
+                                    changed = true;
+                                }
+                            }
+                            _ => {
+                                decisions[other_idx].keep_full = true;
+                                decisions[other_idx].keep_skeleton = false;
+                                keep_full_set.insert(other_idx);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Type / symbol definition closure: if kept code references type T, keep T's definition
-    let mut referenced_symbols: HashSet<String> = HashSet::new();
-    for &idx in &keep_full_set {
-        for sym in &items[idx].tokens {
-            referenced_symbols.insert(sym.to_lowercase());
-        }
-    }
-
+    // 4. For any class kept as a skeleton container:
+    // - Unkept methods and constructors become keep_skeleton
+    // - Fields are kept full to avoid missing symbol compile errors in kept methods
     for (i, item) in items.iter().enumerate() {
-        if !decisions[i].keep_full && !decisions[i].keep_skeleton {
-            match &item.kind {
+        if decisions[i].keep_skeleton {
+            match item.kind {
                 JavaNodeKind::Class { .. }
                 | JavaNodeKind::Interface { .. }
                 | JavaNodeKind::Enum { .. }
                 | JavaNodeKind::Record { .. } => {
-                    for def in &item.defined_symbols {
-                        if referenced_symbols.contains(&def.to_lowercase()) {
-                            decisions[i].keep_full = true;
-                            keep_full_set.insert(i);
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // For any class kept as a skeleton container:
-    // - Unkept methods become keep_skeleton
-    // - Fields are preserved to avoid missing symbol errors in kept methods
-    for (i, item) in items.iter().enumerate() {
-        match item.kind {
-            JavaNodeKind::Class { .. }
-            | JavaNodeKind::Interface { .. }
-            | JavaNodeKind::Enum { .. }
-            | JavaNodeKind::Record { .. } => {
-                if decisions[i].keep_skeleton {
                     for &child_id in &item.children_ids {
                         match items[child_id].kind {
                             JavaNodeKind::Method { .. } | JavaNodeKind::Constructor { .. } => {
@@ -302,8 +367,8 @@ pub fn evaluate_scopes(items: &[JavaScopeItem], query: &str, threshold: f64) -> 
                         }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -343,7 +408,12 @@ fn compute_semantic_score(item: &JavaScopeItem, profile: &QueryProfile) -> f64 {
                 .filter(|s| profile.all_tokens.contains(*s))
                 .count();
             if matched_subs > 0 {
-                score = score.max(0.65 * (matched_subs as f64 / name_subs.len().max(1) as f64));
+                let ratio = matched_subs as f64 / name_subs.len().max(1) as f64;
+                if ratio >= 0.5 {
+                    score = score.max(0.70 + 0.25 * ratio);
+                } else {
+                    score = score.max(0.50 * ratio);
+                }
             }
         }
     }
@@ -370,10 +440,13 @@ fn compute_semantic_score(item: &JavaScopeItem, profile: &QueryProfile) -> f64 {
         score = score.max(sig_cov * 0.70);
     }
 
-    // Body tokens (modest boost if not in signature/name)
+    // Check body tokens (modest boost if not in signature/name)
     let mut matched_raw = 0;
     for rt in &profile.raw_tokens {
-        if item.tokens.iter().any(|t| t == rt) {
+        if item.tokens.iter().any(|t| t == rt)
+            || item.defined_symbols.iter().any(|s| s.to_lowercase() == *rt)
+            || item.referenced_symbols.iter().any(|s| s.to_lowercase() == *rt)
+        {
             matched_raw += 1;
         }
     }
@@ -384,7 +457,7 @@ fn compute_semantic_score(item: &JavaScopeItem, profile: &QueryProfile) -> f64 {
         score = score.max(body_score);
     }
 
-    // Sub-token F1 matching
+    // Sub-token matching for camelCase / snake_case parts
     let mut matched_sub = 0;
     for st in &profile.all_tokens {
         if item.tokens.iter().any(|t| t == st) {
@@ -395,8 +468,10 @@ fn compute_semantic_score(item: &JavaScopeItem, profile: &QueryProfile) -> f64 {
         let sub_cov = matched_sub as f64 / profile.all_tokens.len().max(1) as f64;
         let density = matched_sub as f64 / item.tokens.len().max(1) as f64;
         let f1 = (2.0 * sub_cov * density) / (sub_cov + density + 1e-6);
-        if f1 >= 0.20 || score > 0.0 {
+        if f1 >= 0.35 {
             score = score.max(sub_cov.max(f1) * 0.85);
+        } else if score > 0.0 {
+            score = score.max(f1 * 0.70);
         }
     }
 
