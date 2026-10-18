@@ -183,6 +183,7 @@ fn classify_node(node: &Node) -> JavaNodeKind {
         "package_declaration" => JavaNodeKind::Package,
         "import_declaration" => JavaNodeKind::Import,
         "class_declaration" => JavaNodeKind::Class,
+        "record_declaration" => JavaNodeKind::Class, // Treat records as classes for now
         "interface_declaration" => JavaNodeKind::Interface,
         "enum_declaration" => JavaNodeKind::Enum,
         "field_declaration" => JavaNodeKind::Field,

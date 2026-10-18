@@ -90,8 +90,29 @@ pub fn reconstruct_code(
                             if decisions.contains(&member.id) {
                                 // Keep full method/constructor
                                 include_lines(&mut output, &mut line_included, lines, member.start_line, member.end_line);
+                            } else if parent_scope.kind == JavaNodeKind::Interface {
+                                // For interfaces, handle different method types
+                                if member.node_text.contains("default ") {
+                                    // Default methods: keep full implementation
+                                    include_lines(&mut output, &mut line_included, lines, member.start_line, member.end_line);
+                                } else if member.node_text.contains("static ") {
+                                    // Static methods: stub to single line
+                                    if let Some(stub) = create_method_stub(&member.node_text, member.kind.clone()) {
+                                        output.push_str(&stub);
+                                        output.push('\n');
+                                    }
+                                    for i in member.start_line..=member.end_line.min(lines.len().saturating_sub(1)) {
+                                        line_included[i] = true;
+                                    }
+                                } else {
+                                    // Abstract interface methods: keep signature + ;
+                                    include_lines(&mut output, &mut line_included, lines, member.start_line, member.end_line);
+                                }
+                            } else if member.node_text.contains("abstract ") {
+                                // For abstract methods, keep them as-is (they end with ;)
+                                include_lines(&mut output, &mut line_included, lines, member.start_line, member.end_line);
                             } else {
-                                // Create stub with smart return type
+                                // For concrete classes, create stub with smart return type
                                 if let Some(stub) = create_method_stub(&member.node_text, member.kind.clone()) {
                                     output.push_str(&stub);
                                     output.push('\n');
@@ -146,7 +167,7 @@ fn include_lines(
     }
 }
 
-fn create_method_stub(node_text: &str, _kind: JavaNodeKind) -> Option<String> {
+fn create_method_stub(node_text: &str, kind: JavaNodeKind) -> Option<String> {
     let text = node_text.trim();
     
     // Find opening brace
@@ -158,17 +179,14 @@ fn create_method_stub(node_text: &str, _kind: JavaNodeKind) -> Option<String> {
     let brace_pos = brace_pos.unwrap();
     let signature = text[..brace_pos].trim();
     
-    // Extract return type by finding the last type-like word before method name
-    // Method signature format: [modifiers] [returnType] methodName(params) [throws ...]
-    let signature_parts: Vec<&str> = signature.split_whitespace().collect();
-    
-    if signature_parts.is_empty() {
+    // Constructors always have empty body
+    if kind == JavaNodeKind::Constructor {
         return Some(format!("{} {{}}", signature));
     }
     
-    // Find return type - it's usually 2-3 words from the end (before the opening paren)
+    // Extract return type for methods
     let return_type = if signature.contains("void") {
-        " { }"
+        " {}"
     } else if signature.contains("int") {
         " { return 0; }"
     } else if signature.contains("long") {

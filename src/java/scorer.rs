@@ -9,6 +9,41 @@ pub struct ScoreResult {
     pub semantic_scores: Vec<f64>,
 }
 
+/// Extract type names referenced in a code snippet (method/field body)
+fn extract_referenced_types(code: &str) -> Vec<String> {
+    let mut types = Vec::new();
+    let mut current_token = String::new();
+    let mut prev_was_operator = true; // Start assuming we're after an operator
+    
+    for ch in code.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            current_token.push(ch);
+            prev_was_operator = false;
+        } else {
+            if !current_token.is_empty() && !prev_was_operator {
+                // Check if this looks like a type (starts with uppercase)
+                if let Some(first_ch) = current_token.chars().next() {
+                    if first_ch.is_uppercase() && current_token.len() > 1 {
+                        types.push(current_token.clone());
+                    }
+                }
+            }
+            current_token.clear();
+            prev_was_operator = !ch.is_alphanumeric() && ch != '_';
+        }
+    }
+    
+    if !current_token.is_empty() {
+        if let Some(first_ch) = current_token.chars().next() {
+            if first_ch.is_uppercase() && current_token.len() > 1 {
+                types.push(current_token);
+            }
+        }
+    }
+    
+    types
+}
+
 /// Evaluate scopes with dual-rubric scoring
 pub fn evaluate_scopes(
     scopes: &[JavaScope],
@@ -77,7 +112,45 @@ pub fn evaluate_scopes(
         decisions.insert(parent_id);
     }
     
-    // Rule 3: Fallback - if nothing semantically matched, keep structure
+    // Rule 3: Transitive type references - if a kept method references another type, keep it
+    let mut added_any = true;
+    while added_any {
+        added_any = false;
+        let currently_kept: Vec<usize> = decisions.iter().copied().collect();
+        
+        for kept_id in currently_kept {
+            if let Some(kept_scope) = scopes.iter().find(|s| s.id == kept_id) {
+                // Only analyze methods/constructors for type references
+                if kept_scope.kind == JavaNodeKind::Method || kept_scope.kind == JavaNodeKind::Constructor {
+                    let referenced_types = extract_referenced_types(&kept_scope.node_text);
+                    
+                    // Find classes/interfaces/enums that match these types
+                    for ref_type in referenced_types {
+                        for scope in scopes {
+                            if (scope.kind == JavaNodeKind::Class 
+                                || scope.kind == JavaNodeKind::Interface 
+                                || scope.kind == JavaNodeKind::Enum)
+                                && scope.name == ref_type 
+                                && !decisions.contains(&scope.id) {
+                                decisions.insert(scope.id);
+                                added_any = true;
+                                
+                                // Also keep enclosing class if this is a nested type
+                                if let Some(parent_id) = scope.parent_id {
+                                    if !decisions.contains(&parent_id) {
+                                        decisions.insert(parent_id);
+                                        added_any = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Rule 4: Fallback - if nothing semantically matched, keep structure
     if decisions.is_empty() {
         // Keep at least packages, imports, and class structure
         for scope in scopes {
