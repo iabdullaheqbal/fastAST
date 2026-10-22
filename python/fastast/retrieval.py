@@ -742,7 +742,14 @@ class RetrievalEngine:
             try:
                 provider = get_embedding_provider()
                 query_vec = provider.embed_text(q_clean)
-                semantic_scores = search_symbols_semantic(self.conn, query_vec, limit=150)
+                model_ver = getattr(provider, "model_version", "1.0")
+                semantic_scores = search_symbols_semantic(
+                    self.conn,
+                    query_vec,
+                    limit=150,
+                    model=provider.model_name,
+                    model_version=model_ver,
+                )
             except Exception:
                 semantic_scores = {}
         semantic_ids = list(semantic_scores.keys())

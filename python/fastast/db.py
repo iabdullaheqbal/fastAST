@@ -113,13 +113,35 @@ END;
 CREATE TABLE IF NOT EXISTS symbol_embeddings (
     symbol_id INTEGER PRIMARY KEY,
     model TEXT NOT NULL,
+    model_version TEXT NOT NULL DEFAULT '1.0',
+    generation_id INTEGER NOT NULL DEFAULT 1,
     dimensions INTEGER NOT NULL,
+    norm REAL NOT NULL DEFAULT 1.0,
+    section TEXT NOT NULL DEFAULT 'symbol',
+    file_id INTEGER,
     embedding BLOB NOT NULL,
     updated_at REAL NOT NULL,
-    FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+    FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_embeddings_model ON symbol_embeddings(model);
+CREATE INDEX IF NOT EXISTS idx_embeddings_version ON symbol_embeddings(model, model_version);
+CREATE INDEX IF NOT EXISTS idx_embeddings_file ON symbol_embeddings(file_id);
+
+CREATE TABLE IF NOT EXISTS file_embeddings (
+    file_id INTEGER PRIMARY KEY,
+    model TEXT NOT NULL,
+    model_version TEXT NOT NULL DEFAULT '1.0',
+    generation_id INTEGER NOT NULL DEFAULT 1,
+    dimensions INTEGER NOT NULL,
+    norm REAL NOT NULL DEFAULT 1.0,
+    embedding BLOB NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_embeddings_model ON file_embeddings(model, model_version);
 
 -- Phase 9: MinHash/LSH Similarity and Louvain Community Detection
 CREATE TABLE IF NOT EXISTS symbol_similarity (
@@ -179,6 +201,23 @@ def init_db(conn: sqlite3.Connection) -> None:
         columns = [col[1] for col in cur.fetchall()]
         if "confidence" not in columns:
             cur.execute("ALTER TABLE symbols ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0;")
+        conn.commit()
+
+    # Phase 8 migration safety: ensure symbol_embeddings schema columns exist
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='symbol_embeddings';")
+    if cur.fetchone():
+        cur.execute("PRAGMA table_info(symbol_embeddings);")
+        columns = [col[1] for col in cur.fetchall()]
+        if "model_version" not in columns:
+            cur.execute("ALTER TABLE symbol_embeddings ADD COLUMN model_version TEXT NOT NULL DEFAULT '1.0';")
+        if "generation_id" not in columns:
+            cur.execute("ALTER TABLE symbol_embeddings ADD COLUMN generation_id INTEGER NOT NULL DEFAULT 1;")
+        if "norm" not in columns:
+            cur.execute("ALTER TABLE symbol_embeddings ADD COLUMN norm REAL NOT NULL DEFAULT 1.0;")
+        if "section" not in columns:
+            cur.execute("ALTER TABLE symbol_embeddings ADD COLUMN section TEXT NOT NULL DEFAULT 'symbol';")
+        if "file_id" not in columns:
+            cur.execute("ALTER TABLE symbol_embeddings ADD COLUMN file_id INTEGER DEFAULT NULL;")
         conn.commit()
 
     conn.executescript(SCHEMA_SQL)
@@ -460,6 +499,7 @@ def store_file_data(
         # Phase 8: Generate and store dense semantic embeddings
         if embed_symbols and inserted_symbols_for_emb:
             try:
+                import math
                 import time
                 from fastast.embeddings import (
                     encode_embedding,
@@ -467,18 +507,34 @@ def store_file_data(
                     prepare_symbol_text,
                 )
                 provider = get_embedding_provider()
+                model_ver = getattr(provider, "model_version", "1.0")
                 now = time.time()
                 emb_rows = []
                 for s_id, s_name, s_kind, s_sig, s_doc in inserted_symbols_for_emb:
                     text = prepare_symbol_text(s_name, s_kind, s_sig, s_doc, file_path_str)
                     vec = provider.embed_text(text)
                     blob = encode_embedding(vec)
-                    emb_rows.append((s_id, provider.model_name, provider.dimension, blob, now))
+                    n_val = round(math.sqrt(sum(x * x for x in vec)), 6)
+                    emb_rows.append(
+                        (
+                            s_id,
+                            provider.model_name,
+                            model_ver,
+                            1,  # generation_id
+                            provider.dimension,
+                            n_val,
+                            "symbol",
+                            file_id,
+                            blob,
+                            now,
+                        )
+                    )
 
                 cur.executemany(
                     """
-                    INSERT OR REPLACE INTO symbol_embeddings (symbol_id, model, dimensions, embedding, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT OR REPLACE INTO symbol_embeddings 
+                    (symbol_id, model, model_version, generation_id, dimensions, norm, section, file_id, embedding, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     emb_rows,
                 )
@@ -604,21 +660,156 @@ def store_symbol_embedding(
     model: str,
     embedding: Sequence[float],
     updated_at: Optional[float] = None,
+    model_version: str = "1.0",
+    generation_id: int = 1,
+    norm: Optional[float] = None,
+    section: str = "symbol",
+    file_id: Optional[int] = None,
 ) -> None:
-    """Store or update a dense embedding vector for a symbol."""
+    """Store or update a dense embedding vector for a symbol with model metadata and norm."""
+    import math
     import time
     from fastast.embeddings import encode_embedding
 
     blob = encode_embedding(embedding)
     ts = updated_at if updated_at is not None else time.time()
+    computed_norm = (
+        norm
+        if norm is not None
+        else math.sqrt(sum(x * x for x in embedding))
+    )
     with conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO symbol_embeddings (symbol_id, model, dimensions, embedding, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO symbol_embeddings 
+            (symbol_id, model, model_version, generation_id, dimensions, norm, section, file_id, embedding, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (symbol_id, model, len(embedding), blob, ts),
+            (
+                symbol_id,
+                model,
+                model_version,
+                generation_id,
+                len(embedding),
+                round(computed_norm, 6),
+                section,
+                file_id,
+                blob,
+                ts,
+            ),
         )
+
+
+def get_symbol_embedding_metadata(
+    conn: sqlite3.Connection,
+    symbol_id: int,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve metadata (model, version, generation, norm, section) for a stored symbol embedding."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT symbol_id, model, model_version, generation_id, dimensions, norm, section, file_id, updated_at
+            FROM symbol_embeddings WHERE symbol_id = ?
+            """,
+            (symbol_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return dict(row)
+    except Exception:
+        return None
+
+
+def store_file_embedding(
+    conn: sqlite3.Connection,
+    file_id: int,
+    model: str,
+    embedding: Sequence[float],
+    updated_at: Optional[float] = None,
+    model_version: str = "1.0",
+    generation_id: int = 1,
+    norm: Optional[float] = None,
+) -> None:
+    """Store or update a dense embedding vector for an entire file."""
+    import math
+    import time
+    from fastast.embeddings import encode_embedding
+
+    blob = encode_embedding(embedding)
+    ts = updated_at if updated_at is not None else time.time()
+    computed_norm = (
+        norm
+        if norm is not None
+        else math.sqrt(sum(x * x for x in embedding))
+    )
+    with conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO file_embeddings 
+            (file_id, model, model_version, generation_id, dimensions, norm, embedding, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                model,
+                model_version,
+                generation_id,
+                len(embedding),
+                round(computed_norm, 6),
+                blob,
+                ts,
+            ),
+        )
+
+
+def get_file_embedding(
+    conn: sqlite3.Connection,
+    file_id: int,
+) -> Optional[List[float]]:
+    """Retrieve the stored dense embedding vector for a file."""
+    from fastast.embeddings import decode_embedding
+
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT embedding FROM file_embeddings WHERE file_id = ?", (file_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return decode_embedding(row[0])
+    except Exception:
+        return None
+
+
+def invalidate_stale_embeddings(
+    conn: sqlite3.Connection,
+    current_model: str,
+    current_version: str = "1.0",
+) -> int:
+    """Invalidate (delete) embeddings generated with mismatched models or older versions."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM symbol_embeddings 
+            WHERE model != ? OR model_version != ?
+            """,
+            (current_model, current_version),
+        )
+        stale_count = cur.fetchone()[0]
+        if stale_count > 0:
+            with conn:
+                conn.execute(
+                    """
+                    DELETE FROM symbol_embeddings 
+                    WHERE model != ? OR model_version != ?
+                    """,
+                    (current_model, current_version),
+                )
+        return stale_count
+    except Exception:
+        return 0
 
 
 def get_symbol_embedding(
@@ -656,10 +847,13 @@ def search_symbols_semantic(
     query_vector: Sequence[float],
     limit: int = 100,
     model: Optional[str] = None,
+    model_version: Optional[str] = None,
 ) -> Dict[int, float]:
     """Retrieve symbols ordered by cosine similarity with query_vector.
 
-    Returns mapping of symbol_id -> normalized similarity score in [0.0, 1.0].
+    Normalizes cosine similarity to a stable ranking score in [0.0, 1.0]
+    calibrated against a minimum relevance threshold (0.25).
+    Never directly mixes raw uncalibrated similarity with BM25.
     """
     if not query_vector:
         return {}
@@ -672,13 +866,20 @@ def search_symbols_semantic(
         if not cur.fetchone():
             return {}
 
+        conditions = []
+        params: List[Any] = []
         if model:
-            cur.execute(
-                "SELECT symbol_id, embedding FROM symbol_embeddings WHERE model = ?",
-                (model,),
-            )
-        else:
-            cur.execute("SELECT symbol_id, embedding FROM symbol_embeddings")
+            conditions.append("model = ?")
+            params.append(model)
+        if model_version:
+            conditions.append("model_version = ?")
+            params.append(model_version)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cur.execute(
+            f"SELECT symbol_id, embedding FROM symbol_embeddings {where_clause}",
+            params,
+        )
 
         rows = cur.fetchall()
         if not rows:
@@ -692,20 +893,19 @@ def search_symbols_semantic(
             if not emb:
                 continue
             sim = cosine_similarity(query_vector, emb)
+            # Threshold: discard weak/irrelevant noise below 0.25
             if sim >= 0.25:
-                scored.append((sym_id, sim))
+                # Calibrated normalization: map [0.25, 1.0] smoothly into [0.10, 1.0]
+                norm_sim = min(1.0, max(0.0, (sim - 0.25) / (1.0 - 0.25) * 0.90 + 0.10))
+                scored.append((sym_id, round(norm_sim, 4)))
 
         if not scored:
             return {}
 
         scored.sort(key=lambda x: x[1], reverse=True)
         top = scored[:limit]
-        max_sim = top[0][1] if top else 1.0
 
-        return {
-            sym_id: round(sim / max_sim if max_sim > 0 else sim, 4)
-            for sym_id, sim in top
-        }
+        return {sym_id: score for sym_id, score in top}
     except Exception:
         return {}
 
@@ -714,8 +914,10 @@ def backfill_symbol_embeddings(
     conn: sqlite3.Connection,
     provider: Optional[Any] = None,
     batch_size: int = 200,
+    generation_id: int = 1,
 ) -> int:
-    """Generate and store embeddings for any indexed symbols currently lacking embeddings."""
+    """Generate and store embeddings for any indexed symbols lacking embeddings or with stale models."""
+    import math
     import time
     from fastast.embeddings import (
         encode_embedding,
@@ -726,16 +928,21 @@ def backfill_symbol_embeddings(
     if provider is None:
         provider = get_embedding_provider()
 
+    model_ver = getattr(provider, "model_version", "1.0")
+
     cur = conn.cursor()
     try:
         cur.execute(
             """
-            SELECT s.id, s.name, s.kind, s.signature, s.docstring, f.path as file_path
+            SELECT s.id, s.name, s.kind, s.signature, s.docstring, f.id as file_id, f.path as file_path
             FROM symbols s
             JOIN files f ON s.file_id = f.id
-            WHERE s.id NOT IN (SELECT symbol_id FROM symbol_embeddings WHERE model = ?)
+            WHERE s.id NOT IN (
+                SELECT symbol_id FROM symbol_embeddings 
+                WHERE model = ? AND model_version = ?
+            )
             """,
-            (provider.model_name,),
+            (provider.model_name, model_ver),
         )
         missing = cur.fetchall()
         if not missing:
@@ -756,15 +963,28 @@ def backfill_symbol_embeddings(
                 )
                 vec = provider.embed_text(text)
                 blob = encode_embedding(vec)
+                n_val = round(math.sqrt(sum(x * x for x in vec)), 6)
                 emb_rows.append(
-                    (r["id"], provider.model_name, provider.dimension, blob, now)
+                    (
+                        r["id"],
+                        provider.model_name,
+                        model_ver,
+                        generation_id,
+                        provider.dimension,
+                        n_val,
+                        "symbol",
+                        r["file_id"],
+                        blob,
+                        now,
+                    )
                 )
 
             with conn:
                 cur.executemany(
                     """
-                    INSERT OR REPLACE INTO symbol_embeddings (symbol_id, model, dimensions, embedding, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT OR REPLACE INTO symbol_embeddings 
+                    (symbol_id, model, model_version, generation_id, dimensions, norm, section, file_id, embedding, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     emb_rows,
                 )

@@ -181,6 +181,11 @@ class BaseEmbeddingProvider(ABC):
         pass
 
     @property
+    def model_version(self) -> str:
+        """Version string of the embedding model."""
+        return "1.0"
+
+    @property
     @abstractmethod
     def dimension(self) -> int:
         """Output embedding vector dimension."""
@@ -355,14 +360,20 @@ class CustomEmbeddingProvider(BaseEmbeddingProvider):
         embed_fn: Callable[[str], List[float]],
         model_name: str = "custom",
         dimension: int = 128,
+        model_version: str = "1.0",
     ) -> None:
         self._embed_fn = embed_fn
         self._model_name = model_name
         self._dimension = dimension
+        self._model_version = model_version
 
     @property
     def model_name(self) -> str:
         return self._model_name
+
+    @property
+    def model_version(self) -> str:
+        return self._model_version
 
     @property
     def dimension(self) -> int:

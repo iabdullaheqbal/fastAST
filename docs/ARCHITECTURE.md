@@ -168,15 +168,57 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
 - **Field Boosting**: Multiplies term score by column weights: Symbol Name ($\times 3.0$) > Signature ($\times 2.0$) > Docstring ($\times 1.0$) > File Path ($\times 1.0$).
 - **Score Normalization**: Raw negative FTS5 rank values are normalized into $[0.0, 1.0]$ via $1.0 / (1.0 + \log(1.0 + |\text{rank}|))$.
 
-### 3.8. Dense Semantic Embeddings & Vector Search (Phase 8)
+### 3.8. Dense Semantic Embeddings & Vector Search (Phase 8: Multi-Signal Semantic Fusion)
+
+FastAST's Phase 8 design stresses six non-negotiable architectural principles:
+1. **Embeddings are One Signal Among Several**: In codebases, dense embeddings alone cannot discern exact identifier names, method signatures, or fine-grained scope boundaries. Semantic cosine similarity is strictly **one signal among several** (typically 25% weight in default hybrid ranking), working alongside lexical BM25, deterministic name matching, kind priority, path relevance, graph degree centrality, and parser confidence.
+2. **Exact and Strong Lexical Matches Still Matter**: Software engineering retrieval fundamentally differs from prose search. When an engineer or coding agent queries an identifier (e.g. `verify_login_credentials` or `execute_query`), an exact or prefix lexical match on the symbol identifier must strongly anchor or top the rank. Exact name matches receive high dedicated weight ($0.25 - 0.30$) with stratified matching tiers (exact case = 1.0, case-insensitive = 0.95, prefix = 0.80, suffix = 0.70, word boundary = 0.65, substring = 0.50), preventing fuzzy semantic associations from overtaking real declarations.
+3. **Graph Structure and Path Relevance Remain Critical**: Code is inherently relational and structured:
+   - **Graph Centrality ($S_{\text{edge}}$)**: Hub symbols with high in-degree (callers) or out-degree (callees) receive a centrality boost (up to $+0.10$), prioritizing core reusable logic over leaf utilities.
+   - **Path Relevance ($S_{\text{path}}$)**: Production source files (`src/`, `lib/`, `packages/`) receive positive bias ($0.80$), while test fixtures (`test/`, `spec/`), mocks, and configuration files are penalized ($0.25 - 0.40$).
+4. **Semantic Results are Fused with BM25 + Structural Rank, Not Replacing Them**:
+   - Dense vector retrieval does not discard or overwrite lexical or structural ranking.
+   - Results are fused via **Weighted Hybrid Scoring** or **Reciprocal Rank Fusion (RRF)**, combining dense vector rank, BM25 text rank, and AST structural rank into an explainable ensemble.
+5. **Graceful Fallback When Embeddings are Missing or Stale**:
+   - When the `symbol_embeddings` table is unpopulated, stale (e.g. newly created files not yet embedded), or if embedding generation fails, the retrieval engine **gracefully falls back** to BM25 + heuristic structural ranking without crashing or returning empty sets:
+     $$\text{Fallback Score} = 0.30 \cdot S_{\text{bm25}} + 0.30 \cdot S_{\text{name}} + 0.10 \cdot S_{\text{type}} + 0.10 \cdot S_{\text{path}} + 0.10 \cdot S_{\text{edge}} + 0.10 \cdot S_{\text{conf}}$$
+   - If both embeddings and BM25 are unavailable, it degrades to pure AST structural scoring ($0.40 S_{\text{name}} + 0.15 S_{\text{type}} + 0.15 S_{\text{path}} + 0.15 S_{\text{edge}} + 0.15 S_{\text{conf}}$).
+   - Stale embeddings are detected and refreshed via incremental synchronization (`backfill_symbol_embeddings`).
+6. **Local-First and Token-Conscious**:
+   - **100% Local-First**: The default `SemanticProjectionProvider` generates 128-dimensional dense vectors offline with zero external network calls, zero cloud API keys, and zero heavyweight dependencies, executing in microseconds per symbol.
+   - **Strictly Token-Conscious**: Embeddings serve purely for candidate pruning and ranking. Results are strictly bounded by top-$K$ limits (`limit=10`), bounded snippet extraction windows (default 5–15 lines, hard-capped at 60), and token budgets (default: 3,500 tokens), preventing context window blowups.
+
+- **Vector Storage Schema & Versioning**:
+  - `symbol_embeddings`:
+    - `symbol_id INTEGER PRIMARY KEY`: Foreign key references `symbols(id) ON DELETE CASCADE`.
+    - `model TEXT NOT NULL`: Model identifier string (e.g. `fastast-projection-128`).
+    - `model_version TEXT NOT NULL DEFAULT '1.0'`: Explicit model version tracking.
+    - `generation_id INTEGER NOT NULL DEFAULT 1`: Monotonic generation counter for atomic cohort invalidation.
+    - `dimensions INTEGER NOT NULL`: Vector length (e.g. 128, 384).
+    - `norm REAL NOT NULL DEFAULT 1.0`: Stored scalar $L_2$ norm for verification.
+    - `section TEXT NOT NULL DEFAULT 'symbol'`: Granularity label (`symbol`, `signature`, `docstring`).
+    - `file_id INTEGER`: Foreign key references `files(id) ON DELETE CASCADE`.
+    - `embedding BLOB NOT NULL`: Packed IEEE 754 32-bit float BLOB (`struct.pack(f"{len}f")`).
+    - `updated_at REAL NOT NULL`: Epoch timestamp of embedding creation.
+  - `file_embeddings`: Optional file-level embedding storage for coarse repository clustering and high-level routing.
+  - **Schema Migration Safety**: `init_db()` verifies table existence and uses `ALTER TABLE symbol_embeddings ADD COLUMN ...` to dynamically migrate legacy databases without data loss.
+- **Incremental Embedding Maintenance**:
+  - **Added/Changed Symbols**: Recomputed atomically inside the indexing transaction.
+  - **Deleted Symbols & Purged Files**: Automatically purged via SQLite `ON DELETE CASCADE` foreign keys on `file_id` and `symbol_id`.
+  - **Stale Embedding Invalidation**: `invalidate_stale_embeddings(conn, model, version)` drops out-of-date model versions, while `backfill_symbol_embeddings()` detects un-embedded or version-mismatched symbols and brings vectors up to date.
+- **Calibrated Semantic Score Normalization**:
+  - Raw cosine similarity $\text{sim} \in [-1.0, 1.0]$ is pruned below relevance threshold $\theta_{\text{min}} = 0.25$.
+  - Values $\ge 0.25$ are mapped through a calibrated monotonic transfer function into a stable ranking score:
+    $$S_{\text{semantic}} = \min\left(1.0, \max\left(0.0, \frac{\text{sim} - 0.25}{1.0 - 0.25} \times 0.90 + 0.10\right)\right)$$
+  - Raw embedding scores are **never directly mixed uncalibrated with BM25**, ensuring parity across scoring domains.
+- **Unified Retrieval Engine Integration**:
+  - Dense semantic querying lives directly within `RetrievalEngine.search_symbols()` and `retrieve_bundle()`.
+  - Automatically fuses semantic, BM25, exact name match, and structural graph traversal by default (`--ranking hybrid`).
 - **Pluggable Architecture**:
   - `SemanticProjectionProvider` (default): Fast, offline-first, zero-dependency 128-dimensional projection vectorizer combining software domain concept taxonomy mapping, subword/character 3-gram feature hashing, and $L_2$ hypersphere normalization.
   - `FastembedProvider`: Optional pluggable wrapper for `BAAI/bge-small-en-v1.5` via fastembed.
   - `SentenceTransformersProvider`: Optional pluggable wrapper for `all-MiniLM-L6-v2` via sentence-transformers.
-  - `CustomEmbeddingProvider`: Adapter for user-supplied callable embedding functions.
-- **Embedded Storage**: Dense vectors are stored in SQLite `symbol_embeddings` as packed IEEE 754 binary float BLOBs with `FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE`.
-- **Incremental Sync**: When files are modified or re-indexed, old embeddings cascade-delete and newly extracted symbols are embedded atomically.
-- **Similarity Computation**: Unit-length normalized vectors allow cosine similarity via rapid inner dot product, mapped to $[0.0, 1.0]$.
+  - `CustomEmbeddingProvider`: Adapter for user-supplied callable embedding functions with custom versioning.
 
 ### 3.9. Hybrid Ranking & Multi-Modal Fusion
 - **Score Fusion Modes**: FastAST supports four complementary ranking modes:

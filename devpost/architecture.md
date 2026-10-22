@@ -164,15 +164,41 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
   (Default parameters: $k_1 = 1.2$, $b = 0.75$).
 - **Field Boosting**: Multiplies term score by field weights: Symbol Name ($\times 3.0$) > Signature ($\times 2.0$) > Docstring ($\times 1.0$) > File Path ($\times 1.0$).
 
-### 3.8. Embeddings & Semantic Search
+### 3.8. Dense Semantic Embeddings & Vector Search (Phase 8: Multi-Signal Semantic Fusion)
+- **Embeddings are One Signal Among Several**: Embeddings alone cannot discern exact identifier names, method signatures, or fine-grained scope boundaries. Semantic similarity is strictly **one signal among several** (typically 25% weight in default hybrid ranking), working alongside lexical BM25, deterministic name matching, kind priority, path relevance, graph degree centrality, and parser confidence.
+- **Exact and Strong Lexical Matches Still Matter**: Software engineering retrieval fundamentally differs from prose search. When an engineer or coding agent queries an identifier (e.g. `verify_login_credentials` or `execute_query`), an exact or prefix lexical match on the symbol identifier must strongly anchor or top the rank ($0.25 - 0.30$ dedicated weight with stratified matching tiers), preventing fuzzy semantic associations from overtaking real declarations.
+- **Graph Structure and Path Relevance Remain Critical**:
+  - **Graph Centrality ($S_{\text{edge}}$)**: Hub symbols with high in-degree (callers) or out-degree (callees) receive a centrality boost (up to $+0.10$), prioritizing core reusable logic over leaf utilities.
+  - **Path Relevance ($S_{\text{path}}$)**: Production source files (`src/`, `lib/`, `packages/`) receive positive bias ($0.80$), while test fixtures (`test/`, `spec/`), mocks, and configuration files are penalized ($0.25 - 0.40$).
+- **Semantic Results are Fused with BM25 + Structural Rank, Not Replacing Them**:
+  - Dense vector retrieval does not discard or overwrite lexical or structural ranking.
+  - Results are fused via **Weighted Hybrid Scoring** or **Reciprocal Rank Fusion (RRF)**, combining dense vector rank, BM25 text rank, and AST structural rank into an explainable ensemble.
+- **Graceful Fallback When Embeddings are Missing or Stale**:
+  - When the `symbol_embeddings` table is unpopulated, stale (e.g. newly created files not yet embedded), or if embedding generation fails, the retrieval engine **gracefully falls back** to BM25 + heuristic structural ranking without crashing or returning empty sets:
+    $$\text{Fallback Score} = 0.30 \cdot S_{\text{bm25}} + 0.30 \cdot S_{\text{name}} + 0.10 \cdot S_{\text{type}} + 0.10 \cdot S_{\text{path}} + 0.10 \cdot S_{\text{edge}} + 0.10 \cdot S_{\text{conf}}$$
+  - If both embeddings and BM25 are unavailable, it degrades to pure AST structural scoring ($0.40 S_{\text{name}} + 0.15 S_{\text{type}} + 0.15 S_{\text{path}} + 0.15 S_{\text{edge}} + 0.15 S_{\text{conf}}$).
+  - Stale embeddings are detected and refreshed via incremental synchronization (`backfill_symbol_embeddings`).
+- **Local-First and Token-Conscious**:
+  - **100% Local-First**: The default `SemanticProjectionProvider` generates 128-dimensional dense vectors offline with zero external network calls, zero cloud API keys, and zero heavyweight dependencies, executing in microseconds per symbol.
+  - **Strictly Token-Conscious**: Embeddings serve purely for candidate pruning and ranking. Results are strictly bounded by top-$K$ limits (`limit=10`), bounded snippet extraction windows (default 5–15 lines, hard-capped at 60), and token budgets (default: 3,500 tokens), preventing context window blowups.
+- **Vector Storage Schema & Versioning**:
+  - `symbol_embeddings`: Stores dense vectors (`embedding` BLOB), model identifier (`model`), model version (`model_version`), generation counter (`generation_id`), vector length (`dimensions`), scalar $L_2$ norm (`norm`), section label (`section`), and file reference (`file_id`) tied via `FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE`.
+  - `file_embeddings`: Stores file-level embeddings for broad architectural matching and semantic file routing.
+  - **Schema Migration Safety**: Automated `ALTER TABLE` checks inside `init_db()` ensure seamless backwards compatibility for existing deployments.
+- **Incremental Embedding Maintenance**:
+  - Added/modified symbols are embedded atomically inside indexing transactions.
+  - Deleted symbols cascade-delete their embeddings automatically via SQLite foreign keys.
+  - Stale embeddings are detected and invalidated via `invalidate_stale_embeddings()` and refreshed via `backfill_symbol_embeddings()`.
+- **Calibrated Score Normalization**:
+  - Raw cosine similarity values are pruned below relevance threshold $\theta_{\text{min}} = 0.25$ and mapped through a calibrated monotonic transfer function into $[0.10, 1.00]$, avoiding raw uncalibrated mixing with BM25.
 - **Dense Vector Index**: Generates dense embeddings for high-level semantic intent queries (e.g., *"where is user authentication verified?"*).
-- **Lightweight Embedding Models**: Quantized ONNX or MiniLM models running locally via Candle/tract, indexing symbol docstrings and structural summaries.
-- **Vector Search**: Cosine similarity via HNSW or Flat IP vector table in SQLite.
+- **Pluggable Embedding Providers**: `SemanticProjectionProvider` (default offline 128-dim), optional `FastembedProvider` (`bge-small-en-v1.5`), `SentenceTransformersProvider` (`all-MiniLM-L6-v2`), and `CustomEmbeddingProvider`.
+- **Vector Search**: Cosine similarity via packed IEEE 754 float BLOBs in SQLite `symbol_embeddings` table.
 
-### 3.9. Hybrid Ranking (Reciprocal Rank Fusion)
-- **Score Fusion**: Combines lexical (BM25), semantic (dense embedding), and structural (graph PageRank / BFS) rankings using Reciprocal Rank Fusion (RRF):
+### 3.9. Hybrid Ranking (Reciprocal Rank Fusion & Hybrid Sum)
+- **Score Fusion**: Combines lexical (BM25), semantic (dense embedding), and structural (graph PageRank / BFS) rankings using Reciprocal Rank Fusion (RRF) or Weighted Hybrid Sum:
   $$\text{RRF}(d) = \sum_{m \in M} \frac{w_m}{k + \text{rank}_m(d)}$$
-  where $k = 60$ and $w_m$ are modal weights ($w_{\text{BM25}} = 0.4$, $w_{\text{Vector}} = 0.3$, $w_{\text{Graph}} = 0.3$).
+  where $k = 60$ and $w_m$ are modal weights ($w_{\text{BM25}} = 0.35$, $w_{\text{Semantic}} = 0.35$, $w_{\text{Graph}} = 0.30$).
 - **Explainability**: Every candidate carries `reasons: Vec<String>` specifying which modalities triggered the match.
 
 ### 3.10. MinHash + LSH (Locality Sensitive Hashing)
