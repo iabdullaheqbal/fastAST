@@ -84,6 +84,65 @@ def detect_language_from_path(path: Path) -> Optional[str]:
     return SUPPORTED_EXTENSIONS.get(ext)
 
 
+def run_scan(
+    dir_path: str = ".",
+    language: Optional[str] = None,
+    category: Optional[str] = None,
+    extra_ignores: Optional[list] = None,
+    json_output: bool = False,
+) -> int:
+    """Scan and admit repository files based on multi-layer ignore rules."""
+    root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(json.dumps({"error": f"Directory not found: {dir_path}", "files": []}, indent=2))
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    from fastast.discovery import discover_files
+
+    langs = {language} if language else None
+    cats = {category} if category else None
+
+    records = discover_files(
+        root,
+        languages=langs,
+        categories=cats,
+        extra_ignores=extra_ignores,
+    )
+
+    cat_counts: dict = {}
+    lang_counts: dict = {}
+    for r in records:
+        cat_counts[r.category] = cat_counts.get(r.category, 0) + 1
+        lang_counts[r.language] = lang_counts.get(r.language, 0) + 1
+
+    if json_output:
+        payload = {
+            "root": str(root),
+            "total_files": len(records),
+            "categories": cat_counts,
+            "languages": lang_counts,
+            "files": [r.to_dict() for r in records],
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"FastAST Admission Scan for '{root}':")
+    print(f"Total Admitted Files: {len(records)}")
+    if cat_counts:
+        print("Categories: " + ", ".join(f"{k}: {v}" for k, v in sorted(cat_counts.items())))
+    if lang_counts:
+        print("Languages:  " + ", ".join(f"{k}: {v}" for k, v in sorted(lang_counts.items())))
+    print("\nAdmitted Files:")
+    for r in records[:30]:
+        print(f"  [{r.category:<7}] {r.path:<40} ({r.language}, {r.hash[:8]}..., {r.total_lines} lines)")
+    if len(records) > 30:
+        print(f"  ... and {len(records) - 30} more files.")
+    return 0
+
+
 def run_index(
     dir_path: str = ".",
     force: bool = False,
@@ -468,9 +527,47 @@ def main() -> None:
         help="Suppress status output",
     )
 
+    # `scan` subcommand (Phase 1 file admission)
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scan and admit repository files applying multi-layer ignore rules",
+        description="Discover admitted files, calculate content hashes (xxHash3/BLAKE2b), and classify by category.",
+    )
+    scan_parser.add_argument(
+        "dir",
+        nargs="?",
+        default=".",
+        help="Repository root directory to scan (default: current directory)",
+    )
+    scan_parser.add_argument(
+        "-L",
+        "--language",
+        help="Filter by language (e.g. python, rust, javascript)",
+    )
+    scan_parser.add_argument(
+        "-C",
+        "--category",
+        choices=["source", "test", "config", "docs", "infra", "generated", "other"],
+        help="Filter by file category",
+    )
+    scan_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output admitted files as JSON",
+    )
+
     args = parser.parse_args()
 
-    if args.command == "index":
+    if args.command == "scan":
+        sys.exit(
+            run_scan(
+                args.dir,
+                language=getattr(args, "language", None),
+                category=getattr(args, "category", None),
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "index":
         sys.exit(
             run_index(
                 args.dir,

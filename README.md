@@ -1,19 +1,22 @@
 # FastAST
 
-**High-performance, AST-based repository indexer and symbol graph engine for AI coding agents.**
+**High-performance Codebase-Memory Engine (`AST → Graph → Retrieval`) for AI coding agents.**
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Language: Rust + Python](https://img.shields.io/badge/Language-Rust%20%2B%20Python-orange.svg)](https://www.rust-lang.org/)
 [![Model Context Protocol](https://img.shields.io/badge/Protocol-MCP%20JSON--RPC-purple.svg)](https://modelcontextprotocol.io/)
 [![Database: SQLite WAL](https://img.shields.io/badge/Database-SQLite%20WAL-blue.svg)](https://www.sqlite.org/)
-[![Performance: Tree--Sitter AST](https://img.shields.io/badge/Parser-Tree--Sitter%20AST-brightgreen.svg)]()
+[![Architecture: AST → Graph → Retrieval](https://img.shields.io/badge/Architecture-AST%20→%20Graph%20→%20Retrieval-success.svg)](docs/ARCHITECTURE.md)
 
 FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Windsurf**, and **SWE-bench harnesses**) with instant, deterministic repository intelligence:
 
-1. **Full-Repository Symbol & Call Graph:** Scans entire project trees, extracts symbols (functions, classes, methods, interfaces, types, docstrings, imports, call relationships), and stores them in a local SQLite database for sub-millisecond retrieval.
-2. **Incremental Indexing with SHA-256 Caching:** Uses file modification timestamps and SHA-256 content hashes to skip unchanged files instantly, keeping the database in sync in milliseconds.
-3. **Multi-Language AST Extraction:** Native Tree-Sitter parsing across 8+ languages: **Python, JavaScript, TypeScript, Java, Rust, HTML, CSS, JSON, and TOML**.
-4. **Agent-Native Integration:** Built-in Model Context Protocol (MCP) server exposing tools for automated symbol discovery and call graph traversal.
+1. **AST Extraction (Tree-Sitter):** Scans entire project trees across 9 languages, parsing concrete syntax trees in sub-5ms latency and extracting declarations, imports, and calls.
+2. **Symbol & Edge Graph:** Builds a normalized, confidence-weighted code graph in local SQLite (`files`, `symbols`, `imports`, `calls`, `edges`).
+3. **Retrieval & Evidence Selection:** Delivers bounded evidence windows with exact line numbers, code snippets, and graph neighborhood context without context window saturation.
+4. **Incremental Content Hashing:** Uses file modification timestamps and content hashes (xxHash3/BLAKE3) to skip unchanged files instantly.
+5. **Agent-Native MCP Integration:** Built-in Model Context Protocol server exposing tools for automated symbol discovery and call graph traversal.
+
+> 📖 **Full System Architecture**: Read the in-depth design specification in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 

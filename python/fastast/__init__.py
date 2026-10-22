@@ -1,6 +1,32 @@
-"""FastAST: AST-based repository indexer for coding agents."""
+"""FastAST: AST-based repository indexer and codebase-memory engine for coding agents."""
 
 from typing import List, Optional
+
+from fastast.discovery import (
+    DirectoryScanner,
+    FileCategory,
+    MultiLayerIgnore,
+    classify_file,
+    compute_content_hash,
+    detect_file_language,
+    discover_files,
+)
+from fastast.extractor import (
+    extract_file_facts,
+    parse_file_record,
+    parse_file_records,
+)
+from fastast.model import (
+    Candidate,
+    EdgeRecord,
+    EdgeRelation,
+    EvidenceWindow,
+    ExtractedFileFacts,
+    FileCategory,
+    FileRecord,
+    FileStatus,
+    SymbolRecord,
+)
 
 __version__ = "0.1.0"
 
@@ -90,6 +116,24 @@ __all__ = [
     "ExtractedImport",
     "ExtractedCall",
     "FileIndexResult",
+    "FileRecord",
+    "SymbolRecord",
+    "EdgeRecord",
+    "EvidenceWindow",
+    "Candidate",
+    "FileStatus",
+    "FileCategory",
+    "EdgeRelation",
+    "ExtractedFileFacts",
+    "discover_files",
+    "DirectoryScanner",
+    "MultiLayerIgnore",
+    "classify_file",
+    "detect_file_language",
+    "compute_content_hash",
+    "extract_file_facts",
+    "parse_file_record",
+    "parse_file_records",
     "index_repository",
     "search_symbols",
     "get_call_graph",

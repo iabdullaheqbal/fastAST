@@ -3,48 +3,46 @@ doc: scope
 status: approved
 ---
 
-# FastAST
+# FastAST: Codebase-Memory Engine (AST → Graph → Retrieval)
 
-A high-performance, full-repository AST-based code indexer and MCP server for AI coding agents, powered by a native Rust Tree-Sitter parsing engine and local SQLite symbol graph.
+A high-performance codebase-memory engine for AI coding agents, powered by a native Rust Tree-Sitter parsing engine, local SQLite symbol/edge graph, and hybrid evidence retrieval.
 
 ## The Unique Kernel
-High-speed repository-wide AST symbol, import, and call graph indexing stored in local SQLite:
-1. Recursively scans and parses source files across 8+ languages (Python, Java, JavaScript, TypeScript, Rust, HTML, CSS, JSON, TOML) using Tree-Sitter and native parsers.
-2. Extracts definitions (functions, classes, methods, interfaces, types), import statements, and invocation call relationships.
-3. Populates an indexed local SQLite database (`.fastast.db`) with SHA-256 incremental caching.
-4. Enables coding agents to instantly query symbols and trace call graphs across the codebase in milliseconds.
+High-speed codebase memory that turns raw source code into an actionable structural graph for AI agents:
+1. **Repo Indexing & AST Extraction**: Recursively discovers and parses source files across 9 languages (Python, Java, JavaScript, TypeScript, Rust, HTML, CSS, JSON, TOML) using Tree-Sitter and content hashing (xxHash3/BLAKE3).
+2. **Symbol/Edge Graph**: Extracts definitions (functions, classes, methods, interfaces, types), imports, and calls, constructing a confidence-weighted code graph in local SQLite.
+3. **Retrieval & Evidence Selection**: Provides hybrid retrieval (BM25 + graph BFS neighborhood expansion) delivering bounded evidence windows with exact file locations and code snippets to AI coding agents.
 
 ## Who It's For
-AI coding agents (e.g., Claude Code, Cursor, Codex, SWE-agent evaluation runners) and developers building LLM coding workflows who need deep, accurate repository awareness and symbol navigation across multi-file codebases.
+AI coding agents (e.g., Claude Code, Cursor, Codex, SWE-bench evaluators) and developers building LLM coding workflows who need deep, accurate repository awareness, symbol navigation, and bounded evidence without token context saturation.
 
 ## The Core Loop
-1. FastAST indexes the project repository into a local SQLite database (`.fastast.db`), parsing source files via native Rust Tree-Sitter.
+1. FastAST indexes the project repository into a local SQLite database (`fastast.db`) using incremental change detection.
 2. The AI agent connects via Model Context Protocol (MCP) or CLI and invokes tools:
-   - `index_repository(directory_path, force=False)`: Scans and populates the SQLite symbol graph incrementally.
-   - `query_symbols(query, kind, language, limit)`: Finds functions, classes, methods, and signatures across the repository.
-   - `get_call_graph(symbol_name)`: Traces callers and callees to understand code dependencies.
-3. The agent receives accurate, cross-module structural awareness and exact file/line locations in milliseconds.
+   - `index_repository(directory_path)`: Scans and populates the SQLite symbol/edge graph incrementally.
+   - `query_symbols(query, kind, language)`: Finds functions, classes, methods, and signatures with confidence scores.
+   - `get_call_graph(symbol_name, direction)`: Traces callers and callees to understand code dependencies.
+3. The agent receives accurate structural awareness and bounded evidence windows in milliseconds.
 
 ## Inspiration & Identity
 - High-speed systems and developer tools like `ripgrep`, `ctags`, `tree-sitter`, and `sqlite`.
 - Aesthetic: Deterministic, minimal, blazing fast, and developer-trustworthy.
 
 ## Why This Matters
-Solves symbol discovery and architectural awareness across large codebases without naive grepping, vector hallucination, or heavy language server setups.
+Solves context explosion and structural blindness across large codebases without naive grepping, hallucinated symbol lookups, or heavy language server setups.
 
 ## What "Working" Looks Like
 1. The developer or agent triggers repository indexing on a multi-file project via `fastast index .` or MCP.
-2. FastAST parses all source files, populating SQLite tables: `files`, `symbols`, `imports`, and `calls`.
-3. Agent queries symbols (e.g. `query_symbols("process_request")`) or inspects invocations (`get_call_graph("process_request")`) and receives instant structured results with exact file paths and line ranges.
+2. FastAST parses all source files, populating SQLite tables: `files`, `symbols`, `imports`, `calls`, and `edges`.
+3. Agent queries symbols (e.g. `query_symbols("process_request")`) or inspects invocations (`get_call_graph("process_request")`) and receives instant structured candidate evidence with line ranges and neighborhood context.
 
 ## The Boundary
 - **Languages:** Python, JavaScript/JSX, TypeScript/TSX, Java, Rust, HTML, CSS, JSON, and TOML.
-- **Database:** Local embedded SQLite (`.fastast.db`) with WAL mode and zero cloud dependencies.
-- **Symbol Graph:** Functions, async functions, classes, methods, interfaces, enums, imports, and caller/callee relationships.
-- **Engine Stack:** Rust Tree-Sitter parsers + PyO3 bridge + Python SQLite indexer + FastMCP JSON-RPC stdio server + CLI.
+- **Database:** Local embedded SQLite (`fastast.db`) with WAL mode and zero cloud dependencies.
+- **Symbol & Edge Graph:** Functions, classes, methods, interfaces, traits, imports, and caller/callee relationships with confidence scoring.
+- **Engine Stack:** Rust Tree-Sitter parsers + PyO3 bridge + SQLite storage + FastMCP JSON-RPC stdio server + CLI.
 
-## Explicitly Cut
-- **Code Context Pruning:** Completely dropped. FastAST focuses strictly on robust AST-based repository indexing and symbol discovery.
-- **Neural / PyTorch vector embeddings:** Explicitly cut to maintain sub-millisecond throughput and zero heavy dependencies.
-- **Cloud-hosted graph databases (Neo4j, etc.):** Cut in favor of local, zero-config SQLite.
-- **In-place code rewriting:** FastAST remains strictly a non-destructive indexing and query engine; it never modifies source files on disk.
+## Explicitly Out of Scope
+- **Dual-rubric code pruning:** Completely dropped. FastAST focuses strictly on AST repository indexing, symbol/edge graphs, and hybrid retrieval.
+- **Heavy cloud graph databases (Neo4j, etc.):** Cut in favor of local, zero-config embedded SQLite.
+- **In-place code rewriting:** FastAST remains strictly a non-destructive indexing and retrieval engine; it never modifies source files on disk.

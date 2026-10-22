@@ -1,17 +1,21 @@
 pub mod css;
+pub mod discovery;
 pub mod html;
 pub mod indexer;
 pub mod java;
 pub mod javascript;
 pub mod json;
 pub mod language;
+pub mod model;
 pub mod parser;
 pub mod rust;
 pub mod toml;
 pub mod typescript;
 
+pub use discovery::{classify_path, compute_xxh3, is_binary_content};
 pub use indexer::{ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult};
 pub use language::Language;
+pub use model::{Candidate, EdgeRecord, EvidenceWindow, ExtractedFileFacts, FileRecord, SymbolRecord};
 
 use pyo3::prelude::*;
 use std::sync::OnceLock;
@@ -98,6 +102,15 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ExtractedImport>()?;
     m.add_class::<ExtractedCall>()?;
     m.add_class::<FileIndexResult>()?;
+    m.add_class::<FileRecord>()?;
+    m.add_class::<SymbolRecord>()?;
+    m.add_class::<EdgeRecord>()?;
+    m.add_class::<EvidenceWindow>()?;
+    m.add_class::<Candidate>()?;
+    m.add_class::<ExtractedFileFacts>()?;
     m.add_function(wrap_pyfunction!(index_code, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_xxh3, m)?)?;
+    m.add_function(wrap_pyfunction!(is_binary_content, m)?)?;
+    m.add_function(wrap_pyfunction!(classify_path, m)?)?;
     Ok(())
 }

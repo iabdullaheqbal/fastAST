@@ -7,11 +7,13 @@ status: approved
 
 ## How This Works, In Plain Language
 
-FastAST is a high-performance repository indexing engine and symbol graph service for AI coding agents. Coding agents need deep, accurate architectural awareness: locating where symbols are declared, imported, and called across hundreds of files without grepping entire directory trees or waiting for heavy language servers.
+FastAST is a high-performance codebase-memory engine (`AST → Graph → Retrieval`) and symbol graph service for AI coding agents. Coding agents need deep, accurate architectural awareness: locating where symbols are declared, imported, and called across hundreds of files without grepping entire directory trees or waiting for heavy language servers.
 
 FastAST solves this with:
-- **Repository Indexing:** Walks the codebase, parses source files with native Tree-Sitter grammars across 8+ languages (Python, Java, JavaScript, TypeScript, Rust, HTML, CSS, JSON, TOML), extracts an AST symbol graph (functions, classes, methods, interfaces, types, imports, and caller-to-callee invocations), and stores it in an indexed local SQLite database (`.fastast.db`).
-- **Incremental Caching:** Computes SHA-256 hashes and modification timestamps to skip unchanged files instantly.
+- **Repository Indexing & AST Extraction:** Walks the codebase, parses source files with native Tree-Sitter grammars across 9 languages (Python, Java, JavaScript, TypeScript, Rust, HTML, CSS, JSON, TOML), extracts an AST symbol graph (functions, classes, methods, interfaces, types, imports, and caller-to-callee invocations), and stores it in an indexed local SQLite database (`fastast.db`).
+- **Symbol & Edge Graph:** Maintains a confidence-weighted code graph connecting files, symbols, definitions, and calls.
+- **Hybrid Retrieval & Evidence Windows:** Delivers line-bounded code evidence and graph neighborhood context for LLM agents.
+- **Incremental Caching:** Computes content hashes and modification timestamps to skip unchanged files instantly.
 - **Agent Integration:** Exposes `index_repository`, `query_symbols`, and `get_call_graph` via the Model Context Protocol (MCP) over JSON-RPC stdio.
 - **CLI Utilities:** Offers `fastast index`, `fastast symbols`, and `fastast calls` for developer terminal use.
 
@@ -26,12 +28,21 @@ FastAST solves this with:
        ├──► index_repository() ──► [Indexer: python/fastast/indexer.py]
        │                                 │
        │                                 ├──► [Rust Core: src/lib.rs] (Tree-Sitter AST extraction)
-       │                                 └──► [SQLite DB: .fastast.db via python/fastast/db.py]
+       │                                 └──► [SQLite DB: fastast.db via python/fastast/db.py]
        │
-       ├──► query_symbols()    ──► [SQLite DB Query]
+       ├──► query_symbols()    ──► [SQLite DB & Retrieval Engine]
        │
-       └──► get_call_graph()   ──► [SQLite DB Graph Query]
+       └──► get_call_graph()   ──► [SQLite Graph Edge Traversal]
 ```
+
+## Core Data Model
+
+Defined in `src/model.rs` and `python/fastast/model.py`:
+- **`FileRecord`**: `(path, language, hash, mtime, status, total_lines, total_tokens, has_syntax_error)`
+- **`SymbolRecord`**: `(id, name, kind, file, start_line, end_line, confidence, signature, parent_name, docstring)`
+- **`EdgeRecord`**: `(src, dst, relation, confidence, line_number)`
+- **`Candidate`**: `(symbol_id, score, reasons, neighbors, evidence_window)`
+- **`EvidenceWindow`**: `(start_line, end_line, snippet)`
 
 ## Stack
 
@@ -43,9 +54,9 @@ FastAST solves this with:
 - **Python (>=3.10):**
   - `sqlite3`: Standard library embedded database with WAL mode, foreign keys, and indexed lookup tables.
   - `mcp`: Official Model Context Protocol SDK.
-- **Storage:** Embedded SQLite database (`.fastast.db`).
+- **Storage:** Embedded SQLite database (`fastast.db`).
 
-## SQLite Database Schema (`.fastast.db`)
+## SQLite Database Schema (`fastast.db`)
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -57,6 +68,7 @@ CREATE TABLE IF NOT EXISTS files (
     language TEXT NOT NULL DEFAULT 'python',
     hash TEXT NOT NULL,
     mtime REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unchanged',
     total_lines INTEGER NOT NULL,
     total_tokens INTEGER NOT NULL,
     has_syntax_error INTEGER DEFAULT 0
@@ -70,6 +82,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     signature TEXT NOT NULL,
     start_line INTEGER NOT NULL,
     end_line INTEGER NOT NULL,
+    confidence REAL NOT NULL DEFAULT 1.0,
     parent_symbol_id INTEGER,
     docstring TEXT,
     FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE,
@@ -95,18 +108,18 @@ CREATE TABLE IF NOT EXISTS calls (
     FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE,
     FOREIGN KEY(caller_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    src TEXT NOT NULL,
+    dst TEXT NOT NULL,
+    relation TEXT NOT NULL DEFAULT 'calls',
+    confidence REAL NOT NULL DEFAULT 1.0,
+    line_number INTEGER,
+    FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+);
 ```
 
-## MCP Tools Interface
-
-1. **`index_repository`**
-   - Inputs: `directory_path` (str, default: '.'), `force` (bool, default: False)
-   - Outputs: JSON summary with scanned files, indexed count, skipped count, symbols, imports, calls, elapsed time.
-
-2. **`query_symbols`**
-   - Inputs: `query` (str), `kind` (optional str), `directory_path` (str), `limit` (int, default: 50), `language` (optional str)
-   - Outputs: JSON list of matched symbols with names, signatures, file paths, line ranges, and docstrings.
-
-3. **`get_call_graph`**
-   - Inputs: `symbol_name` (str), `directory_path` (str)
-   - Outputs: JSON call hierarchy with incoming callers and outgoing callees.
+## Complete Algorithm Stack
+Detailed design and formulas documented in `docs/ARCHITECTURE.md`.

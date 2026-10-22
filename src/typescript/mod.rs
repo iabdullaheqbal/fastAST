@@ -28,17 +28,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
         }
     };
 
-    if tree.root_node().has_error() {
-        return Ok(FileIndexResult {
-            symbols: Vec::new(),
-            imports: Vec::new(),
-            calls: Vec::new(),
-            total_lines: lines.len(),
-            total_tokens,
-            has_syntax_error: true,
-        });
-    }
-
+    let has_syntax_error = tree.root_node().has_error();
     let source_bytes = code_text.as_bytes();
     let scopes = parser::collect_scopes(&tree, source_bytes, &lines);
     let raw_calls = parser::collect_all_calls(&tree, source_bytes, &scopes);
@@ -282,7 +272,7 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
         calls,
         total_lines: lines.len(),
         total_tokens,
-        has_syntax_error: false,
+        has_syntax_error,
     })
 }
 
