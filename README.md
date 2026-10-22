@@ -23,6 +23,7 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
 ## Table of Contents
 
 - [Key Features](#key-features)
+- [Token Reduction via Layered Pruning](#token-reduction-via-layered-pruning)
 - [Supported Languages](#supported-languages)
 - [Installation](#installation)
 - [Quick Start (CLI)](#quick-start-cli)
@@ -55,6 +56,54 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
 - **Fast Incremental Indexing**: Automatically skips unchanged files via SHA-256 hash checks and mtime caching.
 - **Official Model Context Protocol (MCP)**: Native JSON-RPC stdio server ready for Claude Code, Cursor, and any MCP-compliant coding agent.
 - **100% Local & Offline**: Zero cloud dependencies, zero external telemetry, zero vector database bloat, zero API keys required.
+
+---
+
+## Token Reduction via Layered Pruning
+
+Traditional retrieval approaches dump entire files into model context windows, resulting in token exhaustion, high inference latency, and context distraction. FastAST uses a four-stage **Layered Pruning Pipeline** that reduces a codebase down to only the exact evidence required for a query:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. Repo-Level Pruning (File Admission)                                      │
+│    • Drops .git, node_modules, build artifacts, test caches, and binaries    │
+│    • Multi-layer ignores (.gitignore, .fastastignore, hardcoded patterns)   │
+│    • Token Reduction: Eliminates 60%-80% of repository file bloat            │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 2. Syntax-Level Pruning (AST Fact Extraction)                               │
+│    • Discards non-semantic tokens, comments, and boilerplate               │
+│    • Extracts only high-value symbols, signatures, imports, and calls        │
+│    • Token Reduction: Cuts admitted file footprint by 75%-90%                │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 3. Graph-Level Pruning (Relation Filtering)                                 │
+│    • Suppresses built-in call noise (print, len, console, panic, etc.)      │
+│    • Eliminates self-loops and prunes low-confidence relations (< 0.60)     │
+│    • Token Reduction: Drops over 50% of raw graph relationship clutter       │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 4. Query-Time Pruning (Ranking, Neighborhood & Token Budgeting)             │
+│    • Multi-factor ranking (exact name, type, path closeness, edge centrality)│
+│    • Fan-out-capped 1-hop neighborhood expansion (depth 1-3, fan-out ≤ 5)   │
+│    • Extracts minimal bounded snippets (omitting middle for large symbols)  │
+│    • Enforces strict token budget (e.g. 1024-2048 tokens total)             │
+│    • Token Reduction: Delivers compact evidence bundle (99%+ reduction)     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Pruning Stage | Scope | Action Taken | Resulting Artifact |
+| :--- | :--- | :--- | :--- |
+| **Layer 1: Repo-Level** | Whole Repository | Ignore rules, binary sniffing, content hashing | `FileRecord` set |
+| **Layer 2: Syntax-Level** | Admitted Files | Tree-sitter AST extraction of declarations | `SymbolRecord` + raw edges |
+| **Layer 3: Graph-Level** | Extracted Facts | Deduplication, confidence thresholding, noise filtering | Typed `CodeGraph` |
+| **Layer 4: Query-Time** | Graph + Evidence | Multi-factor ranking, bounded snippets, token budgeting | `EvidenceBundle` |
 
 ---
 

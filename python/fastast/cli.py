@@ -400,6 +400,43 @@ def run_graph(
 ) -> int:
     """Perform bounded graph traversal from a symbol."""
     root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": f"Directory not found: {dir_path}",
+                        "symbol": symbol_name,
+                        "total_nodes": 0,
+                        "total_edges": 0,
+                        "nodes": [],
+                        "edges": [],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    if not symbol_name or not symbol_name.strip():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": "Symbol name cannot be empty",
+                        "total_nodes": 0,
+                        "total_edges": 0,
+                        "nodes": [],
+                        "edges": [],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write("Error: Symbol name cannot be empty.\n")
+        return 1
+
     db_path = root / ".fastast.db"
     if not db_path.exists():
         from fastast.indexer import index_repository
@@ -407,11 +444,15 @@ def run_graph(
 
     from fastast.db import get_connection, get_graph_neighborhood
     conn = get_connection(db_path)
-    res = get_graph_neighborhood(conn, symbol_name, max_depth=max_depth, direction=direction)
+    res = get_graph_neighborhood(conn, symbol_name.strip(), max_depth=max_depth, direction=direction)
     conn.close()
 
     if json_output:
         print(json.dumps(res, indent=2))
+        return 0
+
+    if res.get("total_nodes", 0) <= 1 and not res.get("edges"):
+        print(f"No graph relations found for '{symbol_name}' in {dir_path}.")
         return 0
 
     print(f"Graph Neighborhood for '{symbol_name}' (depth={max_depth}):")
@@ -440,6 +481,37 @@ def run_query(
 ) -> int:
     """Retrieve ranked symbol evidence and bounded graph context for a query."""
     root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": f"Directory not found: {dir_path}",
+                        "query": query,
+                        "candidates": [],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    if not query or not query.strip():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": "Query string cannot be empty",
+                        "candidates": [],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write("Error: Query string cannot be empty.\n")
+        return 1
+
     db_path = root / ".fastast.db"
     if not db_path.exists():
         from fastast.indexer import index_repository
@@ -448,7 +520,7 @@ def run_query(
     from fastast.retrieval import RetrievalEngine
     with RetrievalEngine(db_path, repo_root=root) as engine:
         bundle = engine.retrieve_bundle(
-            query=query,
+            query=query.strip(),
             kind=kind,
             language=language,
             file_path=file_path,
@@ -464,7 +536,7 @@ def run_query(
     print(f"Total Candidates: {len(bundle.candidates)}, Estimated Tokens: ~{bundle.total_tokens_estimate}\n")
 
     if not bundle.candidates:
-        print("No matching candidate symbols found.")
+        print(f"No matching candidate symbols found for '{query}'.")
         return 0
 
     print("Top Candidates:")
@@ -503,16 +575,20 @@ def main() -> None:
         prog="fastast",
         description=(
             "FastAST: AST-based repository indexer for coding agents.\n"
-            "Indexes source code across 8+ languages into SQLite using AST analysis."
+            "Codebase-memory engine (AST -> Graph -> Retrieval) indexing 9 languages into SQLite."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
+            "  fastast scan . -L python\n"
             "  fastast index .\n"
             "  fastast index /path/to/repo --force\n"
-            "  fastast symbols 'handle_request' --kind function\n"
+            "  fastast query 'handle_request' --limit 3\n"
+            "  fastast query 'AuthService' --json\n"
             "  fastast symbols 'Config' -L python\n"
-            "  fastast calls 'execute_query'"
+            "  fastast calls 'execute_query'\n"
+            "  fastast graph 'handle_request' --depth 2\n"
+            "  fastast graph 'UserService' --direction out --json"
         ),
     )
     parser.add_argument(

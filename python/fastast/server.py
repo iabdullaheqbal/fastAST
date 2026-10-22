@@ -304,9 +304,12 @@ def retrieve_evidence(
     Returns:
         JSON string containing the structured EvidenceBundle.
     """
+    if not query or not query.strip():
+        return json.dumps({"error": "Query string cannot be empty", "query": query, "candidates": []}, indent=2)
+
     root = Path(directory_path).resolve()
     if not root.exists():
-        return json.dumps({"error": f"Directory not found: '{directory_path}'", "candidates": []})
+        return json.dumps({"error": f"Directory not found: '{directory_path}'", "candidates": []}, indent=2)
 
     if root.is_file():
         root = root.parent
