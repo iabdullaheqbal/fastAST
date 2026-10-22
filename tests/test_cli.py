@@ -10,6 +10,10 @@ from fastast.cli import (
     detect_language_from_path,
     run_calls,
     run_index,
+    run_outline,
+    run_query,
+    run_snippet,
+    run_stats,
     run_symbols,
 )
 from fastast.db import get_connection, init_db
@@ -115,6 +119,84 @@ def test_run_calls_with_db(tmp_path: Path):
     assert ret == 0
 
 
+def test_run_stats_cli(tmp_path: Path):
+    """Test fastast stats CLI subcommand and JSON contract."""
+    (tmp_path / "app.py").write_text("def my_func(): pass\n")
+    run_index(str(tmp_path), quiet=True)
+
+    # Missing dir test
+    ret_err = run_stats("/nonexistent/dir", json_output=True)
+    assert ret_err == 1
+
+    # Valid repo test
+    ret = run_stats(str(tmp_path), json_output=True)
+    assert ret == 0
+
+    # Subprocess execution test
+    res = subprocess.run(
+        [sys.executable, "-m", "fastast.cli", "stats", "-d", str(tmp_path), "--json"],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": "python"},
+    )
+    assert res.returncode == 0
+    data = json.loads(res.stdout)
+    assert "files" in data
+    assert "symbols" in data
+    assert "results" in data
+    assert "meta" in data
+    assert data["error"] is None
+
+
+def test_run_query_outline_snippet_cli(tmp_path: Path):
+    """Test query, outline, snippet subcommands in CLI matching MCP contracts."""
+    (tmp_path / "service.py").write_text(
+        "class ServiceEngine:\n"
+        "    def run_worker(self) -> None:\n"
+        "        pass\n"
+    )
+    run_index(str(tmp_path), quiet=True)
+
+    # 1. query
+    res_q = subprocess.run(
+        [sys.executable, "-m", "fastast.cli", "query", "run_worker", "-d", str(tmp_path), "--json"],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": "python"},
+    )
+    assert res_q.returncode == 0
+    q_data = json.loads(res_q.stdout)
+    assert "candidates" in q_data
+    assert "results" in q_data
+    assert "meta" in q_data
+
+    # 2. outline
+    res_out = subprocess.run(
+        [sys.executable, "-m", "fastast.cli", "outline", "service.py", "-d", str(tmp_path), "--json"],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": "python"},
+    )
+    assert res_out.returncode == 0
+    out_data = json.loads(res_out.stdout)
+    assert "classes" in out_data
+    assert "results" in out_data
+    assert out_data["error"] is None
+
+    # 3. snippet
+    res_snip = subprocess.run(
+        [sys.executable, "-m", "fastast.cli", "snippet", "run_worker", "-d", str(tmp_path), "--json"],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": "python"},
+    )
+    assert res_snip.returncode == 0
+    snip_data = json.loads(res_snip.stdout)
+    assert "snippet" in snip_data
+    assert "results" in snip_data
+    assert snip_data["error"] is None
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -126,5 +208,11 @@ if __name__ == "__main__":
         test_run_calls_missing_dir()
         test_run_symbols_with_db(tmp)
         test_run_calls_with_db(tmp)
+
+    with tempfile.TemporaryDirectory() as td:
+        test_run_stats_cli(Path(td))
+
+    with tempfile.TemporaryDirectory() as td:
+        test_run_query_outline_snippet_cli(Path(td))
 
     print("All CLI tests passed successfully!")

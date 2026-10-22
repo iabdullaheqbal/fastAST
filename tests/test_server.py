@@ -11,6 +11,7 @@ from fastast.server import (
     get_community,
     get_file_outline,
     get_graph_neighborhood,
+    get_repository_stats,
     get_similar_symbols,
     get_snippet,
     get_symbol_evidence,
@@ -243,6 +244,72 @@ def test_similarity_and_community_mcp_tools(tmp_path: Path):
     assert "meta" in comms_res
 
 
+def test_get_repository_stats_tool(tmp_path: Path):
+    """Test get_repository_stats MCP tool with empty and populated repos."""
+    # Test not found
+    err_res = json.loads(get_repository_stats("/nonexistent/path"))
+    assert "error" in err_res
+    assert "Directory not found" in err_res["error"]
+    assert "results" in err_res
+    assert "meta" in err_res
+
+    # Test valid repository
+    (tmp_path / "module.py").write_text("def hello_world(): pass\n")
+    index_repository(str(tmp_path))
+
+    stats_res = json.loads(get_repository_stats(str(tmp_path)))
+    assert stats_res["error"] is None
+    assert stats_res["files"] >= 1
+    assert stats_res["symbols"] >= 1
+    assert "languages" in stats_res
+    assert "results" in stats_res
+    assert "meta" in stats_res
+    assert stats_res["meta"]["files"] >= 1
+
+
+def test_comprehensive_parameter_aliases_and_error_contracts(tmp_path: Path):
+    """Test standardized parameter aliases and structured error contracts across all tools."""
+    (tmp_path / "calc.py").write_text(
+        "class Calculator:\n"
+        "    def add(self, a: int, b: int) -> int:\n"
+        "        return a + b\n"
+    )
+    index_repository(str(tmp_path))
+
+    # 1. query_symbols with name=... and path=...
+    q_res = json.loads(query_symbols(name="Calculator", path=str(tmp_path)))
+    assert q_res["error"] is None
+    assert q_res["count"] == 1
+    assert q_res["results"][0]["name"] == "Calculator"
+
+    # 2. retrieve_evidence with q=... and dir_path=...
+    ev_res = json.loads(retrieve_evidence(q="add", dir_path=str(tmp_path)))
+    assert ev_res["error"] is None
+    assert "results" in ev_res
+    assert "evidence" in ev_res
+    assert "meta" in ev_res
+
+    # 3. get_symbol_evidence with name=...
+    sym_res = json.loads(get_symbol_evidence(name="add", path=str(tmp_path)))
+    assert sym_res["error"] is None
+    assert sym_res["symbol"]["name"] == "add"
+    assert "snippet" in sym_res
+    assert "results" in sym_res
+
+    # 4. get_file_outline with file=...
+    out_res = json.loads(get_file_outline(file="calc.py", path=str(tmp_path)))
+    assert out_res["error"] is None
+    assert out_res["file_path"] == "calc.py"
+    assert len(out_res["classes"]) == 1
+
+    # 5. get_snippet with name=... and window=...
+    snip_res = json.loads(get_snippet(name="add", window=2, path=str(tmp_path)))
+    assert snip_res["error"] is None
+    assert "add" in snip_res["snippet"]
+    assert "results" in snip_res
+    assert "meta" in snip_res
+
+
 if __name__ == "__main__":
     test_index_repository_not_found()
     test_query_symbols_empty()
@@ -262,5 +329,11 @@ if __name__ == "__main__":
 
     with tempfile.TemporaryDirectory() as td:
         test_similarity_and_community_mcp_tools(Path(td))
+
+    with tempfile.TemporaryDirectory() as td:
+        test_get_repository_stats_tool(Path(td))
+
+    with tempfile.TemporaryDirectory() as td:
+        test_comprehensive_parameter_aliases_and_error_contracts(Path(td))
 
     print("All Phase 10 server and MCP standardization tests passed successfully!")

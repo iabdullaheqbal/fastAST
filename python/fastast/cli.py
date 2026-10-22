@@ -553,6 +553,10 @@ def run_query(
                         "error": f"Directory not found: {dir_path}",
                         "query": query,
                         "candidates": [],
+                        "results": [],
+                        "evidence": [],
+                        "relationships": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -567,7 +571,12 @@ def run_query(
                 json.dumps(
                     {
                         "error": "Query string cannot be empty",
+                        "query": query,
                         "candidates": [],
+                        "results": [],
+                        "evidence": [],
+                        "relationships": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -657,7 +666,7 @@ def run_outline(
     root = Path(dir_path).resolve()
     if not root.exists():
         if json_output:
-            print(json.dumps({"error": f"Directory not found: {dir_path}", "outline": None}, indent=2))
+            print(json.dumps({"error": f"Directory not found: {dir_path}", "file_path": file_path, "classes": [], "functions": [], "other_symbols": [], "results": [], "meta": {}}, indent=2))
         else:
             sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
         return 1
@@ -666,7 +675,7 @@ def run_outline(
     outline = get_file_outline(file_path, repo_root=root)
     if not outline:
         if json_output:
-            print(json.dumps({"error": f"File not found in index: {file_path}", "outline": None}, indent=2))
+            print(json.dumps({"error": f"File not found in index: {file_path}", "file_path": file_path, "classes": [], "functions": [], "other_symbols": [], "results": [], "meta": {}}, indent=2))
         else:
             sys.stderr.write(f"Error: File not found in index: {file_path}\n")
         return 1
@@ -728,7 +737,7 @@ def run_snippet(
     root = Path(dir_path).resolve()
     if not root.exists():
         if json_output:
-            print(json.dumps({"error": f"Directory not found: {dir_path}", "snippet": None}, indent=2))
+            print(json.dumps({"error": f"Directory not found: {dir_path}", "snippet": None, "evidence": None, "results": [], "meta": {}}, indent=2))
         else:
             sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
         return 1
@@ -746,7 +755,7 @@ def run_snippet(
 
     if not window or not window.snippet:
         if json_output:
-            print(json.dumps({"error": "Snippet not found or file unreadable", "snippet": None}, indent=2))
+            print(json.dumps({"error": "Snippet not found or file unreadable", "snippet": None, "evidence": None, "results": [], "meta": {}}, indent=2))
         else:
             sys.stderr.write("Error: Snippet target not found or source file unreadable.\n")
         return 1
@@ -754,6 +763,7 @@ def run_snippet(
     if json_output:
         data = window.to_dict()
         data["evidence"] = data.get("snippet")
+        data["results"] = [data.get("snippet")] if data.get("snippet") else []
         data["meta"] = {
             "start_line": data.get("start_line"),
             "end_line": data.get("end_line"),
@@ -785,7 +795,7 @@ def run_similar(
         if json_output:
             print(
                 json.dumps(
-                    {"error": f"Directory not found: {dir_path}", "similar_symbols": []},
+                    {"error": f"Directory not found: {dir_path}", "symbol": symbol, "similar_symbols": [], "results": [], "meta": {}},
                     indent=2,
                 )
             )
@@ -800,7 +810,10 @@ def run_similar(
                 json.dumps(
                     {
                         "error": "Database not found. Run 'fastast index' first.",
+                        "symbol": symbol,
                         "similar_symbols": [],
+                        "results": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -865,7 +878,7 @@ def run_communities(
         if json_output:
             print(
                 json.dumps(
-                    {"error": f"Directory not found: {dir_path}", "communities": []},
+                    {"error": f"Directory not found: {dir_path}", "communities": [], "results": [], "meta": {}},
                     indent=2,
                 )
             )
@@ -881,6 +894,8 @@ def run_communities(
                     {
                         "error": "Database not found. Run 'fastast index' first.",
                         "communities": [],
+                        "results": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -946,7 +961,7 @@ def run_community(
         if json_output:
             print(
                 json.dumps(
-                    {"error": f"Directory not found: {dir_path}", "community": None},
+                    {"error": f"Directory not found: {dir_path}", "symbol": symbol, "community": None, "results": [], "meta": {}},
                     indent=2,
                 )
             )
@@ -961,7 +976,10 @@ def run_community(
                 json.dumps(
                     {
                         "error": "Database not found. Run 'fastast index' first.",
+                        "symbol": symbol,
                         "community": None,
+                        "results": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -981,7 +999,10 @@ def run_community(
                     json.dumps(
                         {
                             "error": f"Symbol not found in community index: {symbol}",
+                            "symbol": symbol,
                             "community": None,
+                            "results": [],
+                            "meta": {},
                         },
                         indent=2,
                     )
@@ -1011,6 +1032,60 @@ def run_community(
             print(f"  Community Peers ({len(comm['peers'])}):")
             for p in comm["peers"][:10]:
                 print(f"    - {p['name']} ({p['kind']}) in {p['file_path']}")
+        return 0
+    finally:
+        conn.close()
+
+
+def run_stats(
+    dir_path: str = ".",
+    json_output: bool = False,
+) -> int:
+    """Display repository index metrics and artifact statistics."""
+    root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(json.dumps({"error": f"Directory not found: {dir_path}", "results": [], "meta": {}}, indent=2))
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    db_path = root / ".fastast.db"
+    if not db_path.exists():
+        if json_output:
+            print(json.dumps({"error": "Index database not found. Run 'fastast index' first.", "results": [], "meta": {}}, indent=2))
+        else:
+            sys.stderr.write("Error: Index database not found. Run 'fastast index' first.\n")
+        return 1
+
+    conn = get_connection(db_path)
+    try:
+        from fastast.db import get_repository_stats
+        stats = get_repository_stats(conn)
+        if json_output:
+            res_item = dict(stats)
+            stats["results"] = [res_item]
+            stats["meta"] = {
+                "files": stats.get("files", 0),
+                "symbols": stats.get("symbols", 0),
+                "edges": stats.get("edges", 0),
+                "languages": stats.get("languages", {}),
+                "categories": stats.get("categories", {}),
+            }
+            stats["error"] = None
+            print(json.dumps(stats, indent=2))
+            return 0
+
+        print(f"FastAST Repository Statistics for '{root}':")
+        print(f"  Files Indexed:   {stats['files']}")
+        print(f"  Total Symbols:   {stats['symbols']}")
+        print(f"  Total Imports:   {stats['imports']}")
+        print(f"  Total Calls:     {stats['calls']}")
+        print(f"  Graph Edges:     {stats['edges']}")
+        if stats.get("languages"):
+            print("  Languages:       " + ", ".join(f"{k}: {v}" for k, v in stats["languages"].items()))
+        if stats.get("categories"):
+            print("  Categories:      " + ", ".join(f"{k}: {v}" for k, v in stats["categories"].items()))
         return 0
     finally:
         conn.close()
@@ -1355,6 +1430,15 @@ def main() -> None:
     community_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
     community_parser.add_argument("--json", action="store_true", help="Output community info as JSON")
 
+    # `stats` subcommand (Phase 10 Repository Statistics)
+    stats_parser = subparsers.add_parser(
+        "stats",
+        help="Display repository index metrics and artifact statistics",
+        description="Inspect indexed file counts, total symbols, imports, calls, and graph edges.",
+    )
+    stats_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    stats_parser.add_argument("--json", action="store_true", help="Output statistics as JSON")
+
     args = parser.parse_args()
 
     if args.command in ("query", "evidence"):
@@ -1464,6 +1548,13 @@ def main() -> None:
         sys.exit(
             run_community(
                 args.symbol,
+                dir_path=args.dir,
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "stats":
+        sys.exit(
+            run_stats(
                 dir_path=args.dir,
                 json_output=getattr(args, "json", False),
             )

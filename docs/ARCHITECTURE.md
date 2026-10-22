@@ -293,6 +293,36 @@ FastAST's Phase 8 design stresses six non-negotiable architectural principles:
 - **Multi-Process Concurrency**: SQLite WAL mode permits concurrent readers (e.g. MCP query server) while the background indexer thread writes updates.
 - **Thread Coordination**: In-process `parking_lot::RwLock` protects the in-memory graph and interner. File-based lock (`.fastast.lock`) prevents conflicting indexer processes from corrupting the database.
 
+### 3.19. Agent Interface Polish & MCP Completeness (Phase 10)
+- **Standardized MCP Tool Surface**:
+  - `index_repository`: Recursive repository parsing and AST facts extraction into `.fastast.db`.
+  - `get_repository_stats`: High-level metrics (total files, symbols, imports, calls, edges, languages, categories).
+  - `query_symbols`: Fast exact and prefix symbol lookups with kind/language filters.
+  - `get_call_graph`: Invocations blast-radius analysis (callers and callees).
+  - `get_graph_neighborhood`: Bounded multi-hop graph expansion (depth 1–3) with cycle prevention.
+  - `retrieve_evidence` (aliases: `query`, `build_evidence_bundle`): Primary natural-language/intent search tool combining dense semantic vectors, BM25 text match, and graph centrality into compact snippet bundles under token budgets.
+  - `get_symbol_evidence`: Definition metadata, bounded window snippet, and immediate callers/callees.
+  - `get_file_outline`: Structural outline of classes, methods, and functions without dumping raw file bodies.
+  - `get_snippet`: Minimal bounded source window with line range, window padding, and omission indicators.
+  - `get_similar_symbols`: MinHash + LSH duplicate and clone detection with Jaccard thresholds.
+  - `get_community`: Louvain modularity cluster membership and peer symbol discovery.
+  - `list_communities`: Functional module overview across the entire repository.
+- **Unified Output Contract**:
+  Every MCP tool and CLI JSON response strictly satisfies a predictable, machine-readable envelope:
+  - `results`: Canonical list of returned entities (symbols, relationships, nodes, snippets, or communities).
+  - `candidates`: Primary ranked symbol candidates (for search/retrieval).
+  - `evidence` / `snippets`: Minimal structured source snippets (bounded to context budgets).
+  - `relationships`: Directed graph edges (callers, callees, definitions, imports).
+  - `meta`: Operational metadata (counts, filters, budget limits, truncated flags).
+  - `error`: Structured error string when arguments or filesystem paths are invalid; `null` on success.
+- **CLI Subcommand Parity**:
+  All major MCP tools expose identical CLI subcommands with `--json` support:
+  `fastast stats`, `fastast query`, `fastast outline`, `fastast snippet`, `fastast graph`, `fastast symbols`, `fastast calls`, `fastast similar`, `fastast communities`, `fastast community`, `fastast scan`, `fastast index`.
+- **Agent Usability & Token-Conscious Guarantees**:
+  - Clear "Agent Guidance" sections embedded in tool docstrings explaining when and how agents should call each tool.
+  - Automatic graceful degradation on empty queries, missing paths, and unindexed repositories.
+  - Strict absence of raw, full-file dumps by default.
+
 ---
 
 ## 4. End-to-End Execution Flow

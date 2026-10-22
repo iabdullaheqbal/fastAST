@@ -23,6 +23,7 @@ from fastast.db import (
     get_call_graph as db_get_call_graph,
     get_connection,
     get_graph_neighborhood as db_get_graph_neighborhood,
+    get_repository_stats as db_get_repo_stats,
     get_similar_symbols as db_get_similar,
     get_symbol_community as db_get_comm,
     list_communities as db_list_comm,
@@ -60,40 +61,57 @@ if MCP_AVAILABLE and FastMCP is not None:
     mcp = FastMCP("fastast")
 
 
-def _resolve_repo_root(directory_path: str = ".") -> Tuple[Optional[Path], Path]:
-    """Resolve directory path to a valid repository root Path."""
-    path = Path(directory_path).resolve()
-    if not path.exists():
-        return None, path
-    if path.is_file():
-        path = path.parent
-    return path, path
+def _resolve_repo_root(
+    directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
+) -> Tuple[Optional[Path], Path]:
+    """Resolve directory path to a valid repository root Path with alias support."""
+    target = path or dir_path or directory_path or "."
+    resolved = Path(target).resolve()
+    if not resolved.exists():
+        return None, resolved
+    if resolved.is_file():
+        resolved = resolved.parent
+    return resolved, resolved
 
 
-# ── 1. Repository Indexing ───────────────────────────────────────────────────
+# ── 1. Repository Indexing & Statistics ──────────────────────────────────────
 
 
-def index_repository(directory_path: str = ".", force: bool = False) -> str:
+def index_repository(
+    directory_path: str = ".",
+    force: bool = False,
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
+) -> str:
     """Scan and index source files in a repository into a persistent SQLite symbol index (.fastast.db).
 
     Recursively extracts functions, classes, methods, imports, and invocation calls
     for instant symbol lookup and call-graph generation. Incremental: skips unchanged
     files using SHA-256 and content-hash caching unless force is True.
 
+    Agent Guidance:
+        Run this tool before executing queries or graph traversals if the repository
+        has not yet been indexed or after switching branches.
+
     Args:
         directory_path: Path to the repository or project directory (default: current directory '.').
-        force: If True, forces reindexing of all files even if unchanged (default: False).
+        force: If True, forces full reindexing of all files even if unchanged (default: False).
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
 
     Returns:
         JSON string containing repository indexing statistics, counts, and metadata.
     """
-    root, raw_path = _resolve_repo_root(directory_path)
+    root, raw_path = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
-                "directory_path": str(directory_path),
-                "repo_path": str(directory_path),
+                "error": f"Directory not found: '{target_dir}'",
+                "directory_path": str(target_dir),
+                "repo_path": str(target_dir),
                 "total_files": 0,
                 "indexed_files": 0,
                 "skipped_files": 0,
@@ -114,6 +132,9 @@ def index_repository(directory_path: str = ".", force: bool = False) -> str:
             "indexed_files": res.get("indexed_files", 0),
             "skipped_files": res.get("skipped_files", 0),
             "deleted_files": res.get("deleted_files", 0),
+            "total_files": res.get("total_files", 0),
+            "total_symbols": res.get("total_symbols", 0),
+            "total_edges": res.get("total_edges", 0),
         }
         res["error"] = None
         return json.dumps(res, indent=2)
@@ -121,10 +142,78 @@ def index_repository(directory_path: str = ".", force: bool = False) -> str:
         return json.dumps(
             {
                 "error": str(exc),
-                "directory_path": str(directory_path),
+                "directory_path": str(target_dir),
                 "repo_path": str(root),
                 "total_files": 0,
                 "indexed_files": 0,
+                "results": [],
+                "meta": {},
+            },
+            indent=2,
+        )
+
+
+def get_repository_stats(
+    directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
+) -> str:
+    """Retrieve summary metrics and artifact counts for the indexed repository.
+
+    Provides a fast, high-level repository overview: total files, symbols, imports, calls,
+    graph edges, and breakdowns by language and file category.
+
+    Agent Guidance:
+        Call this tool first upon connecting to a repository to understand its size,
+        primary programming languages, and AST graph richness.
+
+    Args:
+        directory_path: Repository root directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
+
+    Returns:
+        JSON string containing repository statistics.
+    """
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
+    if root is None:
+        return json.dumps(
+            {
+                "error": f"Directory not found: '{target_dir}'",
+                "stats": {},
+                "results": [],
+                "meta": {},
+            },
+            indent=2,
+        )
+
+    db_path = root / ".fastast.db"
+    try:
+        if not db_path.exists():
+            do_index_repository(str(root))
+
+        conn = get_connection(db_path)
+        try:
+            stats = db_get_repo_stats(conn)
+            res_item = dict(stats)
+            stats["results"] = [res_item]
+            stats["meta"] = {
+                "files": stats.get("files", 0),
+                "symbols": stats.get("symbols", 0),
+                "edges": stats.get("edges", 0),
+                "languages": stats.get("languages", {}),
+                "categories": stats.get("categories", {}),
+            }
+            stats["error"] = None
+            return json.dumps(stats, indent=2)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return json.dumps(
+            {
+                "error": str(exc),
+                "stats": {},
                 "results": [],
                 "meta": {},
             },
@@ -136,9 +225,13 @@ def index_repository(directory_path: str = ".", force: bool = False) -> str:
 
 
 def query_symbols(
-    query: str,
+    query: str = "",
+    name: Optional[str] = None,
+    q: Optional[str] = None,
     kind: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
     limit: int = 50,
     language: Optional[str] = None,
 ) -> str:
@@ -148,21 +241,30 @@ def query_symbols(
     across all supported languages (Python, JS, TS, Java, Rust, HTML, CSS, JSON, TOML).
     Automatically indexes the repository if not yet indexed.
 
+    Agent Guidance:
+        Use this tool when looking for specific function or class definitions by name.
+        To search by conceptual intent or retrieve code snippets, use `retrieve_evidence` instead.
+
     Args:
         query: Symbol name or substring to search for (e.g. 'authenticate_user', 'Config', 'process').
+        name: Optional alias for query.
+        q: Optional alias for query.
         kind: Optional symbol kind to filter by ('function', 'async_function', 'class', 'method', 'struct').
         directory_path: Path to the repository directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
         limit: Maximum number of matching symbols to return (default: 50).
         language: Optional language to filter by ('python', 'javascript', 'typescript', 'java', 'rust', etc.).
 
     Returns:
         JSON string containing matching symbols, counts, and metadata.
     """
-    if not query or not query.strip():
+    target = (name or q or query or "").strip()
+    if not target:
         return json.dumps(
             {
                 "error": "Query cannot be empty",
-                "query": query,
+                "query": target,
                 "kind": kind,
                 "language": language,
                 "count": 0,
@@ -173,12 +275,13 @@ def query_symbols(
             indent=2,
         )
 
-    root, _ = _resolve_repo_root(directory_path)
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
-                "query": query,
+                "error": f"Directory not found: '{target_dir}'",
+                "query": target,
                 "kind": kind,
                 "language": language,
                 "count": 0,
@@ -197,11 +300,11 @@ def query_symbols(
         conn = get_connection(db_path)
         try:
             results = search_symbols(
-                conn, query.strip(), kind=kind, language=language, limit=limit
+                conn, target, kind=kind, language=language, limit=limit
             )
             return json.dumps(
                 {
-                    "query": query,
+                    "query": target,
                     "kind": kind,
                     "language": language,
                     "count": len(results),
@@ -223,7 +326,7 @@ def query_symbols(
         return json.dumps(
             {
                 "error": str(exc),
-                "query": query,
+                "query": target,
                 "kind": kind,
                 "language": language,
                 "count": 0,
@@ -241,7 +344,10 @@ def query_symbols(
 def get_call_graph(
     symbol: str = "",
     symbol_name: Optional[str] = None,
+    name: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
 ) -> str:
     """Retrieve the call graph (callers and callees) for a specific function or method.
 
@@ -249,15 +355,22 @@ def get_call_graph(
     (callers) and what functions this symbol invokes (callees). Crucial for blast-radius
     estimation before editing or refactoring code. Automatically indexes if needed.
 
+    Agent Guidance:
+        Call this tool before modifying a function or method to find all callers that
+        might be affected, or to trace the execution flow downstream.
+
     Args:
         symbol: Exact name of the function or method to inspect (e.g. 'handle_request', 'validate').
         symbol_name: Backward-compatible alias for symbol.
+        name: Optional alias for symbol.
         directory_path: Path to the repository directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
 
     Returns:
         JSON string containing callers, callees, structured relationships, and metadata.
     """
-    target = (symbol_name or symbol or "").strip()
+    target = (name or symbol_name or symbol or "").strip()
     if not target:
         return json.dumps(
             {
@@ -274,11 +387,12 @@ def get_call_graph(
             indent=2,
         )
 
-    root, _ = _resolve_repo_root(directory_path)
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
+                "error": f"Directory not found: '{target_dir}'",
                 "symbol": target,
                 "caller_count": 0,
                 "callee_count": 0,
@@ -347,26 +461,39 @@ def get_call_graph(
 def get_graph_neighborhood(
     symbol: str = "",
     symbol_name: Optional[str] = None,
+    name: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
     max_depth: int = 2,
+    depth: Optional[int] = None,
     direction: str = "both",
 ) -> str:
-    """Perform bounded multi-hop graph expansion from a symbol.
+    """Perform bounded multi-hop graph expansion from a root symbol.
 
     Traverses symbol relationships (callers, callees, definitions, inheritance, imports)
     up to a depth limit without graph explosion. Crucial for understanding complete symbol context.
 
+    Agent Guidance:
+        Use this tool when you need a broader multi-hop relationship map (depth 1-3)
+        around a core architectural symbol without pulling in unneeded files.
+
     Args:
         symbol: Root symbol name to expand from (e.g. 'UserService', 'handle_request').
         symbol_name: Backward-compatible alias for symbol.
+        name: Optional alias for symbol.
         directory_path: Repository root directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
         max_depth: Maximum hop depth for bounded traversal (default: 2, range: 1-5).
+        depth: Optional alias for max_depth.
         direction: Traversal direction: 'both', 'out' (callees/imports), or 'in' (callers/references).
 
     Returns:
         JSON string containing traversed nodes, confidence-weighted edges, and hop depths.
     """
-    target = (symbol_name or symbol or "").strip()
+    target = (name or symbol_name or symbol or "").strip()
+    effective_depth = depth if depth is not None else max_depth
     if not target:
         return json.dumps(
             {
@@ -381,11 +508,12 @@ def get_graph_neighborhood(
             indent=2,
         )
 
-    root, _ = _resolve_repo_root(directory_path)
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
+                "error": f"Directory not found: '{target_dir}'",
                 "symbol": target,
                 "nodes": [],
                 "edges": [],
@@ -404,13 +532,13 @@ def get_graph_neighborhood(
         conn = get_connection(db_path)
         try:
             res = db_get_graph_neighborhood(
-                conn, target, max_depth=max_depth, direction=direction
+                conn, target, max_depth=effective_depth, direction=direction
             )
             res["symbol"] = target
             res["results"] = res.get("nodes", [])
             res["relationships"] = res.get("edges", [])
             res["meta"] = {
-                "depth": max_depth,
+                "depth": effective_depth,
                 "direction": direction,
                 "total_nodes": res.get("total_nodes", len(res.get("nodes", []))),
                 "total_edges": res.get("total_edges", len(res.get("edges", []))),
@@ -438,14 +566,19 @@ def get_graph_neighborhood(
 
 
 def retrieve_evidence(
-    query: str,
+    query: str = "",
+    q: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
     kind: Optional[str] = None,
     language: Optional[str] = None,
     file_path: Optional[str] = None,
+    file: Optional[str] = None,
     limit: int = 5,
     max_tokens: int = 2048,
     ranking_method: str = "hybrid",
+    ranking: Optional[str] = None,
 ) -> str:
     """Retrieve a compact, token-bounded evidence bundle for an agent query.
 
@@ -455,24 +588,37 @@ def retrieve_evidence(
     extracts minimal definition snippets (avoiding whole-file dumps),
     and strictly enforces a token budget.
 
+    Agent Guidance:
+        USE THIS TOOL AS YOUR FIRST CHOICE when searching for code to solve a task.
+        Accepts natural language intent (e.g. 'user authentication token verification')
+        or exact identifiers. Returns compact code snippets under token limits.
+
     Args:
         query: Target symbol name, conceptual phrase, or technical query.
+        q: Optional alias for query.
         directory_path: Repository root directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
         kind: Optional symbol kind filter ('function', 'class', 'method', etc.).
         language: Optional language filter ('python', 'typescript', 'rust', etc.).
         file_path: Optional file path filter or bias.
+        file: Optional alias for file_path.
         limit: Maximum candidate symbols to retrieve (default: 5).
         max_tokens: Maximum token budget for evidence snippets (default: 2048).
         ranking_method: Ranking algorithm ('hybrid', 'semantic', 'rrf', 'bm25', or 'heuristic', default: 'hybrid').
+        ranking: Optional alias for ranking_method.
 
     Returns:
         JSON string containing the structured EvidenceBundle.
     """
-    if not query or not query.strip():
+    target = (q or query or "").strip()
+    target_file = file or file_path
+    effective_ranking = ranking or ranking_method
+    if not target:
         return json.dumps(
             {
                 "error": "Query string cannot be empty",
-                "query": query,
+                "query": target,
                 "candidates": [],
                 "results": [],
                 "symbols": [],
@@ -486,12 +632,13 @@ def retrieve_evidence(
             indent=2,
         )
 
-    root, _ = _resolve_repo_root(directory_path)
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
-                "query": query,
+                "error": f"Directory not found: '{target_dir}'",
+                "query": target,
                 "candidates": [],
                 "results": [],
                 "symbols": [],
@@ -514,13 +661,13 @@ def retrieve_evidence(
 
         with EvidenceMaterializer(db_path, repo_root=root) as materializer:
             bundle = materializer.build_evidence_bundle(
-                query=query.strip(),
+                query=target,
                 kind=kind,
                 language=language,
-                file_path=file_path,
+                file_path=target_file,
                 limit=limit,
                 max_tokens=max_tokens,
-                ranking_method=ranking_method,
+                ranking_method=effective_ranking,
             )
             data = bundle.to_dict()
             data["results"] = data.get("candidates", [])
@@ -528,7 +675,7 @@ def retrieve_evidence(
             if "meta" not in data or not isinstance(data["meta"], dict):
                 data["meta"] = {}
             data["meta"]["candidate_count"] = len(data.get("candidates", []))
-            data["meta"]["ranking_method"] = ranking_method
+            data["meta"]["ranking_method"] = effective_ranking
             data["meta"]["max_tokens"] = max_tokens
             data["error"] = None
             return json.dumps(data, indent=2)
@@ -536,7 +683,7 @@ def retrieve_evidence(
         return json.dumps(
             {
                 "error": str(exc),
-                "query": query,
+                "query": target,
                 "candidates": [],
                 "results": [],
                 "symbols": [],
@@ -552,48 +699,68 @@ def retrieve_evidence(
 
 
 def query(
-    query: str,
+    query: str = "",
+    q: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
     kind: Optional[str] = None,
     language: Optional[str] = None,
     file_path: Optional[str] = None,
+    file: Optional[str] = None,
     limit: int = 5,
     max_tokens: int = 2048,
     ranking_method: str = "hybrid",
+    ranking: Optional[str] = None,
 ) -> str:
     """Alias for retrieve_evidence. Primary codebase search tool for AI coding agents."""
     return retrieve_evidence(
         query=query,
+        q=q,
         directory_path=directory_path,
+        path=path,
+        dir_path=dir_path,
         kind=kind,
         language=language,
         file_path=file_path,
+        file=file,
         limit=limit,
         max_tokens=max_tokens,
         ranking_method=ranking_method,
+        ranking=ranking,
     )
 
 
 def build_evidence_bundle(
-    query: str,
+    query: str = "",
+    q: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
     kind: Optional[str] = None,
     language: Optional[str] = None,
     file_path: Optional[str] = None,
+    file: Optional[str] = None,
     limit: int = 5,
     max_tokens: int = 2048,
     ranking_method: str = "hybrid",
+    ranking: Optional[str] = None,
 ) -> str:
     """Backward-compatible alias for retrieve_evidence."""
     return retrieve_evidence(
         query=query,
+        q=q,
         directory_path=directory_path,
+        path=path,
+        dir_path=dir_path,
         kind=kind,
         language=language,
         file_path=file_path,
+        file=file,
         limit=limit,
         max_tokens=max_tokens,
         ranking_method=ranking_method,
+        ranking=ranking,
     )
 
 
@@ -603,7 +770,10 @@ def build_evidence_bundle(
 def get_symbol_evidence(
     symbol: str = "",
     symbol_name_or_id: Optional[str] = None,
+    name: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
     window_lines: int = 3,
     max_snippet_lines: int = 50,
 ) -> str:
@@ -612,17 +782,24 @@ def get_symbol_evidence(
     Returns definition metadata, bounded source snippet, and key incoming/outgoing
     graph neighbors (callers, callees, defines, inherits) without whole-file dumps.
 
+    Agent Guidance:
+        Call this tool when you already know a symbol's name and want its exact code
+        definition plus immediate callers and callees in a single compact call.
+
     Args:
         symbol: Target symbol name or integer database ID.
         symbol_name_or_id: Backward-compatible alias for symbol.
+        name: Optional alias for symbol.
         directory_path: Repository root directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
         window_lines: Context padding lines around definition (default: 3).
         max_snippet_lines: Maximum snippet length before truncation (default: 50).
 
     Returns:
         JSON string containing structured symbol evidence, snippet, and relationships.
     """
-    target = (symbol_name_or_id or symbol or "").strip()
+    target = (name or symbol_name_or_id or symbol or "").strip()
     if not target:
         return json.dumps(
             {
@@ -638,11 +815,12 @@ def get_symbol_evidence(
             indent=2,
         )
 
-    root, _ = _resolve_repo_root(directory_path)
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
+                "error": f"Directory not found: '{target_dir}'",
                 "symbol": None,
                 "evidence": None,
                 "snippet": None,
@@ -709,8 +887,11 @@ def get_symbol_evidence(
 
 
 def get_file_outline(
-    file_path: str,
+    file_path: str = "",
+    file: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
     max_docstring_chars: int = 100,
 ) -> str:
     """Retrieve a compact structural outline of a file without raw source content.
@@ -718,19 +899,27 @@ def get_file_outline(
     Returns hierarchical classes, methods, top-level functions, line numbers,
     and docstring summaries. Crucial for token-efficient file exploration.
 
+    Agent Guidance:
+        Call this tool instead of reading an entire source file when you need to know
+        what functions or classes exist in a file and their line boundaries.
+
     Args:
         file_path: Relative or absolute path of the target file.
+        file: Optional alias for file_path.
         directory_path: Repository root directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
         max_docstring_chars: Maximum characters per docstring summary (default: 100).
 
     Returns:
         JSON string containing the structural file outline and symbol counts.
     """
-    if not file_path or not str(file_path).strip():
+    target_file = (file or file_path or "").strip()
+    if not target_file:
         return json.dumps(
             {
                 "error": "File path cannot be empty",
-                "file_path": file_path,
+                "file_path": target_file,
                 "found": False,
                 "classes": [],
                 "functions": [],
@@ -741,12 +930,13 @@ def get_file_outline(
             indent=2,
         )
 
-    root, _ = _resolve_repo_root(directory_path)
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
-                "file_path": file_path,
+                "error": f"Directory not found: '{target_dir}'",
+                "file_path": target_file,
                 "found": False,
                 "classes": [],
                 "functions": [],
@@ -766,14 +956,14 @@ def get_file_outline(
 
         with EvidenceMaterializer(db_path, repo_root=root) as materializer:
             outline = materializer.get_file_outline(
-                file_path=file_path.strip(),
+                file_path=target_file,
                 max_docstring_chars=max_docstring_chars,
             )
             if not outline:
                 return json.dumps(
                     {
-                        "error": f"File not found in index: '{file_path}'",
-                        "file_path": file_path,
+                        "error": f"File not found in index: '{target_file}'",
+                        "file_path": target_file,
                         "found": False,
                         "classes": [],
                         "functions": [],
@@ -802,7 +992,7 @@ def get_file_outline(
         return json.dumps(
             {
                 "error": str(exc),
-                "file_path": file_path,
+                "file_path": target_file,
                 "found": False,
                 "classes": [],
                 "functions": [],
@@ -817,40 +1007,68 @@ def get_file_outline(
 def get_snippet(
     symbol: Optional[str] = None,
     symbol_name_or_id: Optional[str] = None,
+    name: Optional[str] = None,
     file_path: Optional[str] = None,
+    file: Optional[str] = None,
     start_line: Optional[int] = None,
+    start: Optional[int] = None,
     end_line: Optional[int] = None,
+    end: Optional[int] = None,
     window_lines: int = 3,
+    window: Optional[int] = None,
     max_snippet_lines: int = 60,
+    max_lines: Optional[int] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
 ) -> str:
     """Extract a minimal, bounded source snippet for a symbol or file line range.
 
     Guarantees token-consciousness: caps snippet length and inserts omission
     indicators for large functions. Never dumps entire files.
 
+    Agent Guidance:
+        Use this tool to view the implementation of a specific line range or symbol
+        with precisely controlled context windows.
+
     Args:
         symbol: Optional symbol name or ID to locate and slice.
         symbol_name_or_id: Backward-compatible alias for symbol.
+        name: Optional alias for symbol.
         file_path: Optional relative file path for direct line slicing.
+        file: Optional alias for file_path.
         start_line: 1-based start line (required if file_path is used).
+        start: Optional alias for start_line.
         end_line: 1-based end line (optional, defaults to start_line).
+        end: Optional alias for end_line.
         window_lines: Context padding lines before and after (default: 3).
+        window: Optional alias for window_lines.
         max_snippet_lines: Maximum snippet length (default: 60).
+        max_lines: Optional alias for max_snippet_lines.
         directory_path: Repository root directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
 
     Returns:
         JSON string containing the bounded EvidenceWindow.
     """
-    sym = (symbol_name_or_id or symbol or "").strip() or None
-    root, _ = _resolve_repo_root(directory_path)
+    sym = (name or symbol_name_or_id or symbol or "").strip() or None
+    target_file = file or file_path
+    effective_start = start if start is not None else start_line
+    effective_end = end if end is not None else end_line
+    effective_window = window if window is not None else window_lines
+    effective_max = max_lines if max_lines is not None else max_snippet_lines
+
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
+                "error": f"Directory not found: '{target_dir}'",
                 "found": False,
                 "snippet": None,
                 "evidence": None,
+                "results": [],
                 "meta": {},
             },
             indent=2,
@@ -864,27 +1082,29 @@ def get_snippet(
         from fastast.evidence import EvidenceMaterializer
 
         with EvidenceMaterializer(db_path, repo_root=root) as materializer:
-            window = materializer.get_snippet(
+            win = materializer.get_snippet(
                 symbol_id_or_name=sym,
-                file_path=file_path,
-                start_line=start_line,
-                end_line=end_line,
-                window_lines=window_lines,
-                max_snippet_lines=max_snippet_lines,
+                file_path=target_file,
+                start_line=effective_start,
+                end_line=effective_end,
+                window_lines=effective_window,
+                max_snippet_lines=effective_max,
             )
-            if not window:
+            if not win:
                 return json.dumps(
                     {
                         "error": "Snippet target not found",
                         "found": False,
                         "snippet": None,
                         "evidence": None,
+                        "results": [],
                         "meta": {},
                     },
                     indent=2,
                 )
-            data = window.to_dict()
+            data = win.to_dict()
             data["evidence"] = data.get("snippet")
+            data["results"] = [data.get("snippet")] if data.get("snippet") else []
             data["meta"] = {
                 "start_line": data.get("start_line"),
                 "end_line": data.get("end_line"),
@@ -900,6 +1120,7 @@ def get_snippet(
                 "found": False,
                 "snippet": None,
                 "evidence": None,
+                "results": [],
                 "meta": {},
             },
             indent=2,
@@ -910,29 +1131,45 @@ def get_snippet(
 
 
 def get_similar_symbols(
-    symbol: str,
+    symbol: str = "",
+    symbol_name_or_id: Optional[str] = None,
+    name: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
     limit: int = 10,
     min_similarity: float = 0.5,
+    min_sim: Optional[float] = None,
 ) -> str:
     """Retrieve near-duplicate or structurally similar symbols using MinHash + LSH.
 
     Finds code clones, duplicate implementations, and parallel patterns across the codebase.
 
+    Agent Guidance:
+        Use this tool to discover duplicate code patterns, copy-pasted logic, or parallel
+        implementations of similar concepts across modules.
+
     Args:
         symbol: Target symbol name or integer database ID.
+        symbol_name_or_id: Backward-compatible alias for symbol.
+        name: Optional alias for symbol.
         directory_path: Repository root directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
         limit: Maximum similar symbols to return (default: 10).
         min_similarity: Minimum Jaccard similarity threshold (0.0 to 1.0, default: 0.5).
+        min_sim: Optional alias for min_similarity.
 
     Returns:
         JSON string containing the list of similar symbols.
     """
-    if not symbol or not str(symbol).strip():
+    target = (name or symbol_name_or_id or symbol or "").strip()
+    effective_min_sim = min_sim if min_sim is not None else min_similarity
+    if not target:
         return json.dumps(
             {
                 "error": "Symbol identifier cannot be empty",
-                "symbol": symbol,
+                "symbol": target,
                 "total_similar": 0,
                 "similar_symbols": [],
                 "results": [],
@@ -941,12 +1178,13 @@ def get_similar_symbols(
             indent=2,
         )
 
-    root, _ = _resolve_repo_root(directory_path)
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
-                "symbol": symbol,
+                "error": f"Directory not found: '{target_dir}'",
+                "symbol": target,
                 "total_similar": 0,
                 "similar_symbols": [],
                 "results": [],
@@ -963,17 +1201,17 @@ def get_similar_symbols(
         conn = get_connection(db_path)
         try:
             sims = db_get_similar(
-                conn, symbol.strip(), limit=limit, min_similarity=min_similarity
+                conn, target, limit=limit, min_similarity=effective_min_sim
             )
             return json.dumps(
                 {
-                    "symbol": symbol,
+                    "symbol": target,
                     "total_similar": len(sims),
                     "similar_symbols": sims,
                     "results": sims,
                     "meta": {
                         "total_similar": len(sims),
-                        "min_similarity": min_similarity,
+                        "min_similarity": effective_min_sim,
                         "limit": limit,
                     },
                     "error": None,
@@ -986,7 +1224,7 @@ def get_similar_symbols(
         return json.dumps(
             {
                 "error": str(exc),
-                "symbol": symbol,
+                "symbol": target,
                 "total_similar": 0,
                 "similar_symbols": [],
                 "results": [],
@@ -997,25 +1235,38 @@ def get_similar_symbols(
 
 
 def get_community(
-    symbol: str,
+    symbol: str = "",
+    symbol_name_or_id: Optional[str] = None,
+    name: Optional[str] = None,
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
 ) -> str:
     """Retrieve community assignment, central hub, and peer symbols for a target symbol.
 
     Provides architectural modularity context using Louvain graph community detection.
 
+    Agent Guidance:
+        Use this tool to understand what functional subsystem (e.g. auth, billing, database)
+        a symbol belongs to, and what peer symbols collaborate closely with it.
+
     Args:
         symbol: Target symbol name or integer database ID.
+        symbol_name_or_id: Backward-compatible alias for symbol.
+        name: Optional alias for symbol.
         directory_path: Repository root directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
 
     Returns:
         JSON string containing community membership details.
     """
-    if not symbol or not str(symbol).strip():
+    target = (name or symbol_name_or_id or symbol or "").strip()
+    if not target:
         return json.dumps(
             {
                 "error": "Symbol identifier cannot be empty",
-                "symbol": symbol,
+                "symbol": target,
                 "community": None,
                 "results": [],
                 "meta": {},
@@ -1023,12 +1274,13 @@ def get_community(
             indent=2,
         )
 
-    root, _ = _resolve_repo_root(directory_path)
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
-                "symbol": symbol,
+                "error": f"Directory not found: '{target_dir}'",
+                "symbol": target,
                 "community": None,
                 "results": [],
                 "meta": {},
@@ -1043,12 +1295,12 @@ def get_community(
 
         conn = get_connection(db_path)
         try:
-            comm = db_get_comm(conn, symbol.strip())
+            comm = db_get_comm(conn, target)
             if not comm:
                 return json.dumps(
                     {
-                        "error": f"Symbol not found in community index: '{symbol}'",
-                        "symbol": symbol,
+                        "error": f"Symbol not found in community index: '{target}'",
+                        "symbol": target,
                         "community": None,
                         "results": [],
                         "meta": {},
@@ -1070,7 +1322,7 @@ def get_community(
         return json.dumps(
             {
                 "error": str(exc),
-                "symbol": symbol,
+                "symbol": target,
                 "community": None,
                 "results": [],
                 "meta": {},
@@ -1081,24 +1333,33 @@ def get_community(
 
 def list_communities(
     directory_path: str = ".",
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
     limit: int = 20,
 ) -> str:
     """List detected architectural communities and modules from Louvain graph clustering.
 
     Groups symbols into functional modules (e.g. auth, billing, db, parser) with member counts.
 
+    Agent Guidance:
+        Call this tool to get an architectural breakdown of all functional subsystems
+        in the codebase and discover major module clusters.
+
     Args:
         directory_path: Repository root directory (default: current directory '.').
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
         limit: Maximum communities to return (default: 20).
 
     Returns:
         JSON string containing the summary of detected communities.
     """
-    root, _ = _resolve_repo_root(directory_path)
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
     if root is None:
         return json.dumps(
             {
-                "error": f"Directory not found: '{directory_path}'",
+                "error": f"Directory not found: '{target_dir}'",
                 "total_communities": 0,
                 "communities": [],
                 "results": [],
@@ -1146,6 +1407,7 @@ def list_communities(
 # Register tools with MCP server if available
 if mcp is not None:
     mcp.tool()(index_repository)
+    mcp.tool()(get_repository_stats)
     mcp.tool()(query_symbols)
     mcp.tool()(get_call_graph)
     mcp.tool()(get_graph_neighborhood)
@@ -1174,6 +1436,7 @@ def create_server():
 
 __all__ = [
     "index_repository",
+    "get_repository_stats",
     "query_symbols",
     "get_call_graph",
     "get_graph_neighborhood",
