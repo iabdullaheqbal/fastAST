@@ -13,7 +13,7 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
 1. **AST Extraction (Tree-Sitter):** Scans entire project trees across 9 languages, parsing concrete syntax trees in sub-5ms latency and extracting declarations, imports, and calls.
 2. **Symbol & Edge Graph:** Builds a normalized, confidence-weighted code graph in local SQLite (`files`, `symbols`, `imports`, `calls`, `edges`).
 3. **Retrieval & Evidence Selection:** Delivers bounded evidence windows with exact line numbers, code snippets, and graph neighborhood context without context window saturation.
-4. **Incremental Content Hashing:** Uses file modification timestamps and content hashes (xxHash3/BLAKE3) to skip unchanged files instantly.
+4. **Incremental Content Hashing:** Uses file modification timestamps and content hashes (xxHash3 / BLAKE2b / SHA-256) to skip unchanged files instantly.
 5. **Agent-Native MCP Integration:** Built-in Model Context Protocol server exposing tools for automated symbol discovery and call graph traversal.
 
 > 📖 **Full System Architecture**: Read the in-depth design specification in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

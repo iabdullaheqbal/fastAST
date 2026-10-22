@@ -9,7 +9,7 @@ A high-performance codebase-memory engine for AI coding agents, powered by a nat
 
 ## The Unique Kernel
 High-speed codebase memory that turns raw source code into an actionable structural graph for AI agents:
-1. **Repo Indexing & AST Extraction**: Recursively discovers and parses source files across 9 languages (Python, Java, JavaScript, TypeScript, Rust, HTML, CSS, JSON, TOML) using Tree-Sitter and content hashing (xxHash3/BLAKE3).
+1. **Repo Indexing & AST Extraction**: Recursively discovers and parses source files across 9 languages (Python, Java, JavaScript, TypeScript, Rust, HTML, CSS, JSON, TOML) using Tree-Sitter and content hashing (xxHash3 / BLAKE2b).
 2. **Symbol/Edge Graph**: Extracts definitions (functions, classes, methods, interfaces, types), imports, and calls, constructing a confidence-weighted code graph in local SQLite.
 3. **Retrieval & Evidence Selection**: Provides hybrid retrieval (BM25 + graph BFS neighborhood expansion) delivering bounded evidence windows with exact file locations and code snippets to AI coding agents.
 

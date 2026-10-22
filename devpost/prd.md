@@ -36,7 +36,7 @@ FastAST exposes two primary interfaces:
 Source: `scope.md > The Unique Kernel`
 
 FastAST manages a local SQLite database (`fastast.db`) structured across 5 normalized tables:
-- `files`: File paths, language, content hashes (xxHash3/BLAKE3), mtime, status, line counts, token counts, syntax error flags.
+- `files`: File paths, language, content hashes (xxHash3 / BLAKE2b), mtime, status, line counts, token counts, syntax error flags.
 - `symbols`: Extracted functions, classes, methods, interfaces, structs, enums, signatures, line spans, docstrings, confidence scores, and parent scope IDs.
 - `imports`: All module-level and scoped import statements (`module`, `name`, `alias`, `line_number`).
 - `calls`: Function/method call invocations linking caller symbols to callee names and line numbers.

@@ -38,7 +38,7 @@ Tracks indexed files, language identity, content fingerprints, and incremental i
 pub struct FileRecord {
     pub path: String,             // Relative normalized repository path
     pub language: String,         // Detected language identifier (e.g., "python", "rust")
-    pub hash: String,             // Fast 64-bit/256-bit content hash (xxHash3 / BLAKE3)
+    pub hash: String,             // Fast 64-bit/256-bit content hash (xxHash3 / BLAKE2b / SHA-256)
     pub mtime: f64,               // Filesystem modification epoch timestamp
     pub status: FileStatus,       // Indexing state: Unchanged | Added | Modified | Deleted | Error
     pub total_lines: usize,       // Total lines of code
@@ -103,13 +103,13 @@ pub struct Candidate {
 
 FastAST integrates 18 concrete algorithms and systems designed to operate concurrently at sub-millisecond latencies:
 
-### 3.1. File Discovery + Ignore Rules
-- **Mechanism**: Multi-threaded directory traversal using the Rust `ignore` engine (leveraging `.gitignore`, `.ignore`, and `.fastastignore` precedence).
-- **Rule Ordering**: CLI overrides > `.fastastignore` > project `.gitignore` > global gitignore > default system excludes (`.git`, `node_modules`, `target`, `dist`, `.venv`, `__pycache__`).
-- **Binary Sniffing**: Inspects the first 1,024 bytes of each candidate file for null bytes (`0x00`) to eliminate binaries and assets before parsing.
+### 3.1. File Discovery + Layered Ignore Rules
+- **Mechanism**: Layered repository traversal in `python/fastast/discovery.py` respecting `.gitignore`, `.fastastignore`, and built-in exclude defaults (`.git`, `node_modules`, `target`, `dist`, `.venv`, `__pycache__`).
+- **Binary Sniffing**: Inspects the first 1,024 bytes of candidate files via native `is_binary_content` in `src/discovery.rs` for null bytes (`0x00`) to eliminate binaries and assets before parsing.
+- **Fast Path Classification**: Native heuristic `classify_path` identifies generated files, test fixtures, documentation, and configuration files.
 
-### 3.2. xxHash3 / BLAKE3 Content Hashing
-- **Fingerprinting**: Uses `xxHash3` (64-bit / 128-bit) for ultra-fast (15+ GB/s) cache invalidation. When cryptographic verification across machines is required, `BLAKE3` provides tree-hashing verified security.
+### 3.2. xxHash3 & Fast Content Hashing
+- **Fingerprinting**: Uses native 64-bit `xxHash3` (`compute_xxh3` in `src/discovery.rs` via `xxhash-rust`) for sub-microsecond cache invalidation, with standard library `hashlib.blake2b` / `sha256` fallbacks.
 - **Cache Invalidation**: Computes `hash(file_bytes)`. If `(mtime, size, hash)` matches SQLite `FileRecord`, file parsing is skipped entirely in $O(1)$ time.
 
 ### 3.3. Tree-Sitter Concrete Syntax Tree Parsing
@@ -129,8 +129,8 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
 ### 3.5. Graph Construction
 - **Directed Property Graph**: Nodes = `{File, Symbol, Module}`, Edges = `{Calls, Imports, Defines, Implements, Inherits, References}`.
 - **Dual Representation**:
-  - **Relational Store**: Stored in SQLite `edges` table for indexed relational queries.
-  - **In-Memory Adjacency List**: `petgraph` or compressed sparse row (CSR) graph in Rust memory for sub-millisecond graph traversals.
+  - **Relational Store**: Persisted in SQLite `edges` table with composite indices for efficient relational queries.
+  - **In-Memory Adjacency Index**: Built in `python/fastast/graph.py` using in-memory adjacency maps for sub-millisecond graph traversals and blast-radius analysis.
 
 ### 3.6. BFS / Bounded Traversal
 - **Constrained Neighborhood Search**: Starting from a seed candidate symbol, traverses directed edges up to $k$ hops ($k \in [1, 3]$).
@@ -159,62 +159,99 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
   - **Snippet Line Bounding**: Code snippets are bounded to `max_snippet_lines` (default 40–60 lines) with explicit omission notices (`... [N lines omitted for brevity] ...`).
   - **Token Budgeting**: Overall evidence assembly respects `max_tokens` budgets, setting `truncated: true` and omitting subsequent code bodies while preserving structural metadata.
 - **Inverted Index**: Builds an embedded SQLite FTS5 virtual table (`symbols_fts`) over symbol names, parameter signatures, docstrings, and relative file paths using the `unicode61 remove_diacritics 2` tokenizer.
+- **Automated Synchronization Triggers**:
+  - `symbols_ai AFTER INSERT ON symbols`: Automatically inserts newly indexed symbols, signatures, docstrings, and paths into `symbols_fts`.
+  - `symbols_ad AFTER DELETE ON symbols`: Automatically removes purged symbols from `symbols_fts`. Enabled with `PRAGMA recursive_triggers = ON;` so foreign key cascade deletions propagate cleanly.
 - **Scoring Formula**:
   $$\text{Score}_{\text{BM25}}(D, Q) = \sum_{t \in Q} \text{IDF}(t) \cdot \frac{f(t, D) \cdot (k_1 + 1)}{f(t, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
   (Default parameters: $k_1 = 1.2$, $b = 0.75$).
-- **Field Boosting**: Multiplies term score by field weights: Symbol Name ($\times 3.0$) > Signature ($\times 2.0$) > Docstring ($\times 1.0$) > File Path ($\times 1.0$).
+- **Field Boosting**: Multiplies term score by column weights: Symbol Name ($\times 3.0$) > Signature ($\times 2.0$) > Docstring ($\times 1.0$) > File Path ($\times 1.0$).
+- **Score Normalization**: Raw negative FTS5 rank values are normalized into $[0.0, 1.0]$ via $1.0 / (1.0 + \log(1.0 + |\text{rank}|))$.
 
 ### 3.8. Dense Semantic Embeddings & Vector Search (Phase 8: Multi-Signal Semantic Fusion)
-- **Embeddings are One Signal Among Several**: Embeddings alone cannot discern exact identifier names, method signatures, or fine-grained scope boundaries. Semantic similarity is strictly **one signal among several** (typically 25% weight in default hybrid ranking), working alongside lexical BM25, deterministic name matching, kind priority, path relevance, graph degree centrality, and parser confidence.
-- **Exact and Strong Lexical Matches Still Matter**: Software engineering retrieval fundamentally differs from prose search. When an engineer or coding agent queries an identifier (e.g. `verify_login_credentials` or `execute_query`), an exact or prefix lexical match on the symbol identifier must strongly anchor or top the rank ($0.25 - 0.30$ dedicated weight with stratified matching tiers), preventing fuzzy semantic associations from overtaking real declarations.
-- **Graph Structure and Path Relevance Remain Critical**:
-  - **Graph Centrality ($S_{\text{edge}}$)**: Hub symbols with high in-degree (callers) or out-degree (callees) receive a centrality boost (up to $+0.10$), prioritizing core reusable logic over leaf utilities.
-  - **Path Relevance ($S_{\text{path}}$)**: Production source files (`src/`, `lib/`, `packages/`) receive positive bias ($0.80$), while test fixtures (`test/`, `spec/`), mocks, and configuration files are penalized ($0.25 - 0.40$).
-- **Semantic Results are Fused with BM25 + Structural Rank, Not Replacing Them**:
-  - Dense vector retrieval does not discard or overwrite lexical or structural ranking.
-  - Results are fused via **Weighted Hybrid Scoring** or **Reciprocal Rank Fusion (RRF)**, combining dense vector rank, BM25 text rank, and AST structural rank into an explainable ensemble.
-- **Graceful Fallback When Embeddings are Missing or Stale**:
-  - When the `symbol_embeddings` table is unpopulated, stale (e.g. newly created files not yet embedded), or if embedding generation fails, the retrieval engine **gracefully falls back** to BM25 + heuristic structural ranking without crashing or returning empty sets:
-    $$\text{Fallback Score} = 0.30 \cdot S_{\text{bm25}} + 0.30 \cdot S_{\text{name}} + 0.10 \cdot S_{\text{type}} + 0.10 \cdot S_{\text{path}} + 0.10 \cdot S_{\text{edge}} + 0.10 \cdot S_{\text{conf}}$$
-  - If both embeddings and BM25 are unavailable, it degrades to pure AST structural scoring ($0.40 S_{\text{name}} + 0.15 S_{\text{type}} + 0.15 S_{\text{path}} + 0.15 S_{\text{edge}} + 0.15 S_{\text{conf}}$).
-  - Stale embeddings are detected and refreshed via incremental synchronization (`backfill_symbol_embeddings`).
-- **Local-First and Token-Conscious**:
-  - **100% Local-First**: The default `SemanticProjectionProvider` generates 128-dimensional dense vectors offline with zero external network calls, zero cloud API keys, and zero heavyweight dependencies, executing in microseconds per symbol.
-  - **Strictly Token-Conscious**: Embeddings serve purely for candidate pruning and ranking. Results are strictly bounded by top-$K$ limits (`limit=10`), bounded snippet extraction windows (default 5–15 lines, hard-capped at 60), and token budgets (default: 3,500 tokens), preventing context window blowups.
-- **Vector Storage Schema & Versioning**:
-  - `symbol_embeddings`: Stores dense vectors (`embedding` BLOB), model identifier (`model`), model version (`model_version`), generation counter (`generation_id`), vector length (`dimensions`), scalar $L_2$ norm (`norm`), section label (`section`), and file reference (`file_id`) tied via `FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE`.
-  - `file_embeddings`: Stores file-level embeddings for broad architectural matching and semantic file routing.
-  - **Schema Migration Safety**: Automated `ALTER TABLE` checks inside `init_db()` ensure seamless backwards compatibility for existing deployments.
-- **Incremental Embedding Maintenance**:
-  - Added/modified symbols are embedded atomically inside indexing transactions.
-  - Deleted symbols cascade-delete their embeddings automatically via SQLite foreign keys.
-  - Stale embeddings are detected and invalidated via `invalidate_stale_embeddings()` and refreshed via `backfill_symbol_embeddings()`.
-- **Calibrated Score Normalization**:
-  - Raw cosine similarity values are pruned below relevance threshold $\theta_{\text{min}} = 0.25$ and mapped through a calibrated monotonic transfer function into $[0.10, 1.00]$, avoiding raw uncalibrated mixing with BM25.
-- **Dense Vector Index**: Generates dense embeddings for high-level semantic intent queries (e.g., *"where is user authentication verified?"*).
-- **Pluggable Embedding Providers**: `SemanticProjectionProvider` (default offline 128-dim), optional `FastembedProvider` (`bge-small-en-v1.5`), `SentenceTransformersProvider` (`all-MiniLM-L6-v2`), and `CustomEmbeddingProvider`.
-- **Vector Search**: Cosine similarity via packed IEEE 754 float BLOBs in SQLite `symbol_embeddings` table.
 
-### 3.9. Hybrid Ranking (Reciprocal Rank Fusion & Hybrid Sum)
-- **Score Fusion**: Combines lexical (BM25), semantic (dense embedding), and structural (graph PageRank / BFS) rankings using Reciprocal Rank Fusion (RRF) or Weighted Hybrid Sum:
-  $$\text{RRF}(d) = \sum_{m \in M} \frac{w_m}{k + \text{rank}_m(d)}$$
-  where $k = 60$ and $w_m$ are modal weights ($w_{\text{BM25}} = 0.35$, $w_{\text{Semantic}} = 0.35$, $w_{\text{Graph}} = 0.30$).
-- **Explainability**: Every candidate carries `reasons: Vec<String>` specifying which modalities triggered the match.
+FastAST's Phase 8 design stresses six non-negotiable architectural principles:
+1. **Embeddings are One Signal Among Several**: In codebases, dense embeddings alone cannot discern exact identifier names, method signatures, or fine-grained scope boundaries. Semantic cosine similarity is strictly **one signal among several** (typically 25% weight in default hybrid ranking), working alongside lexical BM25, deterministic name matching, kind priority, path relevance, graph degree centrality, and parser confidence.
+2. **Exact and Strong Lexical Matches Still Matter**: Software engineering retrieval fundamentally differs from prose search. When an engineer or coding agent queries an identifier (e.g. `verify_login_credentials` or `execute_query`), an exact or prefix lexical match on the symbol identifier must strongly anchor or top the rank. Exact name matches receive high dedicated weight ($0.25 - 0.30$) with stratified matching tiers (exact case = 1.0, case-insensitive = 0.95, prefix = 0.80, suffix = 0.70, word boundary = 0.65, substring = 0.50), preventing fuzzy semantic associations from overtaking real declarations.
+3. **Graph Structure and Path Relevance Remain Critical**: Code is inherently relational and structured:
+   - **Graph Centrality ($S_{\text{edge}}$)**: Hub symbols with high in-degree (callers) or out-degree (callees) receive a centrality boost (up to $+0.10$), prioritizing core reusable logic over leaf utilities.
+   - **Path Relevance ($S_{\text{path}}$)**: Production source files (`src/`, `lib/`, `packages/`) receive positive bias ($0.80$), while test fixtures (`test/`, `spec/`), mocks, and configuration files are penalized ($0.25 - 0.40$).
+4. **Semantic Results are Fused with BM25 + Structural Rank, Not Replacing Them**:
+   - Dense vector retrieval does not discard or overwrite lexical or structural ranking.
+   - Results are fused via **Weighted Hybrid Scoring** or **Reciprocal Rank Fusion (RRF)**, combining dense vector rank, BM25 text rank, and AST structural rank into an explainable ensemble.
+5. **Graceful Fallback When Embeddings are Missing or Stale**:
+   - When the `symbol_embeddings` table is unpopulated, stale (e.g. newly created files not yet embedded), or if embedding generation fails, the retrieval engine **gracefully falls back** to BM25 + heuristic structural ranking without crashing or returning empty sets:
+     $$\text{Fallback Score} = 0.30 \cdot S_{\text{bm25}} + 0.30 \cdot S_{\text{name}} + 0.10 \cdot S_{\text{type}} + 0.10 \cdot S_{\text{path}} + 0.10 \cdot S_{\text{edge}} + 0.10 \cdot S_{\text{conf}}$$
+   - If both embeddings and BM25 are unavailable, it degrades to pure AST structural scoring ($0.40 S_{\text{name}} + 0.15 S_{\text{type}} + 0.15 S_{\text{path}} + 0.15 S_{\text{edge}} + 0.15 S_{\text{conf}}$).
+   - Stale embeddings are detected and refreshed via incremental synchronization (`backfill_symbol_embeddings`).
+6. **Local-First and Token-Conscious**:
+   - **100% Local-First**: The default `SemanticProjectionProvider` generates 128-dimensional dense vectors offline with zero external network calls, zero cloud API keys, and zero heavyweight dependencies, executing in microseconds per symbol.
+   - **Strictly Token-Conscious**: Embeddings serve purely for candidate pruning and ranking. Results are strictly bounded by top-$K$ limits (`limit=10`), bounded snippet extraction windows (default 5–15 lines, hard-capped at 60), and token budgets (default: 3,500 tokens), preventing context window blowups.
+
+- **Vector Storage Schema & Versioning**:
+  - `symbol_embeddings`:
+    - `symbol_id INTEGER PRIMARY KEY`: Foreign key references `symbols(id) ON DELETE CASCADE`.
+    - `model TEXT NOT NULL`: Model identifier string (e.g. `fastast-projection-128`).
+    - `model_version TEXT NOT NULL DEFAULT '1.0'`: Explicit model version tracking.
+    - `generation_id INTEGER NOT NULL DEFAULT 1`: Monotonic generation counter for atomic cohort invalidation.
+    - `dimensions INTEGER NOT NULL`: Vector length (e.g. 128, 384).
+    - `norm REAL NOT NULL DEFAULT 1.0`: Stored scalar $L_2$ norm for verification.
+    - `section TEXT NOT NULL DEFAULT 'symbol'`: Granularity label (`symbol`, `signature`, `docstring`).
+    - `file_id INTEGER`: Foreign key references `files(id) ON DELETE CASCADE`.
+    - `embedding BLOB NOT NULL`: Packed IEEE 754 32-bit float BLOB (`struct.pack(f"{len}f")`).
+    - `updated_at REAL NOT NULL`: Epoch timestamp of embedding creation.
+  - `file_embeddings`: Optional file-level embedding storage for coarse repository clustering and high-level routing.
+  - **Schema Migration Safety**: `init_db()` verifies table existence and uses `ALTER TABLE symbol_embeddings ADD COLUMN ...` to dynamically migrate legacy databases without data loss.
+- **Incremental Embedding Maintenance**:
+  - **Added/Changed Symbols**: Recomputed atomically inside the indexing transaction.
+  - **Deleted Symbols & Purged Files**: Automatically purged via SQLite `ON DELETE CASCADE` foreign keys on `file_id` and `symbol_id`.
+  - **Stale Embedding Invalidation**: `invalidate_stale_embeddings(conn, model, version)` drops out-of-date model versions, while `backfill_symbol_embeddings()` detects un-embedded or version-mismatched symbols and brings vectors up to date.
+- **Calibrated Semantic Score Normalization**:
+  - Raw cosine similarity $\text{sim} \in [-1.0, 1.0]$ is pruned below relevance threshold $\theta_{\text{min}} = 0.25$.
+  - Values $\ge 0.25$ are mapped through a calibrated monotonic transfer function into a stable ranking score:
+    $$S_{\text{semantic}} = \min\left(1.0, \max\left(0.0, \frac{\text{sim} - 0.25}{1.0 - 0.25} \times 0.90 + 0.10\right)\right)$$
+  - Raw embedding scores are **never directly mixed uncalibrated with BM25**, ensuring parity across scoring domains.
+- **Unified Retrieval Engine Integration**:
+  - Dense semantic querying lives directly within `RetrievalEngine.search_symbols()` and `retrieve_bundle()`.
+  - Automatically fuses semantic, BM25, exact name match, and structural graph traversal by default (`--ranking hybrid`).
+- **Pluggable Architecture**:
+  - `SemanticProjectionProvider` (default): Fast, offline-first, zero-dependency 128-dimensional projection vectorizer combining software domain concept taxonomy mapping, subword/character 3-gram feature hashing, and $L_2$ hypersphere normalization.
+  - `FastembedProvider`: Optional pluggable wrapper for `BAAI/bge-small-en-v1.5` via fastembed.
+  - `SentenceTransformersProvider`: Optional pluggable wrapper for `all-MiniLM-L6-v2` via sentence-transformers.
+  - `CustomEmbeddingProvider`: Adapter for user-supplied callable embedding functions with custom versioning.
+
+### 3.9. Hybrid Ranking & Multi-Modal Fusion
+- **Score Fusion Modes**: FastAST supports four complementary ranking modes:
+  1. **Weighted Hybrid Sum (default)**:
+     $$\text{Score} = 0.25 \cdot S_{\text{semantic}} + 0.25 \cdot S_{\text{BM25}} + 0.25 \cdot S_{\text{name}} + 0.09 \cdot S_{\text{type}} + 0.08 \cdot S_{\text{path}} + 0.05 \cdot S_{\text{edge}} + 0.04 \cdot S_{\text{conf}}$$
+  2. **Pure Semantic Ranking (`--ranking semantic`)**:
+     $$\text{Score} = 0.60 \cdot S_{\text{semantic}} + 0.20 \cdot S_{\text{name}} + 0.10 \cdot S_{\text{type}} + 0.10 \cdot S_{\text{edge}}$$
+  3. **Multi-Modal Reciprocal Rank Fusion (`--ranking rrf`)**:
+     $$\text{RRF}(d) = \frac{0.35}{k + \text{rank}_{\text{semantic}}(d)} + \frac{0.35}{k + \text{rank}_{\text{BM25}}(d)} + \frac{0.30}{k + \text{rank}_{\text{heur}}(d)}$$
+     where $k = 60$, fusing dense semantic vector rank, BM25 lexical rank, and structural graph rank.
+  4. **Heuristic Fallback (`--ranking heuristic`)**: Pure AST structural heuristic matching when lexical/semantic models are intentionally bypassed.
+- **Explainability**: Every candidate carries `reasons: Vec<String>` detailing attribution (e.g., `"Semantic match (score: 0.88)"`, `"BM25 lexical match (score: 0.95)"`, `"Exact name match ('search_symbols')"`).
 
 ### 3.10. MinHash + LSH (Locality Sensitive Hashing)
-- **Near-Duplicate Detection**: Detects copy-pasted functions, boilerplate classes, and near-miss symbol variations.
-- **Shingling & Signatures**: Decomposes code tokens into $k$-shingles, applies $m$ hash functions ($m = 128$) to form a MinHash signature.
-- **LSH Bucketing**: Groups signatures into $b$ bands of $r$ rows ($b \times r = 128$). Identifies candidates sharing buckets with Jaccard similarity threshold $\theta \ge 0.8$.
+- **Near-Duplicate & Clone Detection**: Detects copy-pasted functions, boilerplate classes, parallel interface implementations, and near-miss symbol variations without quadratic $O(N^2)$ comparisons.
+- **Shingling & Tokenization**: Decomposes symbol names (splitting camelCase, snake_case, and punctuation), signatures, docstring prefixes, and character 3-grams into normalized shingle sets.
+- **MinHash Signatures**: Applies $m = 64$ deterministic linear congruential hash permutations over Carter-Wegman Mersenne prime $2^{31} - 1$ ($h_i(x) = (a_i \cdot x + b_i) \bmod (2^{31}-1)$).
+- **LSH Band Partitioning**: Partitions the 64-dimensional signature into $b = 16$ bands of $r = 4$ rows each. Candidate pairs share an identical bucket in at least one band, providing an $S$-curve transition threshold at $t = (1/b)^{1/r} = (1/16)^{1/4} = 0.50$.
+- **Exact Jaccard Verification**: Evaluates true Jaccard similarity $J(A, B) = \frac{|A \cap B|}{|A \cup B|}$ for candidate pairs and retains matches exceeding `min_similarity` (default: 0.50).
+- **SQLite Persistence**: Stores symmetric pairs in `symbol_similarity` (`src_symbol_id`, `dst_symbol_id`, `similarity`, `created_at`) with `FOREIGN KEY ... ON DELETE CASCADE` for automated incremental cleanup.
 
 ### 3.11. Louvain Community Detection
-- **Graph Modularity Optimization**: Unsupervised partitioning of the codebase call/import graph into functional architectural clusters (e.g., "auth", "payment", "rendering", "database").
+- **Graph Modularity Optimization**: Unsupervised partitioning of the codebase symbol/file relationship graph into functional architectural clusters (e.g., "auth", "payment", "rendering", "database").
 - **Modularity Maximization**:
-  $$Q = \frac{1}{2m} \sum_{i,j} \left[ A_{ij} - \frac{k_i k_j}{2m} \right] \delta(c_i, c_j)$$
-- **Relevance Clustering**: If an agent queries a symbol in the "billing" community, other candidates belonging to the same Louvain cluster receive a proximity boost.
+  $$Q = \frac{1}{2m} \sum_{i,j} \left[ A_{ij} - \gamma \frac{k_i k_j}{2m} \right] \delta(c_i, c_j)$$
+  where $\gamma = 1.0$ resolution, $m$ is total edge weight, $k_i$ is node degree, and $\delta(c_i, c_j) = 1$ when nodes share a community.
+- **Graph Edges**: Aggregates structural graph edges (`calls`, `defines`, `inherits`, `imports`) weighted by AST confidence, augmented with MinHash `symbol_similarity` edges (damped by $0.7$), with file directory co-location fallbacks for sparse graphs.
+- **Automatic Semantic Labeling**: Assigns human-readable labels to communities based on dominant directory prefixes, high-frequency domain keywords, and central hub symbols ($c_{\text{hub}} = \arg\max_{v \in C} \deg(v)$).
+- **Persistence & API**: Stored in `symbol_communities` (`symbol_id`, `community_id`, `community_name`, `modularity`, `updated_at`) with cascade deletion. Exposed via `get_symbol_community`, `list_communities`, CLI, and MCP.
 
-### 3.12. Aho-Corasick Multi-Pattern String Matching
-- **Linear-Time Symbol Discovery**: Builds a finite state automaton from all indexed symbol names.
-- **Instant Call-Site Discovery**: Scans raw source files in $O(N + M)$ time without full AST re-parsing, locating every callsite and reference across huge codebases in single-digit milliseconds.
+### 3.12. Concrete Syntax Tree Call & Symbol Extraction
+- **Syntactic AST Visitors**: Walks concrete syntax trees generated by Tree-Sitter across all supported languages, identifying function declarations, method invocations, qualified module calls, and import statements.
+- **Zero-False-Positive Invocations**: Unlike naive regex or plain text string matching, AST extraction distinguishes true syntactic call sites from occurrences inside comments, string literals, or variable names.
 
 ### 3.13. SQLite Storage Layer
 - **ACID & WAL**: Embedded SQLite using Write-Ahead Logging (`PRAGMA journal_mode = WAL`) and memory-mapped I/O (`PRAGMA mmap_size = 268435456`).
@@ -224,17 +261,19 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
   - `imports`: Module import declarations and aliases.
   - `calls`: Unresolved call invocations.
   - `edges`: Directed, confidence-annotated graph edges (`src`, `dst`, `relation`, `confidence`).
+  - `symbols_fts`: SQLite FTS5 full-text index with unicode61 tokenizer & sync triggers.
+  - `symbol_embeddings`: Dense 128-dim vectors, model name, dimensions, packed float BLOB.
+  - `symbol_similarity`: MinHash/LSH near-duplicate symbol pairs with Jaccard similarity scores and cascade deletion.
+  - `symbol_communities`: Louvain modularity community IDs, human-readable semantic names, and modularity scores with cascade deletion.
 - **Prepared Statements & Transactions**: Batch inserts inside single transactions yielding 50,000+ symbol inserts per second.
 
-### 3.14. LZ4 / zstd Compression
-- **Storage Compaction**: Compressed storage for large docstrings, AST serialization blobs, and inverted index posting lists.
-- **Throughput Profile**: LZ4 for decompression at 3+ GB/s during query time; zstd (level 3) for long-term on-disk symbol archive databases.
+### 3.14. Bounded Context & Storage Optimization
+- **Storage Optimization**: Embedded SQLite database with Write-Ahead Logging (`WAL`), tuned page caches, and normalized schemas avoiding duplicated symbol signatures.
+- **Evidence Window Bounding**: Rather than returning full file bodies or large raw blobs, the Evidence Materializer dynamically slices bounded line windows with padding context and omission markers, keeping token payloads strictly within model limits.
 
-### 3.15. Parallel Workers
-- **Work-Stealing Concurrency**: Built on Rust's `rayon` thread pool.
-- **Pipelined Stages**:
-  $$\text{Walk} \xrightarrow{\text{channel}} \text{Hash Check} \xrightarrow{\text{parallel Rayon}} \text{AST Parse} \xrightarrow{\text{parallel}} \text{Extract} \xrightarrow{\text{batch}} \text{SQLite Write}$$
-- **Zero Lock Contention**: Workers extract symbols into thread-local vectors; a dedicated database writer thread commits batches.
+### 3.15. High-Throughput Batch Processing Pipeline
+- **Batched Ingestion**: Processes repository files in efficient batches, leveraging native C-speed Tree-Sitter parsing through the PyO3 bridge.
+- **Atomic Batch Transactions**: Symbol and edge records are committed inside single atomic SQLite transactions (`BEGIN TRANSACTION ... COMMIT`), achieving high insertion throughput with minimal locking overhead.
 
 ### 3.16. Incremental Indexing
 - **Differential Scan**: Compares repository filesystem state against SQLite `files` table:
@@ -243,14 +282,13 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
   - Deleted: File record and all cascading symbols/edges purged.
 - **Re-indexing Speed**: 10,000-file repository re-indexes in <100ms when only 3 files change.
 
-### 3.17. String Interning
-- **Deduplication**: Identifiers such as `"function"`, `"class"`, common package names (`"typing"`, `"std"`, `"react"`), and file paths appear tens of thousands of times.
-- **Interner**: Uses an atomic string interner (`lasso` or `string-interner`), storing integer `Spur` / `SymbolId` representations.
-- **Efficiency**: Reduces graph memory footprint by up to 70% and accelerates edge comparison from string comparison $O(L)$ to integer equality $O(1)$.
+### 3.17. Relational Normalization & Integer Keys
+- **Deduplication via Schema**: Identifiers, file paths, and parent symbols are normalized in relational tables (`files.id`, `symbols.id`, `symbols.file_id`, `edges.src`, `edges.dst`).
+- **Indexed Relational Lookups**: B-tree indices on `(file_id, name)` and `(src, dst)` allow fast $O(\log N)$ joins and edge lookups without storing duplicate string copies across queries.
 
-### 3.18. Coordination & Locking
-- **Multi-Process Concurrency**: SQLite WAL mode permits concurrent readers (e.g. MCP query server) while the background indexer thread writes updates.
-- **Thread Coordination**: In-process `parking_lot::RwLock` protects the in-memory graph and interner. File-based lock (`.fastast.lock`) prevents conflicting indexer processes from corrupting the database.
+### 3.18. Coordination & Inter-Process Locking
+- **Multi-Process Concurrency**: SQLite WAL mode permits concurrent readers (e.g. MCP query server, CLI commands) while the background indexer thread writes updates.
+- **Atomic File-Based Locking**: `RepositoryLock` in `python/fastast/locking.py` uses atomic OS flags (`os.O_CREAT | os.O_EXCL`) on `.fastast.lock` with process PID tracking and stale lock remediation, preventing conflicting indexer processes from corrupting the database.
 
 ### 3.19. Agent Interface Polish & MCP Completeness (Phase 10)
 - **Standardized MCP Tool Surface**:
@@ -335,95 +373,97 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
 
 ---
 
-## 5. Proposed Rust Workspace & Module Architecture
+## 4. Codebase Architecture & File Structure
 
-To support clean isolation, testability, and future scalability into independent crates, the codebase is structured around a modular workspace layout:
+The FastAST repository combines high-speed native Rust AST parsing with a Python-based Model Context Protocol (MCP) server, SQLite graph storage, and hybrid retrieval engine:
 
 ```
 fastast/
-├── Cargo.toml                       # Workspace root Cargo manifest
-├── crates/
-│   ├── fastast-discovery/           # File discovery, gitignore, binary sniffing, xxHash3
-│   │   ├── src/
-│   │   │   ├── walker.rs            # Multi-threaded filesystem traversal
-│   │   │   ├── ignore.rs            # Ignore rules and pattern evaluation
-│   │   │   ├── hasher.rs            # xxHash3 and BLAKE3 content hashing
-│   │   │   └── lib.rs
-│   │   └── Cargo.toml
-│   │
-│   ├── fastast-parsing/             # Tree-Sitter grammars and AST extraction
-│   │   ├── src/
-│   │   │   ├── language.rs          # Language detection and grammar mappings
-│   │   │   ├── parser.rs            # Tree-Sitter parser pool and error recovery
-│   │   │   ├── languages/           # Per-language AST visitors (py, rs, js, ts, java, ...)
-│   │   │   ├── extractor.rs         # Symbol, import, and callsite extraction
-│   │   │   └── lib.rs
-│   │   └── Cargo.toml
-│   │
-│   ├── fastast-graph/               # Symbol graph, resolution, and topological algorithms
-│   │   ├── src/
-│   │   │   ├── model.rs             # FileRecord, SymbolRecord, EdgeRecord, Candidate
-│   │   │   ├── resolution.rs        # Two-phase hybrid LSP-style import resolution
-│   │   │   ├── traversal.rs         # Bounded BFS and k-hop neighborhood search
-│   │   │   ├── community.rs         # Louvain community detection on call graph
-│   │   │   └── lib.rs
-│   │   └── Cargo.toml
-│   │
-│   ├── fastast-storage/             # SQLite database, string interning, and compression
-│   │   ├── src/
-│   │   │   ├── schema.rs            # SQLite tables, indices, migrations
-│   │   │   ├── store.rs             # Connection pooling, batch writes, WAL config
-│   │   │   ├── interner.rs          # Thread-safe string interning
-│   │   │   ├── compression.rs       # LZ4/zstd compression wrappers
-│   │   │   └── lib.rs
-│   │   └── Cargo.toml
-│   │
-│   ├── fastast-search/              # Lexical, semantic, and pattern search engines
-│   │   ├── src/
-│   │   │   ├── bm25.rs              # BM25 inverted index and scoring
-│   │   │   ├── vector.rs            # Dense embeddings and cosine similarity
-│   │   │   ├── minhash.rs           # MinHash + LSH duplicate/clone detection
-│   │   │   ├── aho_corasick.rs      # Multi-pattern string matching automaton
-│   │   │   └── lib.rs
-│   │   └── Cargo.toml
-│   │
-│   ├── fastast-retrieval/           # Candidate generation, hybrid fusion, evidence windows
-│   │   ├── src/
-│   │   │   ├── rrf.rs               # Reciprocal Rank Fusion hybrid scoring
-│   │   │   ├── evidence.rs          # Window boundary calculation and snippet extraction
-│   │   │   ├── pipeline.rs          # End-to-end query execution pipeline
-│   │   │   └── lib.rs
-│   │   └── Cargo.toml
-│   │
-│   └── fastast-mcp/                 # Native/Python MCP server and CLI runner
-│       ├── src/
-│       │   ├── tools.rs             # MCP tool handlers (index, query, call_graph)
-│       │   ├── protocol.rs          # JSON-RPC stdio protocol handler
-│       │   └── lib.rs
-│       └── Cargo.toml
+├── Cargo.toml                       # Cargo manifest compiling native extension fastast._core
+├── src/                             # Native Rust Tree-Sitter AST & Tokenization engine
+│   ├── lib.rs                       # PyO3 exports: index_code, count_tokens, classify_path, etc.
+│   ├── discovery.rs                 # Fast path classification, xxHash3 hashing, binary sniffing
+│   ├── language.rs                  # Language detection from file paths/extensions
+│   ├── parser.rs                    # Universal Tree-Sitter AST parser wrapper
+│   ├── model.rs                     # Rust domain data types (FileRecord, SymbolRecord, EdgeRecord)
+│   ├── indexer.rs                   # AST symbol walker & facts extraction
+│   └── <lang>/                      # Per-language AST extractors (py, rs, js, ts, java, html, css, json, toml)
 │
-├── python/                          # Python bindings & fallback distribution
+├── python/
 │   └── fastast/
-│       ├── __init__.py              # Public exports
-│       ├── model.py                 # Dataclasses: FileRecord, SymbolRecord, EdgeRecord, Candidate
-│       ├── db.py                    # SQLite engine and schema migrations
-│       ├── indexer.py               # Repository indexer and recursive walker
-│       ├── server.py                # FastMCP stdio server
+│       ├── __init__.py              # Public exports & package API
+│       ├── config.py                # Configuration management & path validation
+│       ├── locking.py               # Inter-process atomic repository locking (.fastast.lock)
+│       ├── watcher.py               # Background debounced filesystem watcher
+│       ├── diagnostics.py           # Repository health auditing, integrity checks & self-healing
+│       ├── db.py                    # SQLite engine, FTS5 sync triggers, schema migrations
+│       ├── indexer.py               # Repository indexer & incremental caching walker
+│       ├── discovery.py             # File discovery, .gitignore evaluation & classification
+│       ├── extractor.py             # Multi-language extraction coordinator
+│       ├── graph.py                 # Symbol graph, LSP-style resolution & BFS traversal
+│       ├── evidence.py              # Bounded snippet materializer & file outline generator
+│       ├── retrieval.py             # Multi-signal hybrid retrieval engine (BM25 + Semantic + Heuristic)
+│       ├── embeddings.py            # Local 128-dim dense projection embeddings
+│       ├── similarity.py            # MinHash + LSH near-duplicate clone detection
+│       ├── community.py             # Louvain modularity clustering & module labeling
+│       ├── server.py                # FastMCP JSON-RPC stdio server for AI agents
 │       └── cli.py                   # Terminal command-line interface
 │
 └── tests/                           # Multi-language and integration test suites
+    ├── test_cli.py
+    ├── test_css.py
+    ├── test_discovery.py
+    ├── test_evidence.py
+    ├── test_extractor.py
+    ├── test_graph.py
+    ├── test_hardening_resilience.py # Path traversal, locking, corruption recovery, watcher
+    └── ... (15 test suites, 137 unit and integration tests)
 ```
 
-### 4.2. In-Tree Modular Mapping (Phase 0 Foundation)
-During Phase 0, all core Rust modules live cleanly within `src/` to ensure immediate compilation with `pyo3` and `maturin`, directly preparing for extraction into crates:
-- `src/model.rs` $\rightarrow$ Core Data Model (`FileRecord`, `SymbolRecord`, `EdgeRecord`, `Candidate`)
-- `src/parser.rs` & `src/<lang>/` $\rightarrow$ `fastast-parsing`
-- `src/language.rs` $\rightarrow$ Language Detection
-- `src/indexer.rs` $\rightarrow$ AST Symbol Walker
-- `python/fastast/db.py` $\rightarrow$ `fastast-storage`
-- `python/fastast/indexer.py` $\rightarrow$ `fastast-discovery`
-- `python/fastast/server.py` $\rightarrow$ `fastast-mcp`
-- `python/fastast/cli.py` $\rightarrow$ `fastast-cli`
+### 4.2. Component Responsibilities
+- `src/` $\rightarrow$ High-speed concrete syntax tree parsing, language detection, token counting (`cl100k_base`), xxHash3 fingerprinting, and binary sniffing.
+- `python/fastast/db.py` $\rightarrow$ SQLite connection management, WAL configuration, FTS5 sync triggers, and schema migrations.
+- `python/fastast/indexer.py` $\rightarrow$ Incremental repository indexing, mtime/hash comparison, and deletion cascades.
+- `python/fastast/graph.py` $\rightarrow$ Symbol dependency graph, 2-phase import resolution, and bounded BFS traversals.
+- `python/fastast/retrieval.py` $\rightarrow$ Multi-signal hybrid retrieval (BM25 + Dense Semantic + AST structural heuristics).
+- `python/fastast/evidence.py` $\rightarrow$ Bounded code snippet extraction and file outline generation.
+- `python/fastast/similarity.py` $\rightarrow$ MinHash + LSH near-duplicate symbol detection.
+- `python/fastast/community.py` $\rightarrow$ Louvain modularity community clustering.
+- `python/fastast/server.py` $\rightarrow$ Model Context Protocol (FastMCP) JSON-RPC stdio interface.
+- `python/fastast/cli.py` $\rightarrow$ Developer CLI tools with JSON output options.
+
+---
+
+## 5. Production Hardening & Resilience Architecture
+
+### 5.1. Path Traversal & Security Boundary
+All file resolution inside `indexer.py`, `evidence.py`, and `retrieval.py` passes through `validate_safe_path(target, repo_root)`:
+- Strictly verifies that canonical real paths reside within the allowed repository directory.
+- Intercepts directory traversal exploits (`../../etc/passwd`), absolute path escapes (`/var/...`), and symlink escapes with `PathTraversalError`.
+- Rejects oversized files (`> max_file_size_bytes`) before file reads to prevent memory exhaustion and DoS.
+
+### 5.2. Inter-Process Concurrency & Atomic Locking
+Multi-agent and background daemon architectures require mutual exclusion during index mutations:
+- `RepositoryLock` uses atomic `os.O_CREAT | os.O_EXCL` flags on `.fastast.lock`.
+- Lock files contain JSON metadata with process PID, hostname, creation timestamp, and unique run token.
+- Automatic stale lock detection inspects process liveness (`os.kill(pid, 0)`) and timeouts (`stale_lock_seconds`), automatically breaking orphaned locks left by killed processes.
+
+### 5.3. SQLite Persistence Safety & Self-Healing
+- **Busy Timeout**: Sets `PRAGMA busy_timeout = 15000` (15 seconds) so concurrent readers and writers wait rather than crashing with immediate lock contention.
+- **WAL Mode & Foreign Keys**: SQLite configured with write-ahead logging (`WAL`), recursive triggers, and `FOREIGN KEY ... ON DELETE CASCADE`.
+- **Integrity Verification**: `check_database_integrity` runs `PRAGMA quick_check` or `integrity_check`.
+- **Automatic Corruption Recovery**: If an unrecoverable SQLite corruption is detected, `safe_repair_or_recreate_db()` isolates the damaged database into `.fastast.db.corrupt.<timestamp>` and reinitializes a pristine database automatically.
+- **Schema Migration Versioning**: Managed via `schema_migrations`, `fastast_metadata`, and `PRAGMA user_version = 10`.
+
+### 5.4. Background Debounced Watcher
+- `RepositoryWatcher` runs an asynchronous daemon thread monitoring file modifications, additions, and deletions.
+- Groups rapid IDE save bursts and git branch checkouts into a configurable quiet window (`watch_debounce_ms = 300ms`).
+- Automatically claims `RepositoryLock` during rebuild passes without crashing if CLI or MCP queries are in flight.
+
+### 5.5. Bounded Resource Guarantees
+- Bounded BFS neighbor expansion (`depth <= 3`, `fanout <= 20`, `total_nodes <= 50`).
+- Sliced code snippets clamped to `max_snippet_lines <= 500` with middle truncation indicators.
+- Query candidate sets clamped to `limit <= 200` and token budgets capped to `max_tokens <= 100,000`.
 
 ---
 
@@ -433,3 +473,5 @@ During Phase 0, all core Rust modules live cleanly within `src/` to ensure immed
 2. **Deterministic Confidence**: Every edge and candidate has an explicit confidence attribution.
 3. **Bounded Context**: Agents never receive raw, unmetered files; evidence is precisely bounded with line numbers and snippets.
 4. **Zero Cloud Dependencies**: 100% local operation using embedded SQLite and local native libraries.
+5. **Self-Healing Resilience**: Automatically isolates damaged databases, reclaims dead locks, and guards against path traversal vulnerabilities.
+
