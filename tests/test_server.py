@@ -6,9 +6,14 @@ import tempfile
 
 from fastast.db import get_connection, init_db
 from fastast.server import (
+    build_evidence_bundle,
     get_call_graph,
+    get_file_outline,
+    get_snippet,
+    get_symbol_evidence,
     index_repository,
     query_symbols,
+    retrieve_evidence,
 )
 
 
@@ -91,6 +96,46 @@ def test_get_call_graph_tool(tmp_path: Path):
     assert data["callers"][0]["caller"] == "step_b"
 
 
+def test_evidence_materializer_mcp_tools(tmp_path: Path):
+    """Test MCP Phase 6 evidence tools: get_symbol_evidence, get_file_outline, get_snippet, build_evidence_bundle."""
+    (tmp_path / "app.py").write_text(
+        "class OrderService:\n"
+        "    def create_order(self, item_id: str) -> bool:\n"
+        "        return len(item_id) > 0\n"
+    )
+    # Run index tool
+    index_repository(str(tmp_path))
+
+    # 1. get_symbol_evidence tool
+    res_ev = get_symbol_evidence("create_order", directory_path=str(tmp_path))
+    ev_data = json.loads(res_ev)
+    assert "symbol" in ev_data
+    assert ev_data["symbol"]["name"] == "create_order"
+    assert "snippet" in ev_data
+    assert "def create_order" in ev_data["snippet"]["code"]
+
+    # 2. get_file_outline tool
+    res_out = get_file_outline("app.py", directory_path=str(tmp_path))
+    out_data = json.loads(res_out)
+    assert out_data["file_path"] == "app.py"
+    assert len(out_data["classes"]) == 1
+    assert out_data["classes"][0]["name"] == "OrderService"
+    assert len(out_data["classes"][0]["methods"]) == 1
+
+    # 3. get_snippet tool
+    res_snip = get_snippet(symbol_name_or_id="create_order", directory_path=str(tmp_path))
+    snip_data = json.loads(res_snip)
+    assert "snippet" in snip_data
+    assert "create_order" in snip_data["snippet"]
+
+    # 4. build_evidence_bundle tool
+    res_bundle = build_evidence_bundle("OrderService", directory_path=str(tmp_path))
+    bundle_data = json.loads(res_bundle)
+    assert "candidates" in bundle_data
+    assert len(bundle_data["candidates"]) > 0
+    assert "snippets" in bundle_data
+
+
 if __name__ == "__main__":
     test_index_repository_not_found()
     test_query_symbols_empty()
@@ -101,5 +146,8 @@ if __name__ == "__main__":
 
     with tempfile.TemporaryDirectory() as td:
         test_get_call_graph_tool(Path(td))
+
+    with tempfile.TemporaryDirectory() as td:
+        test_evidence_materializer_mcp_tools(Path(td))
 
     print("All server tests passed successfully!")

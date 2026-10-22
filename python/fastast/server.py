@@ -304,6 +304,27 @@ def retrieve_evidence(
     Returns:
         JSON string containing the structured EvidenceBundle.
     """
+    return build_evidence_bundle(
+        query=query,
+        directory_path=directory_path,
+        kind=kind,
+        language=language,
+        file_path=file_path,
+        limit=limit,
+        max_tokens=max_tokens,
+    )
+
+
+def build_evidence_bundle(
+    query: str,
+    directory_path: str = ".",
+    kind: Optional[str] = None,
+    language: Optional[str] = None,
+    file_path: Optional[str] = None,
+    limit: int = 5,
+    max_tokens: int = 2048,
+) -> str:
+    """Build a compact, token-bounded EvidenceBundle for an agent query."""
     if not query or not query.strip():
         return json.dumps({"error": "Query string cannot be empty", "query": query, "candidates": []}, indent=2)
 
@@ -319,9 +340,9 @@ def retrieve_evidence(
         if not db_path.exists():
             do_index_repository(str(root))
 
-        from fastast.retrieval import RetrievalEngine
-        with RetrievalEngine(db_path, repo_root=root) as engine:
-            bundle = engine.retrieve_bundle(
+        from fastast.evidence import EvidenceMaterializer
+        with EvidenceMaterializer(db_path, repo_root=root) as materializer:
+            bundle = materializer.build_evidence_bundle(
                 query=query,
                 kind=kind,
                 language=language,
@@ -334,12 +355,166 @@ def retrieve_evidence(
         return json.dumps({"error": str(exc), "candidates": []})
 
 
+def get_symbol_evidence(
+    symbol_name_or_id: str,
+    directory_path: str = ".",
+    window_lines: int = 3,
+    max_snippet_lines: int = 50,
+) -> str:
+    """Retrieve complete, bounded evidence package for a single symbol.
+
+    Returns definition metadata, bounded source snippet, and key incoming/outgoing
+    graph neighbors (callers, callees, defines, inherits) without whole-file dumps.
+
+    Args:
+        symbol_name_or_id: Symbol identifier name or integer database ID.
+        directory_path: Repository root directory (default: current directory '.').
+        window_lines: Context padding lines around definition (default: 3).
+        max_snippet_lines: Maximum snippet length before truncation (default: 50).
+
+    Returns:
+        JSON string containing structured symbol evidence.
+    """
+    if not symbol_name_or_id or not str(symbol_name_or_id).strip():
+        return json.dumps({"error": "Symbol identifier cannot be empty"}, indent=2)
+
+    root = Path(directory_path).resolve()
+    if not root.exists():
+        return json.dumps({"error": f"Directory not found: '{directory_path}'"}, indent=2)
+
+    if root.is_file():
+        root = root.parent
+
+    db_path = root / ".fastast.db"
+    try:
+        if not db_path.exists():
+            do_index_repository(str(root))
+
+        from fastast.evidence import EvidenceMaterializer
+        with EvidenceMaterializer(db_path, repo_root=root) as materializer:
+            evidence = materializer.get_symbol_evidence(
+                name_or_id=symbol_name_or_id.strip(),
+                window_lines=window_lines,
+                max_snippet_lines=max_snippet_lines,
+            )
+            if not evidence:
+                return json.dumps({"error": f"Symbol not found: '{symbol_name_or_id}'", "found": False}, indent=2)
+            return json.dumps(evidence, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+def get_file_outline(
+    file_path: str,
+    directory_path: str = ".",
+    max_docstring_chars: int = 100,
+) -> str:
+    """Retrieve a compact structural outline of a file without raw source content.
+
+    Returns hierarchical classes, methods, top-level functions, line numbers,
+    and docstring summaries. Crucial for token-efficient file exploration.
+
+    Args:
+        file_path: Relative or absolute path of the target file.
+        directory_path: Repository root directory (default: current directory '.').
+        max_docstring_chars: Maximum characters per docstring summary (default: 100).
+
+    Returns:
+        JSON string containing the structural file outline.
+    """
+    if not file_path or not str(file_path).strip():
+        return json.dumps({"error": "File path cannot be empty"}, indent=2)
+
+    root = Path(directory_path).resolve()
+    if not root.exists():
+        return json.dumps({"error": f"Directory not found: '{directory_path}'"}, indent=2)
+
+    if root.is_file():
+        root = root.parent
+
+    db_path = root / ".fastast.db"
+    try:
+        if not db_path.exists():
+            do_index_repository(str(root))
+
+        from fastast.evidence import EvidenceMaterializer
+        with EvidenceMaterializer(db_path, repo_root=root) as materializer:
+            outline = materializer.get_file_outline(
+                file_path=file_path.strip(),
+                max_docstring_chars=max_docstring_chars,
+            )
+            if not outline:
+                return json.dumps({"error": f"File not found in index: '{file_path}'", "found": False}, indent=2)
+            return json.dumps(outline, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+def get_snippet(
+    symbol_name_or_id: Optional[str] = None,
+    file_path: Optional[str] = None,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+    window_lines: int = 3,
+    max_snippet_lines: int = 60,
+    directory_path: str = ".",
+) -> str:
+    """Extract a minimal, bounded source snippet for a symbol or file line range.
+
+    Guarantees token-consciousness: caps snippet length and inserts omission
+    indicators for large functions. Never dumps entire files.
+
+    Args:
+        symbol_name_or_id: Optional symbol name or ID to locate and slice.
+        file_path: Optional relative file path for direct line slicing.
+        start_line: 1-based start line (required if file_path is used).
+        end_line: 1-based end line (optional, defaults to start_line).
+        window_lines: Context padding lines before and after (default: 3).
+        max_snippet_lines: Maximum snippet length (default: 60).
+        directory_path: Repository root directory (default: current directory '.').
+
+    Returns:
+        JSON string containing the bounded EvidenceWindow.
+    """
+    root = Path(directory_path).resolve()
+    if not root.exists():
+        return json.dumps({"error": f"Directory not found: '{directory_path}'"}, indent=2)
+
+    if root.is_file():
+        root = root.parent
+
+    db_path = root / ".fastast.db"
+    try:
+        if not db_path.exists():
+            do_index_repository(str(root))
+
+        from fastast.evidence import EvidenceMaterializer
+        with EvidenceMaterializer(db_path, repo_root=root) as materializer:
+            window = materializer.get_snippet(
+                symbol_id_or_name=symbol_name_or_id,
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                window_lines=window_lines,
+                max_snippet_lines=max_snippet_lines,
+            )
+            if not window:
+                return json.dumps({"error": "Snippet target not found", "found": False}, indent=2)
+            return json.dumps(window.to_dict(), indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
 # Register tools with MCP server if available
 if mcp is not None:
     mcp.tool()(index_repository)
     mcp.tool()(query_symbols)
     mcp.tool()(get_call_graph)
     mcp.tool()(retrieve_evidence)
+    mcp.tool()(build_evidence_bundle)
+    mcp.tool()(get_symbol_evidence)
+    mcp.tool()(get_file_outline)
+    mcp.tool()(get_snippet)
 
 
 def main() -> None:

@@ -119,11 +119,22 @@ except ImportError:
 try:
     from fastast.indexer import RepositoryIndexer, index_repository
     from fastast.db import get_call_graph, search_symbols
+    from fastast.evidence import (
+        EvidenceMaterializer,
+        build_evidence_bundle,
+        get_file_outline,
+        get_snippet,
+        get_symbol_evidence,
+    )
 except ImportError:
     RepositoryIndexer = None  # type: ignore
     index_repository = None  # type: ignore
     search_symbols = None  # type: ignore
     get_call_graph = None  # type: ignore
+    EvidenceMaterializer = None  # type: ignore
+    build_evidence_bundle = None  # type: ignore
+    get_file_outline = None  # type: ignore
+    get_symbol_evidence = None  # type: ignore
 
 __all__ = [
     "__version__",
@@ -163,6 +174,10 @@ __all__ = [
     "get_snippet",
     "search_files",
     "retrieve_bundle",
+    "build_evidence_bundle",
+    "get_symbol_evidence",
+    "get_file_outline",
+    "EvidenceMaterializer",
     "score_candidate",
     "RepositoryIndexer",
     "index_repository",

@@ -55,6 +55,8 @@ class EvidenceBundle:
     symbols: List[Dict[str, Any]] = field(default_factory=list)
     files: List[Dict[str, Any]] = field(default_factory=list)
     relationships: List[Dict[str, Any]] = field(default_factory=list)
+    snippets: List[Dict[str, Any]] = field(default_factory=list)
+    meta: Dict[str, Any] = field(default_factory=dict)
     total_tokens_estimate: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -64,6 +66,8 @@ class EvidenceBundle:
             "symbols": self.symbols,
             "files": self.files,
             "relationships": self.relationships,
+            "snippets": self.snippets,
+            "meta": self.meta,
             "total_tokens_estimate": self.total_tokens_estimate,
         }
 
@@ -961,14 +965,70 @@ class RetrievalEngine:
                     "total_lines": frow["total_lines"],
                 })
 
+        snippets_list: List[Dict[str, Any]] = []
+        for c in candidates:
+            if c.evidence_window and c.evidence_window.snippet:
+                snippets_list.append({
+                    "symbol_id": c.symbol_id,
+                    "name": c.name,
+                    "file_path": c.file_path,
+                    "start_line": c.evidence_window.start_line,
+                    "end_line": c.evidence_window.end_line,
+                    "code": c.evidence_window.snippet,
+                    "tokens_estimate": estimate_tokens(c.evidence_window.snippet),
+                })
+
+        meta_info = {
+            "query": query,
+            "total_candidates": len(candidates),
+            "total_symbols": len(symbols_list),
+            "total_files": len(files_list),
+            "total_relationships": len(relationships),
+            "total_snippets": len(snippets_list),
+            "total_tokens_estimate": total_tokens,
+            "max_tokens_budget": max_tokens,
+            "truncated": total_tokens >= max_tokens,
+        }
+
         return EvidenceBundle(
             query=query,
             candidates=candidates,
             symbols=symbols_list,
             files=files_list,
             relationships=relationships,
+            snippets=snippets_list,
+            meta=meta_info,
             total_tokens_estimate=total_tokens,
         )
+
+    def get_file_outline(
+        self, file_path: Union[Path, str], max_docstring_chars: int = 100
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieve structural outline of a file without full code dumps."""
+        from fastast.evidence import EvidenceMaterializer
+        materializer = EvidenceMaterializer(self.conn, repo_root=self.repo_root)
+        return materializer.get_file_outline(file_path, max_docstring_chars=max_docstring_chars)
+
+    def get_symbol_evidence(
+        self,
+        name_or_id: Union[int, str],
+        window_lines: int = 3,
+        max_snippet_lines: int = 50,
+        max_neighbors: int = 5,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieve complete, bounded evidence package for a single symbol."""
+        from fastast.evidence import EvidenceMaterializer
+        materializer = EvidenceMaterializer(self.conn, repo_root=self.repo_root)
+        return materializer.get_symbol_evidence(
+            name_or_id,
+            window_lines=window_lines,
+            max_snippet_lines=max_snippet_lines,
+            max_neighbors=max_neighbors,
+        )
+
+    def build_evidence_bundle(self, *args, **kwargs) -> EvidenceBundle:
+        """Alias for retrieve_bundle."""
+        return self.retrieve_bundle(*args, **kwargs)
 
 
 # ── Standalone API Functions ─────────────────────────────────────────────────
@@ -1140,5 +1200,75 @@ def retrieve_bundle(
         window_lines=window_lines,
         max_depth=max_depth,
         max_fanout=max_fanout,
+    )
+
+
+def build_evidence_bundle(
+    query: Optional[str] = None,
+    candidates: Optional[List[Candidate]] = None,
+    kind: Optional[str] = None,
+    language: Optional[str] = None,
+    file_path: Optional[str] = None,
+    limit: int = 5,
+    max_tokens: int = 2048,
+    window_lines: int = 3,
+    max_snippet_lines: int = 40,
+    max_depth: int = 1,
+    max_fanout: int = 5,
+    db_or_conn: Optional[Union[sqlite3.Connection, Path, str]] = None,
+    repo_root: Optional[Union[Path, str]] = None,
+) -> EvidenceBundle:
+    """Build a complete, token-bounded EvidenceBundle."""
+    from fastast.evidence import build_evidence_bundle as do_build
+    return do_build(
+        query=query,
+        candidates=candidates,
+        limit=limit,
+        max_tokens=max_tokens,
+        window_lines=window_lines,
+        max_snippet_lines=max_snippet_lines,
+        max_depth=max_depth,
+        max_fanout=max_fanout,
+        kind=kind,
+        language=language,
+        file_path=file_path,
+        db_or_conn=db_or_conn,
+        repo_root=repo_root,
+    )
+
+
+def get_file_outline(
+    file_path: Union[Path, str],
+    db_or_conn: Optional[Union[sqlite3.Connection, Path, str]] = None,
+    repo_root: Optional[Union[Path, str]] = None,
+    max_docstring_chars: int = 100,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve structural outline of a file without full code dumps."""
+    from fastast.evidence import get_file_outline as do_outline
+    return do_outline(
+        file_path,
+        db_or_conn=db_or_conn,
+        repo_root=repo_root,
+        max_docstring_chars=max_docstring_chars,
+    )
+
+
+def get_symbol_evidence(
+    name_or_id: Union[int, str],
+    db_or_conn: Optional[Union[sqlite3.Connection, Path, str]] = None,
+    repo_root: Optional[Union[Path, str]] = None,
+    window_lines: int = 3,
+    max_snippet_lines: int = 50,
+    max_neighbors: int = 5,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve structured symbol evidence package (metadata, snippet, neighbors)."""
+    from fastast.evidence import get_symbol_evidence as do_evidence
+    return do_evidence(
+        name_or_id,
+        db_or_conn=db_or_conn,
+        repo_root=repo_root,
+        window_lines=window_lines,
+        max_snippet_lines=max_snippet_lines,
+        max_neighbors=max_neighbors,
     )
 

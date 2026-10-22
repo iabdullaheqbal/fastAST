@@ -572,6 +572,112 @@ def run_query(
     return 0
 
 
+def run_evidence(*args, **kwargs) -> int:
+    """Alias for run_query to retrieve token-bounded evidence bundles."""
+    return run_query(*args, **kwargs)
+
+
+def run_outline(
+    file_path: str,
+    dir_path: str = ".",
+    json_output: bool = False,
+) -> int:
+    """Display compact structural outline for a file."""
+    root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(json.dumps({"error": f"Directory not found: {dir_path}", "outline": None}, indent=2))
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    from fastast.evidence import get_file_outline
+    outline = get_file_outline(file_path, repo_root=root)
+    if not outline:
+        if json_output:
+            print(json.dumps({"error": f"File not found in index: {file_path}", "outline": None}, indent=2))
+        else:
+            sys.stderr.write(f"Error: File not found in index: {file_path}\n")
+        return 1
+
+    if json_output:
+        print(json.dumps(outline, indent=2))
+        return 0
+
+    print(f"File Outline: {outline['file_path']} ({outline['language']}, {outline['total_lines']} lines)")
+    print(f"Total Symbols: {outline['total_symbols']}, Total Imports: {outline['total_imports']}\n")
+
+    if outline["classes"]:
+        print("Classes:")
+        for c in outline["classes"]:
+            doc_str = f" - {c['docstring_summary']}" if c.get("docstring_summary") else ""
+            print(f"  class {c['name']} (lines {c['start_line']}-{c['end_line']}){doc_str}")
+            for m in c.get("methods", []):
+                print(f"    def {m['name']}{m.get('signature', '')} (lines {m['start_line']}-{m['end_line']})")
+
+    if outline["functions"]:
+        print("\nFunctions:")
+        for fn in outline["functions"]:
+            doc_str = f" - {fn['docstring_summary']}" if fn.get("docstring_summary") else ""
+            print(f"  def {fn['name']}{fn.get('signature', '')} (lines {fn['start_line']}-{fn['end_line']}){doc_str}")
+
+    if outline["other_symbols"]:
+        print("\nOther Symbols:")
+        for s in outline["other_symbols"][:10]:
+            print(f"  {s['kind']} {s['name']} (lines {s['start_line']}-{s['end_line']})")
+
+    return 0
+
+
+def run_snippet(
+    symbol: Optional[str] = None,
+    file_path: Optional[str] = None,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+    window_lines: int = 3,
+    max_lines: int = 60,
+    dir_path: str = ".",
+    json_output: bool = False,
+) -> int:
+    """Extract bounded source snippet for a symbol or file line range."""
+    root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(json.dumps({"error": f"Directory not found: {dir_path}", "snippet": None}, indent=2))
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    from fastast.evidence import get_snippet
+    window = get_snippet(
+        symbol_id_or_name=symbol,
+        file_path=file_path,
+        start_line=start_line,
+        end_line=end_line,
+        window_lines=window_lines,
+        max_snippet_lines=max_lines,
+        repo_root=root,
+    )
+
+    if not window or not window.snippet:
+        if json_output:
+            print(json.dumps({"error": "Snippet not found or file unreadable", "snippet": None}, indent=2))
+        else:
+            sys.stderr.write("Error: Snippet target not found or source file unreadable.\n")
+        return 1
+
+    if json_output:
+        print(json.dumps(window.to_dict(), indent=2))
+        return 0
+
+    target_name = symbol or f"{file_path}:{start_line}-{end_line}"
+    print(f"Bounded Snippet for '{target_name}' (lines {window.start_line}-{window.end_line}):")
+    print("-" * 60)
+    print(window.snippet, end="" if window.snippet.endswith("\n") else "\n")
+    print("-" * 60)
+    return 0
+
+
 def main() -> None:
     """CLI entrypoint for fastast."""
     parser = argparse.ArgumentParser(
@@ -826,9 +932,49 @@ def main() -> None:
         help="Output evidence bundle as structured JSON",
     )
 
+    # `evidence` subcommand (Phase 6 Evidence Materializer)
+    evidence_parser = subparsers.add_parser(
+        "evidence",
+        help="Retrieve compact, token-bounded evidence bundle for a query",
+        description="Extract ranked symbols, bounded code snippets, and key graph relationships.",
+    )
+    evidence_parser.add_argument("query", help="Query symbol name, path, or text")
+    evidence_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    evidence_parser.add_argument("-k", "--kind", help="Filter by symbol kind")
+    evidence_parser.add_argument("-L", "--language", help="Filter by programming language")
+    evidence_parser.add_argument("-f", "--file", dest="file_path", help="Filter by target file path")
+    evidence_parser.add_argument("-n", "--limit", type=int, default=5, help="Maximum candidates to return")
+    evidence_parser.add_argument("--max-tokens", type=int, default=2048, help="Token budget for snippets")
+    evidence_parser.add_argument("--json", action="store_true", help="Output evidence bundle as structured JSON")
+
+    # `outline` subcommand (Phase 6 File-level pruning)
+    outline_parser = subparsers.add_parser(
+        "outline",
+        help="Display structural outline of a file without raw source dumps",
+        description="Show classes, methods, top-level functions, line spans, and signatures.",
+    )
+    outline_parser.add_argument("file", help="Target source file path")
+    outline_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    outline_parser.add_argument("--json", action="store_true", help="Output file outline as JSON")
+
+    # `snippet` subcommand (Phase 6 Bounded snippet extraction)
+    snippet_parser = subparsers.add_parser(
+        "snippet",
+        help="Extract a minimal bounded source snippet for a symbol or line range",
+        description="Slice bounded code window without dumping full files.",
+    )
+    snippet_parser.add_argument("symbol", nargs="?", default=None, help="Symbol name or integer ID")
+    snippet_parser.add_argument("-f", "--file", dest="file_path", help="Direct target file path")
+    snippet_parser.add_argument("--start", type=int, default=None, help="Start line number (for direct file slicing)")
+    snippet_parser.add_argument("--end", type=int, default=None, help="End line number (for direct file slicing)")
+    snippet_parser.add_argument("-w", "--window", type=int, default=3, help="Context padding window lines")
+    snippet_parser.add_argument("--max-lines", type=int, default=60, help="Maximum snippet lines before truncation")
+    snippet_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    snippet_parser.add_argument("--json", action="store_true", help="Output snippet as JSON")
+
     args = parser.parse_args()
 
-    if args.command == "query":
+    if args.command in ("query", "evidence"):
         sys.exit(
             run_query(
                 args.query,
@@ -838,6 +984,27 @@ def main() -> None:
                 file_path=getattr(args, "file_path", None),
                 limit=args.limit,
                 max_tokens=args.max_tokens,
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "outline":
+        sys.exit(
+            run_outline(
+                args.file,
+                dir_path=args.dir,
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "snippet":
+        sys.exit(
+            run_snippet(
+                symbol=args.symbol,
+                file_path=getattr(args, "file_path", None),
+                start_line=getattr(args, "start", None),
+                end_line=getattr(args, "end", None),
+                window_lines=args.window,
+                max_lines=args.max_lines,
+                dir_path=args.dir,
                 json_output=getattr(args, "json", False),
             )
         )
