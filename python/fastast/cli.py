@@ -930,9 +930,9 @@ def main() -> None:
     )
     query_parser.add_argument(
         "--ranking",
-        choices=["hybrid", "rrf", "heuristic"],
+        choices=["hybrid", "semantic", "rrf", "bm25", "heuristic"],
         default="hybrid",
-        help="Ranking algorithm: hybrid (BM25 + structural, default), rrf (Reciprocal Rank Fusion), or heuristic",
+        help="Ranking algorithm: hybrid (Semantic + BM25 + structural, default), semantic (dense vector), rrf (Reciprocal Rank Fusion), bm25, or heuristic",
     )
     query_parser.add_argument(
         "--json",
@@ -953,6 +953,12 @@ def main() -> None:
     evidence_parser.add_argument("-f", "--file", dest="file_path", help="Filter by target file path")
     evidence_parser.add_argument("-n", "--limit", type=int, default=5, help="Maximum candidates to return")
     evidence_parser.add_argument("--max-tokens", type=int, default=2048, help="Token budget for snippets")
+    evidence_parser.add_argument(
+        "--ranking",
+        choices=["hybrid", "semantic", "rrf", "bm25", "heuristic"],
+        default="hybrid",
+        help="Ranking algorithm: hybrid (default), semantic, rrf, bm25, or heuristic",
+    )
     evidence_parser.add_argument("--json", action="store_true", help="Output evidence bundle as structured JSON")
 
     # `outline` subcommand (Phase 6 File-level pruning)

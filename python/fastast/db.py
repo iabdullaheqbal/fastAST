@@ -108,6 +108,18 @@ END;
 CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
     DELETE FROM symbols_fts WHERE rowid = old.id;
 END;
+
+-- Phase 8: Dense Semantic Vector Embeddings for Concept-Aware Retrieval
+CREATE TABLE IF NOT EXISTS symbol_embeddings (
+    symbol_id INTEGER PRIMARY KEY,
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    embedding BLOB NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_model ON symbol_embeddings(model);
 """
 
 
@@ -168,6 +180,17 @@ def init_db(conn: sqlite3.Connection) -> None:
     except Exception:
         pass
 
+    # Backfill symbol embeddings if table exists but is empty while symbols exist
+    try:
+        cur.execute("SELECT COUNT(*) FROM symbol_embeddings")
+        emb_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM symbols")
+        sym_count = cur.fetchone()[0]
+        if emb_count == 0 and sym_count > 0:
+            backfill_symbol_embeddings(conn)
+    except Exception:
+        pass
+
 
 def get_file_record(conn: sqlite3.Connection, path: str) -> Optional[sqlite3.Row]:
     """Retrieve indexed file metadata by path."""
@@ -192,6 +215,7 @@ def store_file_data(
     language: Optional[str] = None,
     category: Optional[str] = None,
     status: str = "unchanged",
+    embed_symbols: bool = True,
 ) -> int:
     """Insert or update extracted AST symbols, imports, calls, and edges for a file."""
     if hasattr(file_path, "file_path") and hasattr(file_path, "symbols"):
@@ -245,6 +269,7 @@ def store_file_data(
 
         # Insert symbols and map names to their database IDs for parent/caller resolution
         symbol_id_map: Dict[str, int] = {}
+        inserted_symbols_for_emb: List[Tuple[int, str, str, str, Optional[str]]] = []
 
         # Pass 1: Insert root symbols (parent_name is None or empty)
         for sym in file_index_result.symbols:
@@ -269,6 +294,7 @@ def store_file_data(
                 )
                 sym_id = cur.lastrowid
                 symbol_id_map[sym.name] = sym_id
+                inserted_symbols_for_emb.append((sym_id, sym.name, sym.kind, sig, sym.docstring))
 
         # Pass 2: Insert child symbols (methods, members with parent_name)
         for sym in file_index_result.symbols:
@@ -296,6 +322,7 @@ def store_file_data(
                 sym_id = cur.lastrowid
                 symbol_id_map[sym.name] = sym_id
                 symbol_id_map[f"{sym.parent_name}.{sym.name}"] = sym_id
+                inserted_symbols_for_emb.append((sym_id, sym.name, sym.kind, sig, sym.docstring))
 
         # Insert imports (if present on result)
         if hasattr(file_index_result, "imports") and file_index_result.imports:
@@ -403,6 +430,34 @@ def store_file_data(
                     """,
                     edge_rows,
                 )
+
+        # Phase 8: Generate and store dense semantic embeddings
+        if embed_symbols and inserted_symbols_for_emb:
+            try:
+                import time
+                from fastast.embeddings import (
+                    encode_embedding,
+                    get_embedding_provider,
+                    prepare_symbol_text,
+                )
+                provider = get_embedding_provider()
+                now = time.time()
+                emb_rows = []
+                for s_id, s_name, s_kind, s_sig, s_doc in inserted_symbols_for_emb:
+                    text = prepare_symbol_text(s_name, s_kind, s_sig, s_doc, file_path_str)
+                    vec = provider.embed_text(text)
+                    blob = encode_embedding(vec)
+                    emb_rows.append((s_id, provider.model_name, provider.dimension, blob, now))
+
+                cur.executemany(
+                    """
+                    INSERT OR REPLACE INTO symbol_embeddings (symbol_id, model, dimensions, embedding, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    emb_rows,
+                )
+            except Exception:
+                pass
 
     return file_id
 
@@ -515,6 +570,182 @@ def search_symbols_bm25(
         return {r[0]: round(r[1] / max_score, 4) for r in rows}
     except Exception:
         return {}
+
+
+def store_symbol_embedding(
+    conn: sqlite3.Connection,
+    symbol_id: int,
+    model: str,
+    embedding: Sequence[float],
+    updated_at: Optional[float] = None,
+) -> None:
+    """Store or update a dense embedding vector for a symbol."""
+    import time
+    from fastast.embeddings import encode_embedding
+
+    blob = encode_embedding(embedding)
+    ts = updated_at if updated_at is not None else time.time()
+    with conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO symbol_embeddings (symbol_id, model, dimensions, embedding, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (symbol_id, model, len(embedding), blob, ts),
+        )
+
+
+def get_symbol_embedding(
+    conn: sqlite3.Connection,
+    symbol_id: int,
+) -> Optional[List[float]]:
+    """Retrieve the stored dense embedding vector for a symbol."""
+    from fastast.embeddings import decode_embedding
+
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT embedding FROM symbol_embeddings WHERE symbol_id = ?",
+            (symbol_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return decode_embedding(row[0])
+    except Exception:
+        return None
+
+
+def delete_symbol_embedding(
+    conn: sqlite3.Connection,
+    symbol_id: int,
+) -> None:
+    """Delete a stored embedding for a symbol."""
+    with conn:
+        conn.execute("DELETE FROM symbol_embeddings WHERE symbol_id = ?", (symbol_id,))
+
+
+def search_symbols_semantic(
+    conn: sqlite3.Connection,
+    query_vector: Sequence[float],
+    limit: int = 100,
+    model: Optional[str] = None,
+) -> Dict[int, float]:
+    """Retrieve symbols ordered by cosine similarity with query_vector.
+
+    Returns mapping of symbol_id -> normalized similarity score in [0.0, 1.0].
+    """
+    if not query_vector:
+        return {}
+
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='symbol_embeddings'"
+        )
+        if not cur.fetchone():
+            return {}
+
+        if model:
+            cur.execute(
+                "SELECT symbol_id, embedding FROM symbol_embeddings WHERE model = ?",
+                (model,),
+            )
+        else:
+            cur.execute("SELECT symbol_id, embedding FROM symbol_embeddings")
+
+        rows = cur.fetchall()
+        if not rows:
+            return {}
+
+        from fastast.embeddings import cosine_similarity, decode_embedding
+
+        scored: List[Tuple[int, float]] = []
+        for sym_id, blob in rows:
+            emb = decode_embedding(blob)
+            if not emb:
+                continue
+            sim = cosine_similarity(query_vector, emb)
+            if sim >= 0.25:
+                scored.append((sym_id, sim))
+
+        if not scored:
+            return {}
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        top = scored[:limit]
+        max_sim = top[0][1] if top else 1.0
+
+        return {
+            sym_id: round(sim / max_sim if max_sim > 0 else sim, 4)
+            for sym_id, sim in top
+        }
+    except Exception:
+        return {}
+
+
+def backfill_symbol_embeddings(
+    conn: sqlite3.Connection,
+    provider: Optional[Any] = None,
+    batch_size: int = 200,
+) -> int:
+    """Generate and store embeddings for any indexed symbols currently lacking embeddings."""
+    import time
+    from fastast.embeddings import (
+        encode_embedding,
+        get_embedding_provider,
+        prepare_symbol_text,
+    )
+
+    if provider is None:
+        provider = get_embedding_provider()
+
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT s.id, s.name, s.kind, s.signature, s.docstring, f.path as file_path
+            FROM symbols s
+            JOIN files f ON s.file_id = f.id
+            WHERE s.id NOT IN (SELECT symbol_id FROM symbol_embeddings WHERE model = ?)
+            """,
+            (provider.model_name,),
+        )
+        missing = cur.fetchall()
+        if not missing:
+            return 0
+
+        now = time.time()
+        count = 0
+        for i in range(0, len(missing), batch_size):
+            batch = missing[i : i + batch_size]
+            emb_rows = []
+            for r in batch:
+                text = prepare_symbol_text(
+                    name=r["name"],
+                    kind=r["kind"],
+                    signature=r["signature"],
+                    docstring=r["docstring"],
+                    file_path=r["file_path"],
+                )
+                vec = provider.embed_text(text)
+                blob = encode_embedding(vec)
+                emb_rows.append(
+                    (r["id"], provider.model_name, provider.dimension, blob, now)
+                )
+
+            with conn:
+                cur.executemany(
+                    """
+                    INSERT OR REPLACE INTO symbol_embeddings (symbol_id, model, dimensions, embedding, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    emb_rows,
+                )
+            count += len(batch)
+        return count
+    except Exception:
+        return 0
 
 
 def get_call_graph(conn: sqlite3.Connection, symbol_name: str) -> Dict[str, Any]:

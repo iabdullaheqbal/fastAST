@@ -304,9 +304,10 @@ class TestHybridRetrievalEngine(unittest.TestCase):
             ),
         )
 
-        # Old query 'lexer tokens' should now return 0 results
-        res_old = self.engine.search_symbols("lexer tokens", ranking_method="hybrid")
+        # Old query 'lexer tokens' should now return 0 results via BM25
+        res_old = self.engine.search_symbols("lexer tokens", ranking_method="bm25")
         self.assertEqual(len(res_old), 0)
+        self.assertFalse(any(c.name == "parse_tokens" for c in self.engine.search_symbols("lexer tokens", ranking_method="hybrid")))
 
         # New query 'syntax trees' should find 'parse_ast_tree'
         res_new = self.engine.search_symbols("syntax trees", ranking_method="hybrid")

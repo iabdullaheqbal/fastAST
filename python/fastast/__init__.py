@@ -119,11 +119,25 @@ except ImportError:
 try:
     from fastast.indexer import RepositoryIndexer, index_repository
     from fastast.db import (
+        backfill_symbol_embeddings,
         delete_file_record,
+        delete_symbol_embedding,
         get_call_graph,
+        get_symbol_embedding,
         sanitize_fts5_query,
         search_symbols,
         search_symbols_bm25,
+        search_symbols_semantic,
+        store_symbol_embedding,
+    )
+    from fastast.embeddings import (
+        BaseEmbeddingProvider,
+        SemanticProjectionProvider,
+        cosine_similarity,
+        decode_embedding,
+        encode_embedding,
+        get_embedding_provider,
+        prepare_symbol_text,
     )
     from fastast.evidence import (
         EvidenceMaterializer,
@@ -192,7 +206,19 @@ __all__ = [
     "index_repository",
     "search_symbols",
     "search_symbols_bm25",
+    "search_symbols_semantic",
     "sanitize_fts5_query",
     "delete_file_record",
     "get_call_graph",
+    "BaseEmbeddingProvider",
+    "SemanticProjectionProvider",
+    "get_embedding_provider",
+    "encode_embedding",
+    "decode_embedding",
+    "cosine_similarity",
+    "store_symbol_embedding",
+    "get_symbol_embedding",
+    "delete_symbol_embedding",
+    "backfill_symbol_embeddings",
+    "prepare_symbol_text",
 ]

@@ -89,9 +89,10 @@ Traditional retrieval approaches dump entire files into model context windows, r
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ 4. Query-Time Pruning (BM25 + Hybrid Ranking & Token Budgeting)             │
+│ 4. Query-Time Pruning (Semantic Embeddings + BM25 + Hybrid Ranking)         │
+│    • Dense semantic vector search via 128-dim projection embeddings         │
 │    • BM25 full-text search over symbols, signatures, docstrings, and paths  │
-│    • Multi-factor fusion (BM25, exact name, kind, path closeness, centrality)│
+│    • Multi-factor fusion (Semantic, BM25, exact name, kind, path, degree)   │
 │    • Support for weighted hybrid sum and Reciprocal Rank Fusion (RRF)       │
 │    • Fan-out-capped 1-hop neighborhood expansion (depth 1-3, fan-out ≤ 5)   │
 │    • Extracts minimal bounded snippets (omitting middle for large symbols)  │
@@ -266,18 +267,23 @@ fastast scan . --json
 
 ### 6. Token-Conscious Evidence Query
 
-Retrieve compact, token-bounded evidence bundles for coding agents. Ranks candidates using advanced **Hybrid Ranking** (BM25 full-text lexical matching + exact name matching, symbol type matching, file path relevance, graph degree, and AST confidence):
+Retrieve compact, token-bounded evidence bundles for coding agents. Ranks candidates using advanced **Hybrid Ranking** (Dense Semantic Embeddings + SQLite FTS5 BM25 + exact name matching, symbol type matching, file path relevance, graph degree, and AST confidence):
 
 ```bash
-# Query evidence for a symbol or concept (uses BM25 + structural hybrid ranking by default)
+# Query evidence for a symbol or concept (uses Semantic + BM25 + structural hybrid ranking by default)
 fastast query "handle_request"
 
-# Query by conceptual terms matching docstrings or signatures (via SQLite FTS5 BM25)
-fastast query "authentication token validator"
+# Conceptual queries with zero exact name match (finds targets via dense semantic embeddings)
+fastast query "user authentication check"
 
-# Select ranking algorithm: hybrid (default), rrf (Reciprocal Rank Fusion), or heuristic (structural-only)
+# Pure semantic dense vector retrieval
+fastast query "database persistence layer" --ranking semantic
+
+# Select ranking algorithm: hybrid (default), semantic, rrf (Reciprocal Rank Fusion), bm25, or heuristic
 fastast query "calculate_tax" --ranking hybrid
+fastast query "calculate_tax" --ranking semantic
 fastast query "calculate_tax" --ranking rrf
+fastast query "calculate_tax" --ranking bm25
 fastast query "calculate_tax" --ranking heuristic
 
 # Filter by kind and cap candidate count
@@ -395,7 +401,7 @@ Returns incoming caller and outgoing callee relationships for a function or meth
 - **Returns:** Inbound callers and outbound callees with file paths and exact line references.
 
 ### 4. `retrieve_evidence`
-Retrieves a ranked, token-conscious evidence bundle for coding agents. Combines SQLite FTS5 BM25 retrieval with structural heuristics (exact name match, symbol kind priority, path proximity, edge degree), expands 1-hop graph neighbors, extracts bounded code snippets, and strictly enforces token budgets.
+Retrieves a ranked, token-conscious evidence bundle for coding agents. Combines Dense Semantic Embeddings + SQLite FTS5 BM25 retrieval with structural heuristics (exact name match, symbol kind priority, path proximity, edge degree), expands 1-hop graph neighbors, extracts bounded code snippets, and strictly enforces token budgets.
 - **Parameters:**
   - `query` (`string`, required): Target symbol name, conceptual phrase, or text query.
   - `directory_path` (`string`, optional, default: `"."`): Project root.
@@ -404,7 +410,7 @@ Retrieves a ranked, token-conscious evidence bundle for coding agents. Combines 
   - `file_path` (`string`, optional): Target file path filter.
   - `limit` (`integer`, optional, default: `5`): Maximum candidates to return.
   - `max_tokens` (`integer`, optional, default: `2048`): Token budget for evidence snippets.
-  - `ranking_method` (`string`, optional, default: `"hybrid"`): Ranking algorithm (`"hybrid"`, `"rrf"`, or `"heuristic"`).
+  - `ranking_method` (`string`, optional, default: `"hybrid"`): Ranking algorithm (`"hybrid"`, `"semantic"`, `"rrf"`, `"bm25"`, or `"heuristic"`).
 - **Returns:** JSON containing top-ranked candidates, bounded snippets, relevant files, connected relationships, and token estimates.
 
 ---
@@ -432,7 +438,8 @@ FastAST combines high-speed compiled Rust Tree-Sitter parsers with an embedded S
     ├── imports table (module, imported name, alias, line number)
     ├── calls table (caller symbol ID, callee name, line number)
     ├── edges table (src symbol, dst symbol, relation, confidence, line number)
-    └── symbols_fts virtual table (SQLite FTS5 full-text index with unicode61 tokenizer & sync triggers)
+    ├── symbols_fts virtual table (SQLite FTS5 full-text index with unicode61 tokenizer & sync triggers)
+    └── symbol_embeddings table (dense vectors, model, dimensions, packed float BLOB)
 ```
 
 ---

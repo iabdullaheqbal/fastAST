@@ -150,20 +150,27 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
 - **Field Boosting**: Multiplies term score by column weights: Symbol Name ($\times 3.0$) > Signature ($\times 2.0$) > Docstring ($\times 1.0$) > File Path ($\times 1.0$).
 - **Score Normalization**: Raw negative FTS5 rank values are normalized into $[0.0, 1.0]$ via $1.0 / (1.0 + \log(1.0 + |\text{rank}|))$.
 
-### 3.8. Embeddings & Semantic Search
-- **Dense Vector Index**: Designed for dense embeddings to support high-level semantic intent queries (e.g., *"where is user authentication verified?"*).
-- **Lightweight Embedding Models**: Quantized ONNX or MiniLM models running locally via Candle/tract, indexing symbol docstrings and structural summaries.
-- **Vector Search**: Cosine similarity via HNSW or Flat IP vector table in SQLite.
+### 3.8. Dense Semantic Embeddings & Vector Search (Phase 8)
+- **Pluggable Architecture**:
+  - `SemanticProjectionProvider` (default): Fast, offline-first, zero-dependency 128-dimensional projection vectorizer combining software domain concept taxonomy mapping, subword/character 3-gram feature hashing, and $L_2$ hypersphere normalization.
+  - `FastembedProvider`: Optional pluggable wrapper for `BAAI/bge-small-en-v1.5` via fastembed.
+  - `SentenceTransformersProvider`: Optional pluggable wrapper for `all-MiniLM-L6-v2` via sentence-transformers.
+  - `CustomEmbeddingProvider`: Adapter for user-supplied callable embedding functions.
+- **Embedded Storage**: Dense vectors are stored in SQLite `symbol_embeddings` as packed IEEE 754 binary float BLOBs with `FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE`.
+- **Incremental Sync**: When files are modified or re-indexed, old embeddings cascade-delete and newly extracted symbols are embedded atomically.
+- **Similarity Computation**: Unit-length normalized vectors allow cosine similarity via rapid inner dot product, mapped to $[0.0, 1.0]$.
 
-### 3.9. Hybrid Ranking (Weighted Fusion & Reciprocal Rank Fusion)
-- **Score Fusion**: FastAST supports two complementary ranking fusion modes:
+### 3.9. Hybrid Ranking & Multi-Modal Fusion
+- **Score Fusion Modes**: FastAST supports four complementary ranking modes:
   1. **Weighted Hybrid Sum (default)**:
-     $$\text{Score} = 0.30 \cdot S_{\text{BM25}} + 0.30 \cdot S_{\text{name}} + 0.10 \cdot S_{\text{type}} + 0.10 \cdot S_{\text{path}} + 0.10 \cdot S_{\text{edge}} + 0.10 \cdot S_{\text{conf}}$$
-  2. **Reciprocal Rank Fusion (RRF)**:
-     $$\text{RRF}(d) = \sum_{m \in M} \frac{w_m}{k + \text{rank}_m(d)}$$
-     where $k = 60$, fusing BM25 lexical rank and heuristic structural rank.
-  3. **Heuristic Fallback**: Gracefully disables BM25 if the FTS5 table is unavailable or when invoked with `ranking_method="heuristic"`.
-- **Explainability**: Every candidate carries `reasons: Vec<String>` specifying which modalities triggered the match (e.g., `"BM25 lexical match (score: 0.91)"`, `"Exact name match"`, `"Primary definition (function)"`).
+     $$\text{Score} = 0.25 \cdot S_{\text{semantic}} + 0.25 \cdot S_{\text{BM25}} + 0.25 \cdot S_{\text{name}} + 0.09 \cdot S_{\text{type}} + 0.08 \cdot S_{\text{path}} + 0.05 \cdot S_{\text{edge}} + 0.04 \cdot S_{\text{conf}}$$
+  2. **Pure Semantic Ranking (`--ranking semantic`)**:
+     $$\text{Score} = 0.60 \cdot S_{\text{semantic}} + 0.20 \cdot S_{\text{name}} + 0.10 \cdot S_{\text{type}} + 0.10 \cdot S_{\text{edge}}$$
+  3. **Multi-Modal Reciprocal Rank Fusion (`--ranking rrf`)**:
+     $$\text{RRF}(d) = \frac{0.35}{k + \text{rank}_{\text{semantic}}(d)} + \frac{0.35}{k + \text{rank}_{\text{BM25}}(d)} + \frac{0.30}{k + \text{rank}_{\text{heur}}(d)}$$
+     where $k = 60$, fusing dense semantic vector rank, BM25 lexical rank, and structural graph rank.
+  4. **Heuristic Fallback (`--ranking heuristic`)**: Pure AST structural heuristic matching when lexical/semantic models are intentionally bypassed.
+- **Explainability**: Every candidate carries `reasons: Vec<String>` detailing attribution (e.g., `"Semantic match (score: 0.88)"`, `"BM25 lexical match (score: 0.95)"`, `"Exact name match ('search_symbols')"`).
 
 ### 3.10. MinHash + LSH (Locality Sensitive Hashing)
 - **Near-Duplicate Detection**: Detects copy-pasted functions, boilerplate classes, and near-miss symbol variations.
