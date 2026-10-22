@@ -186,19 +186,20 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_files_category ON files(category);")
     conn.commit()
 
-    # Backfill FTS5 index if table exists but is empty while symbols exist
+    # Backfill or synchronize FTS5 index if table exists but is empty or stale while symbols exist
     try:
         cur.execute("SELECT COUNT(*) FROM symbols_fts")
         fts_count = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM symbols")
         sym_count = cur.fetchone()[0]
-        if fts_count == 0 and sym_count > 0:
+        if fts_count < sym_count and sym_count > 0:
             cur.execute(
                 """
                 INSERT INTO symbols_fts (rowid, name, signature, docstring, file_path)
                 SELECT s.id, s.name, s.signature, coalesce(s.docstring, ''), f.path
                 FROM symbols s
                 JOIN files f ON s.file_id = f.id
+                WHERE s.id NOT IN (SELECT rowid FROM symbols_fts)
                 """
             )
             conn.commit()

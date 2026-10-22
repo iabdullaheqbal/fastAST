@@ -391,6 +391,135 @@ class TestStandaloneAndCli(unittest.TestCase):
             self.assertGreater(len(data["candidates"]), 0)
 
 
+class TestPhase7MultiSignalRanking(unittest.TestCase):
+    """Verify Phase 7 multi-signal ranking, BM25 weighting, heuristic fallbacks, and bounded output."""
+
+    def test_bm25_is_one_signal_not_whole_system(self):
+        """BM25 is only one signal: exact name + graph degree + primary kind outscores docstring-only BM25 match."""
+        # Candidate A: exact function name match + 5 connected edges, no docstring match
+        score_a, reasons_a = score_candidate(
+            sym_name="process_order",
+            sym_kind="function",
+            file_path="src/orders.py",
+            file_category="source",
+            sym_confidence=1.0,
+            edge_count=5,
+            query="process_order",
+            bm25_score=0.70,
+        )
+
+        # Candidate B: weak name match ('utils'), 0 edges, but high BM25 match from keyword in docstring
+        score_b, reasons_b = score_candidate(
+            sym_name="misc_utils",
+            sym_kind="variable",
+            file_path="src/utils.py",
+            file_category="source",
+            sym_confidence=1.0,
+            edge_count=0,
+            query="process_order",
+            docstring="Internal helper for process_order workflow",
+            bm25_score=0.95,  # higher raw BM25 score
+        )
+
+        # Candidate A must outscore Candidate B because BM25 is not the whole system
+        self.assertGreater(score_a, score_b)
+        self.assertTrue(any("Exact name match" in r for r in reasons_a))
+        self.assertTrue(any("BM25 lexical match" in r for r in reasons_b))
+
+    def test_heuristic_fallback_when_fts_empty(self):
+        """When FTS table is empty or missing, search_symbols seamlessly falls back to structural heuristic ranking."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / ".fastast.db"
+            conn = get_connection(db_path)
+            init_db(conn)
+
+            facts = ExtractedFileFacts(
+                file_path="auth.py",
+                language="python",
+                total_lines=15,
+                symbols=[
+                    SymbolRecord(name="authenticate_user", kind="function", file="auth.py", start_line=1, end_line=5, confidence=1.0),
+                ],
+                edges=[],
+            )
+            store_file_data(conn, facts, language="python", category="source")
+
+            # Intentionally clear FTS table to simulate missing/disabled FTS index
+            with conn:
+                conn.execute("DELETE FROM symbols_fts")
+
+            # Must fall back to heuristic ranking without error
+            with RetrievalEngine(conn, repo_root=root) as engine:
+                results = engine.search_symbols("authenticate_user", ranking_method="hybrid")
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0].name, "authenticate_user")
+                self.assertGreater(results[0].score, 0.5)
+
+    def test_fts_staleness_synchronization(self):
+        """Verify that stale FTS tables (fewer rows than symbols) are auto-synchronized by init_db."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / ".fastast.db"
+            conn = get_connection(db_path)
+            init_db(conn)
+
+            # Insert file and symbol directly to bypass triggers and simulate stale FTS
+            with conn:
+                conn.execute(
+                    "INSERT INTO files (path, language, hash, mtime, total_lines, total_tokens) VALUES ('stale.py', 'python', 'h1', 1.0, 10, 20)"
+                )
+                fid = conn.execute("SELECT id FROM files WHERE path = 'stale.py'").fetchone()[0]
+                conn.execute(
+                    "INSERT INTO symbols (file_id, name, kind, signature, start_line, end_line) VALUES (?, 'sync_target', 'function', 'def sync_target():', 1, 3)",
+                    (fid,),
+                )
+                # Clear FTS to make it stale
+                conn.execute("DELETE FROM symbols_fts")
+
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM symbols_fts")
+            self.assertEqual(cur.fetchone()[0], 0)
+
+            # Calling init_db detects staleness and auto-syncs
+            init_db(conn)
+            cur.execute("SELECT COUNT(*) FROM symbols_fts")
+            self.assertEqual(cur.fetchone()[0], 1)
+
+    def test_bounded_output_k_and_snippets(self):
+        """Verify output is strictly bounded by top-K and snippet line limits."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "many.py").write_text("\n".join(f"def action_{i}(): pass" for i in range(20)))
+            db_path = root / ".fastast.db"
+            conn = get_connection(db_path)
+            init_db(conn)
+
+            symbols = [
+                SymbolRecord(name=f"action_{i}", kind="function", file="many.py", start_line=i, end_line=i, confidence=1.0)
+                for i in range(1, 21)
+            ]
+            facts = ExtractedFileFacts(
+                file_path="many.py",
+                language="python",
+                total_lines=20,
+                symbols=symbols,
+                edges=[],
+            )
+            store_file_data(conn, facts, language="python", category="source")
+
+            with RetrievalEngine(conn, repo_root=root) as engine:
+                # Limit strictly bounds to k=3
+                cands = engine.search_symbols("action", limit=3)
+                self.assertEqual(len(cands), 3)
+
+                # Snippet line bounds
+                snip = engine.get_snippet("action_1", window_lines=1, max_snippet_lines=5)
+                self.assertIsNotNone(snip)
+                lines = (snip.snippet or "").splitlines()
+                self.assertLessEqual(len(lines), 5)
+
+
 if __name__ == "__main__":
     unittest.main()
 

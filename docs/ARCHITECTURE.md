@@ -139,7 +139,25 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
   where $\lambda \in [0.7, 0.9]$ is the hop attenuation factor.
 - **Cycle Safety & Budget**: Maintains a visited set and strict max-node expansion limit (default: 50 nodes) to prevent traversing massive dependency cycles.
 
-### 3.7. BM25 Lexical Retrieval
+### 3.7. BM25 Lexical Retrieval (Phase 7: Multi-Signal Lexical Ranking)
+- **BM25 as One Signal, Not the Entire System**: Pure full-text lexical matching easily produces false positives in codebases (e.g. matching terms inside comments, test files, or obsolete docstrings over primary definitions). In FastAST, **BM25 is strictly one signal** contributing to a multi-signal hybrid scoring model.
+- **Signal Combination**: BM25 lexical relevance is dynamically weighted alongside six complementary structural signals:
+  1. **BM25 Lexical Score ($S_{\text{BM25}}$)**: Normalized FTS5 score over symbol name, parameter signature, docstring, and relative file path.
+  2. **Exact Name Match ($S_{\text{name}}$)**: Deterministic identifier match (exact case = 1.0, case-insensitive = 0.95, prefix = 0.80, suffix = 0.70, word boundary = 0.65, substring = 0.50).
+  3. **Path Relevance ($S_{\text{path}}$)**: Target path proximity and file category prioritization (source files = 0.80, test files = 0.40, config/infra = 0.35).
+  4. **Symbol Kind Priority ($S_{\text{type}}$)**: Prioritizes executable architectural constructs (functions, methods, classes, interfaces, structs = 0.85) over value declarations (variables, constants = 0.60) or module wrappers (0.40).
+  5. **Graph Degree & Neighbor Strength ($S_{\text{edge}}$)**: Structural degree centrality ($\min(1.0, \text{deg} / 6.0)$), boosting central architectural hubs connected via callers, callees, and inheritance.
+  6. **Parser Confidence ($S_{\text{conf}}$)**: Extraction confidence from Tree-Sitter AST parsing, penalizing partial syntax-error recoveries.
+  7. **Optional Semantic Embedding Score ($S_{\text{semantic}}$)**: Cosine similarity from dense vector projections when semantic ranking is active.
+- **Graceful Fallback to Heuristic Ranking**:
+  - If SQLite FTS5 is unpopulated, empty, stale, or encounters query tokenization syntax errors, FastAST **never crashes or returns empty results**.
+  - It automatically falls back to pure AST structural heuristic ranking:
+    $$\text{Score}_{\text{heur}} = 0.40 \cdot S_{\text{name}} + 0.15 \cdot S_{\text{type}} + 0.15 \cdot S_{\text{path}} + 0.15 \cdot S_{\text{edge}} + 0.15 \cdot S_{\text{conf}}$$
+  - Self-healing FTS synchronization detects stale tables (`fts_count < sym_count`) and automatically backfills missing entries during database initialization.
+- **Strict Bounded Output**:
+  - **Top-$K$ Candidate Pruning**: Retains strictly the top-$K$ scored candidates (default $k=5$), pruning irrelevant noise below `min_score`.
+  - **Snippet Line Bounding**: Code snippets are bounded to `max_snippet_lines` (default 40–60 lines) with explicit omission notices (`... [N lines omitted for brevity] ...`).
+  - **Token Budgeting**: Overall evidence assembly respects `max_tokens` budgets, setting `truncated: true` and omitting subsequent code bodies while preserving structural metadata.
 - **Inverted Index**: Builds an embedded SQLite FTS5 virtual table (`symbols_fts`) over symbol names, parameter signatures, docstrings, and relative file paths using the `unicode61 remove_diacritics 2` tokenizer.
 - **Automated Synchronization Triggers**:
   - `symbols_ai AFTER INSERT ON symbols`: Automatically inserts newly indexed symbols, signatures, docstrings, and paths into `symbols_fts`.
