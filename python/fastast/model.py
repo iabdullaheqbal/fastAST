@@ -182,15 +182,37 @@ class Candidate:
     reasons: List[str] = field(default_factory=list)
     neighbors: List[str] = field(default_factory=list)
     evidence_window: EvidenceWindow = field(default_factory=lambda: EvidenceWindow(0, 0))
+    name: Optional[str] = None
+    kind: Optional[str] = None
+    file_path: Optional[str] = None
+    start_line: int = 0
+    end_line: int = 0
+    confidence: float = 1.0
+    signature: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "symbol_id": self.symbol_id,
             "score": self.score,
             "reasons": self.reasons,
             "neighbors": self.neighbors,
             "evidence_window": self.evidence_window.to_dict(),
         }
+        if self.name:
+            d["name"] = self.name
+        if self.kind:
+            d["kind"] = self.kind
+        if self.file_path:
+            d["file_path"] = self.file_path
+        if self.start_line:
+            d["start_line"] = self.start_line
+        if self.end_line:
+            d["end_line"] = self.end_line
+        if self.confidence is not None:
+            d["confidence"] = self.confidence
+        if self.signature:
+            d["signature"] = self.signature
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Candidate":
@@ -208,6 +230,13 @@ class Candidate:
             reasons=list(data.get("reasons", [])),
             neighbors=list(data.get("neighbors", [])),
             evidence_window=ew,
+            name=data.get("name"),
+            kind=data.get("kind"),
+            file_path=data.get("file_path"),
+            start_line=int(data.get("start_line", 0)),
+            end_line=int(data.get("end_line", 0)),
+            confidence=float(data.get("confidence", 1.0)),
+            signature=data.get("signature"),
         )
 
 

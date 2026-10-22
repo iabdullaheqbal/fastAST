@@ -277,11 +277,66 @@ def get_call_graph(symbol_name: str, directory_path: str = ".") -> str:
         )
 
 
+def retrieve_evidence(
+    query: str,
+    directory_path: str = ".",
+    kind: Optional[str] = None,
+    language: Optional[str] = None,
+    file_path: Optional[str] = None,
+    limit: int = 5,
+    max_tokens: int = 2048,
+) -> str:
+    """Retrieve token-bounded evidence bundle for an agent query.
+
+    Ranks candidate symbols by relevance, expands 1-hop graph neighbors,
+    extracts minimal definition snippets (avoiding whole-file dumps),
+    and enforces a strict token budget.
+
+    Args:
+        query: Target symbol name, path, or text query.
+        directory_path: Repository root directory (default: current directory '.').
+        kind: Optional symbol kind filter ('function', 'class', 'method', etc.).
+        language: Optional language filter ('python', 'typescript', 'rust', etc.).
+        file_path: Optional file path filter or bias.
+        limit: Maximum candidate symbols to retrieve (default: 5).
+        max_tokens: Maximum token budget for evidence snippets (default: 2048).
+
+    Returns:
+        JSON string containing the structured EvidenceBundle.
+    """
+    root = Path(directory_path).resolve()
+    if not root.exists():
+        return json.dumps({"error": f"Directory not found: '{directory_path}'", "candidates": []})
+
+    if root.is_file():
+        root = root.parent
+
+    db_path = root / ".fastast.db"
+    try:
+        if not db_path.exists():
+            do_index_repository(str(root))
+
+        from fastast.retrieval import RetrievalEngine
+        with RetrievalEngine(db_path, repo_root=root) as engine:
+            bundle = engine.retrieve_bundle(
+                query=query,
+                kind=kind,
+                language=language,
+                file_path=file_path,
+                limit=limit,
+                max_tokens=max_tokens,
+            )
+            return json.dumps(bundle.to_dict(), indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "candidates": []})
+
+
 # Register tools with MCP server if available
 if mcp is not None:
     mcp.tool()(index_repository)
     mcp.tool()(query_symbols)
     mcp.tool()(get_call_graph)
+    mcp.tool()(retrieve_evidence)
 
 
 def main() -> None:

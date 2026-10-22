@@ -31,6 +31,7 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
   - [3. Trace Call Graphs](#3-trace-call-graphs)
   - [4. Bounded Graph Traversal](#4-bounded-graph-traversal)
   - [5. Scan Admitted Files](#5-scan-admitted-files)
+  - [6. Token-Conscious Evidence Query](#6-token-conscious-evidence-query)
 - [MCP Server Setup](#mcp-server-setup)
   - [Claude Code](#claude-code)
   - [Cursor IDE](#cursor-ide)
@@ -39,6 +40,7 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
   - [`index_repository`](#1-index_repository)
   - [`query_symbols`](#2-query_symbols)
   - [`get_call_graph`](#3-get_call_graph)
+  - [`retrieve_evidence`](#4-retrieve_evidence)
 - [Architecture & Database Schema](#architecture--database-schema)
 - [Development & Building from Source](#development--building-from-source)
 - [License](#license)
@@ -211,6 +213,48 @@ fastast scan . -L python,typescript
 fastast scan . --json
 ```
 
+### 6. Token-Conscious Evidence Query
+
+Retrieve compact, token-bounded evidence bundles for coding agents. Ranks candidates using exact name matching, symbol type matching, file path relevance, graph degree, and AST confidence:
+
+```bash
+# Query evidence for a symbol or concept
+fastast query "handle_request"
+
+# Filter by kind and cap candidate count
+fastast query "authenticate" --kind function --limit 3
+
+# Bias towards a specific file path
+fastast query "charge" --file "src/billing"
+
+# Enforce a strict token budget (e.g. 1024 tokens)
+fastast query "UserService" --max-tokens 1024
+
+# Output structured JSON evidence bundle for LLM prompt assembly
+fastast query "handle_request" --json
+```
+
+```text
+FastAST Evidence Bundle for 'handle_request':
+Total Candidates: 1, Estimated Tokens: ~64
+
+Top Candidates:
+  1. handle_request (function, score=0.92) in src/api/handlers.py:10-25
+     Reasons: Exact name match ('handle_request'); Primary definition (function); Source file: src/api/handlers.py; Graph degree: 3 connected relations
+     Neighbors (2): validate_token, execute_query
+     Snippet (lines 8-28):
+       | def handle_request(req):
+       |     validate_token(req.headers)
+       |     return execute_query(req.body)
+
+Relevant Files:
+  - src/api/handlers.py (source, python, 120 lines)
+
+Connected Relationships:
+  handle_request --[calls conf=0.95]--> validate_token
+  handle_request --[calls conf=0.9]--> execute_query
+```
+
 ---
 
 ## MCP Server Setup
@@ -290,6 +334,18 @@ Returns incoming caller and outgoing callee relationships for a function or meth
   - `symbol_name` (`string`, required): Target function or method name.
   - `directory_path` (`string`, optional, default: `"."`): Project root.
 - **Returns:** Inbound callers and outbound callees with file paths and exact line references.
+
+### 4. `retrieve_evidence`
+Retrieves a ranked, token-conscious evidence bundle for coding agents. Expands 1-hop graph neighbors, extracts bounded code snippets, and avoids full-file dumps.
+- **Parameters:**
+  - `query` (`string`, required): Target symbol name, path, or text query.
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+  - `kind` (`string`, optional): Symbol kind filter (`function`, `class`, `method`).
+  - `language` (`string`, optional): Language filter (`python`, `typescript`, `rust`, etc.).
+  - `file_path` (`string`, optional): Target file path filter.
+  - `limit` (`integer`, optional, default: `5`): Maximum candidates to return.
+  - `max_tokens` (`integer`, optional, default: `2048`): Token budget for evidence snippets.
+- **Returns:** JSON containing top-ranked candidates, bounded snippets, relevant files, connected relationships, and token estimates.
 
 ---
 

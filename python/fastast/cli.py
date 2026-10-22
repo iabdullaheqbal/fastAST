@@ -428,6 +428,75 @@ def run_graph(
     return 0
 
 
+def run_query(
+    query: str,
+    dir_path: str = ".",
+    kind: Optional[str] = None,
+    language: Optional[str] = None,
+    file_path: Optional[str] = None,
+    limit: int = 5,
+    max_tokens: int = 2048,
+    json_output: bool = False,
+) -> int:
+    """Retrieve ranked symbol evidence and bounded graph context for a query."""
+    root = Path(dir_path).resolve()
+    db_path = root / ".fastast.db"
+    if not db_path.exists():
+        from fastast.indexer import index_repository
+        index_repository(str(root))
+
+    from fastast.retrieval import RetrievalEngine
+    with RetrievalEngine(db_path, repo_root=root) as engine:
+        bundle = engine.retrieve_bundle(
+            query=query,
+            kind=kind,
+            language=language,
+            file_path=file_path,
+            limit=limit,
+            max_tokens=max_tokens,
+        )
+
+    if json_output:
+        print(json.dumps(bundle.to_dict(), indent=2))
+        return 0
+
+    print(f"FastAST Evidence Bundle for '{query}':")
+    print(f"Total Candidates: {len(bundle.candidates)}, Estimated Tokens: ~{bundle.total_tokens_estimate}\n")
+
+    if not bundle.candidates:
+        print("No matching candidate symbols found.")
+        return 0
+
+    print("Top Candidates:")
+    for idx, c in enumerate(bundle.candidates, start=1):
+        print(f"  {idx}. {c.name} ({c.kind}, score={c.score:.2f}) in {c.file_path}:{c.start_line}-{c.end_line}")
+        if c.reasons:
+            print(f"     Reasons: {'; '.join(c.reasons)}")
+        if c.neighbors:
+            print(f"     Neighbors ({len(c.neighbors)}): {', '.join(c.neighbors[:5])}")
+        if c.evidence_window and c.evidence_window.snippet:
+            lines = c.evidence_window.snippet.strip().splitlines()
+            preview = lines[:8]
+            print(f"     Snippet (lines {c.evidence_window.start_line}-{c.evidence_window.end_line}):")
+            for line in preview:
+                print(f"       | {line}")
+            if len(lines) > 8:
+                print(f"       | ... [{len(lines) - 8} more lines]")
+        print()
+
+    if bundle.files:
+        print("Relevant Files:")
+        for f in bundle.files:
+            print(f"  - {f['path']} ({f['category']}, {f['language']}, {f['total_lines']} lines)")
+
+    if bundle.relationships:
+        print("\nConnected Relationships:")
+        for r in bundle.relationships[:10]:
+            print(f"  {r['src']} --[{r['relation']} conf={r['confidence']}]--> {r['dst']}")
+
+    return 0
+
+
 def main() -> None:
     """CLI entrypoint for fastast."""
     parser = argparse.ArgumentParser(
@@ -627,9 +696,73 @@ def main() -> None:
         help="Output graph neighborhood as JSON",
     )
 
+    # `query` subcommand (Phase 4 Retrieval, ranking, and evidence selection)
+    query_parser = subparsers.add_parser(
+        "query",
+        help="Query codebase memory for ranked symbols, evidence snippets, and bounded graph context",
+        description="Retrieve token-conscious evidence bundles for AI coding agents.",
+    )
+    query_parser.add_argument(
+        "query",
+        help="Query symbol name, path, or text",
+    )
+    query_parser.add_argument(
+        "-d",
+        "--dir",
+        default=".",
+        help="Repository root directory (default: current directory)",
+    )
+    query_parser.add_argument(
+        "-k",
+        "--kind",
+        help="Filter by symbol kind (e.g. function, class, method, struct)",
+    )
+    query_parser.add_argument(
+        "-L",
+        "--language",
+        help="Filter by programming language (e.g. python, typescript, rust)",
+    )
+    query_parser.add_argument(
+        "-f",
+        "--file",
+        dest="file_path",
+        help="Filter or bias by target file path",
+    )
+    query_parser.add_argument(
+        "-n",
+        "--limit",
+        type=int,
+        default=5,
+        help="Maximum candidate symbols to retrieve (default: 5)",
+    )
+    query_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=2048,
+        help="Maximum total evidence snippet tokens budget (default: 2048)",
+    )
+    query_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output evidence bundle as structured JSON",
+    )
+
     args = parser.parse_args()
 
-    if args.command == "graph":
+    if args.command == "query":
+        sys.exit(
+            run_query(
+                args.query,
+                dir_path=args.dir,
+                kind=getattr(args, "kind", None),
+                language=getattr(args, "language", None),
+                file_path=getattr(args, "file_path", None),
+                limit=args.limit,
+                max_tokens=args.max_tokens,
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "graph":
         sys.exit(
             run_graph(
                 args.symbol,
