@@ -311,6 +311,26 @@ def store_file_data(
                         """,
                         c_rows,
                     )
+
+            # If imports was not explicitly populated, populate from import edges
+            if not getattr(file_index_result, "imports", None):
+                imp_rows = []
+                for e in file_index_result.edges:
+                    if e.relation == "imports":
+                        target = e.dst
+                        if "." in target:
+                            mod, name = target.rsplit(".", 1)
+                        else:
+                            mod, name = target, None
+                        imp_rows.append((file_id, mod, name, None, e.line_number or 0))
+                if imp_rows:
+                    cur.executemany(
+                        """
+                        INSERT INTO imports (file_id, module, name, alias, line_number)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        imp_rows,
+                    )
         else:
             # Fallback edge generation from calls, imports, symbols
             edge_rows = []
@@ -473,6 +493,9 @@ def get_repository_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
     cur.execute("SELECT COUNT(*) FROM calls")
     calls_count = cur.fetchone()[0]
 
+    cur.execute("SELECT COUNT(*) FROM edges")
+    edges_count = cur.fetchone()[0]
+
     cur.execute("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY COUNT(*) DESC")
     languages = {row[0]: row[1] for row in cur.fetchall()}
 
@@ -484,6 +507,7 @@ def get_repository_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
         "symbols": symbols_count,
         "imports": imports_count,
         "calls": calls_count,
+        "edges": edges_count,
         "languages": languages,
         "categories": categories,
     }

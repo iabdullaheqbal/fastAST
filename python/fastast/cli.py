@@ -199,6 +199,8 @@ def run_index(
     reset = "\033[0m" if color else ""
 
     if not quiet:
+        deleted_count = res.get("deleted_files", 0)
+        del_str = f", {deleted_count:,} deleted" if deleted_count > 0 else ""
         print(f"{bold}FastAST Repository Indexing Complete{reset}")
         print(f"Path:     {cyan}{res['repo_path']}{reset}")
         print(f"Database: {cyan}{res['db_path']}{reset}")
@@ -206,10 +208,11 @@ def run_index(
         print(
             f"Files:    {res['total_files']:,} scanned ("
             f"{green}{res['indexed_files']:,} indexed{reset}, "
-            f"{res['skipped_files']:,} skipped, {res['error_files']:,} errors)"
+            f"{res['skipped_files']:,} skipped{del_str}, {res['error_files']:,} errors)"
         )
+        edges_str = f", {res['total_edges']:,} edges" if "total_edges" in res else ""
         print(
-            f"Graph:    {bold}{res['total_symbols']:,}{reset} symbols, "
+            f"Graph:    {bold}{res['total_symbols']:,}{reset} symbols{edges_str}, "
             f"{res['total_imports']:,} imports, {res['total_calls']:,} calls"
         )
         if res.get("languages"):

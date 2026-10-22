@@ -259,10 +259,190 @@ def test_multi_language_repository_indexing():
             conn2.close()
 
 
+def test_incremental_indexing_mtime_and_hash():
+    """Verify incremental indexing skips unchanged files and handles touch without modification."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "a.py").write_text("def func_a():\n    return 'a'\n")
+        (root / "b.py").write_text("def func_b():\n    return 'b'\n")
+        (root / "c.py").write_text("def func_c():\n    return 'c'\n")
+
+        # 1. Initial indexing
+        res1 = index_repository(str(root), db_name="test.db")
+        assert res1["total_files"] == 3
+        assert res1["indexed_files"] == 3
+        assert res1["skipped_files"] == 0
+        assert res1["deleted_files"] == 0
+
+        # 2. No changes -> all skipped
+        res2 = index_repository(str(root), db_name="test.db")
+        assert res2["total_files"] == 3
+        assert res2["indexed_files"] == 0
+        assert res2["skipped_files"] == 3
+        assert res2["deleted_files"] == 0
+
+        # 3. Touch a file without changing content (mtime changes, hash identical)
+        time.sleep(0.02)
+        # Touch a.py to update mtime
+        (root / "a.py").touch()
+        res3 = index_repository(str(root), db_name="test.db")
+        assert res3["indexed_files"] == 0
+        assert res3["skipped_files"] == 3
+
+        # 4. Modify one file's content
+        time.sleep(0.02)
+        (root / "b.py").write_text("def func_b():\n    return 'modified_b'\ndef extra():\n    pass\n")
+        res4 = index_repository(str(root), db_name="test.db")
+        assert res4["indexed_files"] == 1
+        assert res4["skipped_files"] == 2
+
+        # 5. Force reindex -> all reindexed
+        res5 = index_repository(str(root), db_name="test.db", force_reindex=True)
+        assert res5["indexed_files"] == 3
+        assert res5["skipped_files"] == 0
+
+
+def test_clean_deleted_files():
+    """Verify that deleted files are purged from the database and graph."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "service.py").write_text("def run_service():\n    return True\n")
+        (root / "obsolete.py").write_text("def legacy_action():\n    return False\n")
+
+        res1 = index_repository(str(root), db_name="clean.db")
+        assert res1["total_files"] == 2
+        assert res1["indexed_files"] == 2
+        assert res1["deleted_files"] == 0
+
+        conn1 = get_connection(root / "clean.db")
+        try:
+            assert len(search_symbols(conn1, "legacy_action")) == 1
+        finally:
+            conn1.close()
+
+        # Delete obsolete.py from filesystem
+        (root / "obsolete.py").unlink()
+
+        # Re-index
+        res2 = index_repository(str(root), db_name="clean.db")
+        assert res2["total_files"] == 1
+        assert res2["indexed_files"] == 0
+        assert res2["skipped_files"] == 1
+        assert res2["deleted_files"] == 1
+
+        # Check DB to confirm legacy symbol and file are gone
+        conn2 = get_connection(root / "clean.db")
+        try:
+            assert len(search_symbols(conn2, "legacy_action")) == 0
+            cur = conn2.cursor()
+            cur.execute("SELECT path FROM files")
+            paths = [row["path"] for row in cur.fetchall()]
+            assert "obsolete.py" not in paths
+            assert "service.py" in paths
+        finally:
+            conn2.close()
+
+
+def test_syntax_error_resilience():
+    """Verify that syntax errors do not crash indexing and partial symbols are stored."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "valid.py").write_text("def good_func():\n    return 42\n")
+        (root / "broken.py").write_text("def broken_func(\n    # unclosed syntax error\n")
+
+        res = index_repository(str(root), db_name="syntax.db")
+        assert res["total_files"] == 2
+        assert res["failed_files"] == 0
+        assert res["syntax_error_files"] >= 1
+        assert res["indexed_files"] == 2
+
+        # Valid symbol must be queryable
+        conn = get_connection(root / "syntax.db")
+        try:
+            syms = search_symbols(conn, "good_func")
+            assert len(syms) == 1
+            assert syms[0]["name"] == "good_func"
+        finally:
+            conn.close()
+
+
+def test_repository_indexer_class():
+    """Verify RepositoryIndexer class API methods."""
+    from fastast.indexer import RepositoryIndexer
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+
+        indexer = RepositoryIndexer(repo_path=root, db_name="repo_class.db")
+        res = indexer.run()
+        assert res["indexed_files"] == 1
+        assert res["total_symbols"] == 1
+        assert res["total_edges"] >= 0
+
+        # Test index_single_file
+        (root / "util.py").write_text("def helper():\n    pass\n")
+        single_res = indexer.index_file(root / "util.py")
+        assert single_res["status"] == "indexed"
+        assert single_res["symbols"] == 1
+
+        # Test get_stats
+        stats = indexer.get_stats()
+        assert stats["files"] == 2
+        assert stats["symbols"] == 2
+
+
+def test_progress_callback():
+    """Verify that progress_callback is called during indexing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "f1.py").write_text("def f1(): pass\n")
+        (root / "f2.py").write_text("def f2(): pass\n")
+
+        callbacks = []
+
+        def on_progress(rel_path, idx, total):
+            callbacks.append((rel_path, idx, total))
+
+        res = index_repository(str(root), db_name="progress.db", progress_callback=on_progress)
+        assert res["indexed_files"] == 2
+        assert len(callbacks) == 2
+        assert callbacks[0][1] == 1
+        assert callbacks[0][2] == 2
+        assert callbacks[1][1] == 2
+        assert callbacks[1][2] == 2
+
+
+def test_language_and_category_filtering():
+    """Verify indexing with language and category filters."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "main.py").write_text("def py_main(): pass\n")
+        (root / "lib.rs").write_text("pub fn rust_fn() {}\n")
+        (root / "config.toml").write_text("[app]\nname = 'test'\n")
+
+        # Restrict to rust only
+        res_rust = index_repository(str(root), db_name="rust_only.db", languages={"rust"})
+        assert res_rust["total_files"] == 1
+        assert res_rust["indexed_files"] == 1
+        assert "rust" in res_rust["languages"]
+        assert "python" not in res_rust["languages"]
+
+        # Restrict to source category only (exclude toml config)
+        res_source = index_repository(str(root), db_name="source_only.db", categories={"source"})
+        assert "toml" not in res_source["languages"]
+
+
 if __name__ == "__main__":
     import time
     test_native_symbol_and_call_extraction()
     test_sqlite_schema_and_queries()
     test_repository_indexing()
     test_multi_language_repository_indexing()
+    test_incremental_indexing_mtime_and_hash()
+    test_clean_deleted_files()
+    test_syntax_error_resilience()
+    test_repository_indexer_class()
+    test_progress_callback()
+    test_language_and_category_filtering()
     print("All indexer & SQLite tests passed successfully!")

@@ -117,9 +117,10 @@ except ImportError:
     index_code = None  # type: ignore
 
 try:
-    from fastast.indexer import index_repository
+    from fastast.indexer import RepositoryIndexer, index_repository
     from fastast.db import get_call_graph, search_symbols
 except ImportError:
+    RepositoryIndexer = None  # type: ignore
     index_repository = None  # type: ignore
     search_symbols = None  # type: ignore
     get_call_graph = None  # type: ignore
@@ -163,6 +164,7 @@ __all__ = [
     "search_files",
     "retrieve_bundle",
     "score_candidate",
+    "RepositoryIndexer",
     "index_repository",
     "search_symbols",
     "get_call_graph",

@@ -12,9 +12,24 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 try:
-    from fastast._core import index_code
+    from fastast._core import ExtractedCall, ExtractedImport, index_code
 except ImportError:
     index_code = None
+    try:
+        from fastast import ExtractedCall, ExtractedImport
+    except ImportError:
+        class ExtractedImport:  # type: ignore
+            def __init__(self, module: str, name: Optional[str] = None, alias: Optional[str] = None, line_number: int = 0):
+                self.module = module
+                self.name = name
+                self.alias = alias
+                self.line_number = line_number
+
+        class ExtractedCall:  # type: ignore
+            def __init__(self, callee_name: str, caller_name: Optional[str] = None, line_number: int = 0):
+                self.callee_name = callee_name
+                self.caller_name = caller_name
+                self.line_number = line_number
 
 from fastast.model import (
     EdgeRecord,
@@ -35,6 +50,8 @@ class PythonAstFactExtractor(ast.NodeVisitor):
         self.file_path = file_path
         self.symbols: List[SymbolRecord] = []
         self.edges: List[EdgeRecord] = []
+        self.imports: List[ExtractedImport] = []
+        self.calls: List[ExtractedCall] = []
         self.scope_stack: List[Tuple[str, str]] = []  # (name, kind)
 
     def extract(self) -> Tuple[List[SymbolRecord], List[EdgeRecord], bool]:
@@ -158,6 +175,14 @@ class PythonAstFactExtractor(ast.NodeVisitor):
         for alias in node.names:
             module = alias.name
             target = alias.asname or alias.name
+            self.imports.append(
+                ExtractedImport(
+                    module=module,
+                    name=None,
+                    alias=alias.asname,
+                    line_number=node.lineno,
+                )
+            )
             self.edges.append(
                 EdgeRecord(
                     src=self.file_path,
@@ -173,6 +198,14 @@ class PythonAstFactExtractor(ast.NodeVisitor):
         module = node.module or "."
         for alias in node.names:
             target = f"{module}.{alias.name}" if alias.name != "*" else module
+            self.imports.append(
+                ExtractedImport(
+                    module=module,
+                    name=alias.name,
+                    alias=alias.asname,
+                    line_number=node.lineno,
+                )
+            )
             self.edges.append(
                 EdgeRecord(
                     src=self.file_path,
@@ -192,8 +225,16 @@ class PythonAstFactExtractor(ast.NodeVisitor):
             callee_name = node.func.attr
 
         if callee_name:
-            caller = self.scope_stack[-1][0] if self.scope_stack else f"<module:{Path(self.file_path).stem}>"
+            caller_name = self.scope_stack[-1][0] if self.scope_stack else None
+            caller = caller_name if caller_name else f"<module:{Path(self.file_path).stem}>"
             confidence = 1.0 if self.scope_stack else 0.7
+            self.calls.append(
+                ExtractedCall(
+                    callee_name=callee_name,
+                    caller_name=caller_name,
+                    line_number=node.lineno,
+                )
+            )
             self.edges.append(
                 EdgeRecord(
                     src=caller,
@@ -203,6 +244,16 @@ class PythonAstFactExtractor(ast.NodeVisitor):
                     line_number=node.lineno,
                 )
             )
+            if caller_name and "." in caller_name:
+                self.edges.append(
+                    EdgeRecord(
+                        src=caller_name.split(".")[-1],
+                        dst=callee_name,
+                        relation=EdgeRelation.CALLS.value,
+                        confidence=confidence,
+                        line_number=node.lineno,
+                    )
+                )
         self.generic_visit(node)
 
     def _fallback_line_extraction(self) -> None:
@@ -394,10 +445,16 @@ def extract_file_facts(
             edges: List[EdgeRecord] = []
 
             for sym in res.symbols:
+                kind = sym.kind
+                if sym.kind == "method" and sym.signature and "async " in sym.signature:
+                    kind = "async_method"
+                elif sym.kind == "function" and sym.signature and "async " in sym.signature:
+                    kind = "async_function"
+
                 symbols.append(
                     SymbolRecord(
                         name=sym.name,
-                        kind=sym.kind,
+                        kind=kind,
                         file=file_path,
                         start_line=sym.start_line,
                         end_line=sym.end_line,
@@ -417,6 +474,22 @@ def extract_file_facts(
                             line_number=sym.start_line,
                         )
                     )
+                # Extract inheritance edges from class signature
+                if sym.kind == "class" and sym.signature:
+                    m_base = re.search(r"class\s+\w+\s*\(([^)]+)\)", sym.signature)
+                    if m_base:
+                        for b in m_base.group(1).split(","):
+                            base_name = b.strip()
+                            if base_name and base_name not in {"object", ""}:
+                                edges.append(
+                                    EdgeRecord(
+                                        src=sym.name,
+                                        dst=base_name.split(".")[-1],
+                                        relation=EdgeRelation.INHERITS.value,
+                                        confidence=1.0,
+                                        line_number=sym.start_line,
+                                    )
+                                )
 
             for imp in res.imports:
                 target = f"{imp.module}.{imp.name}" if imp.name else imp.module
@@ -442,12 +515,24 @@ def extract_file_facts(
                         line_number=call.line_number,
                     )
                 )
+                if caller and "." in caller:
+                    edges.append(
+                        EdgeRecord(
+                            src=caller.split(".")[-1],
+                            dst=call.callee_name,
+                            relation=EdgeRelation.CALLS.value,
+                            confidence=conf,
+                            line_number=call.line_number,
+                        )
+                    )
 
             return ExtractedFileFacts(
                 file_path=file_path,
                 language=lang,
                 symbols=symbols,
                 edges=edges,
+                imports=list(res.imports),
+                calls=list(res.calls),
                 total_lines=res.total_lines or total_lines,
                 total_tokens=res.total_tokens or total_tokens,
                 has_syntax_error=res.has_syntax_error,
@@ -458,9 +543,13 @@ def extract_file_facts(
 
     # 2. Resilient Python / Language Fallback
     try:
+        raw_imports = []
+        raw_calls = []
         if lang == "python":
             extractor = PythonAstFactExtractor(code_text, file_path)
             symbols, edges, has_err = extractor.extract()
+            raw_imports = extractor.imports
+            raw_calls = extractor.calls
         elif lang == "json":
             symbols, edges, has_err = _extract_json_facts(code_text, file_path)
         else:
@@ -471,6 +560,8 @@ def extract_file_facts(
             language=lang,
             symbols=symbols,
             edges=edges,
+            imports=raw_imports,
+            calls=raw_calls,
             total_lines=total_lines,
             total_tokens=total_tokens,
             has_syntax_error=has_err,

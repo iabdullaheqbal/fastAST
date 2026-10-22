@@ -156,6 +156,7 @@ IGNORED_EXTENSIONS: Set[str] = {
     "pyc", "pyo", "pyd", "class",
     "woff", "woff2", "ttf", "eot", "otf",
     "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    "db", "sqlite", "sqlite3", "db-wal", "db-shm",
 }
 
 

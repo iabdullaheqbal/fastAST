@@ -248,6 +248,8 @@ class ExtractedFileFacts:
     language: str = "python"
     symbols: List[SymbolRecord] = field(default_factory=list)
     edges: List[EdgeRecord] = field(default_factory=list)
+    imports: List[Any] = field(default_factory=list)
+    calls: List[Any] = field(default_factory=list)
     total_lines: int = 0
     total_tokens: int = 0
     has_syntax_error: bool = False
@@ -259,6 +261,8 @@ class ExtractedFileFacts:
             "language": self.language,
             "symbols": [s.to_dict() for s in self.symbols],
             "edges": [e.to_dict() for e in self.edges],
+            "imports": [getattr(i, "to_dict", lambda: i)() for i in self.imports],
+            "calls": [getattr(c, "to_dict", lambda: c)() for c in self.calls],
             "total_lines": self.total_lines,
             "total_tokens": self.total_tokens,
             "has_syntax_error": self.has_syntax_error,
@@ -274,6 +278,8 @@ class ExtractedFileFacts:
             language=data.get("language", "python"),
             symbols=symbols,
             edges=edges,
+            imports=data.get("imports", []),
+            calls=data.get("calls", []),
             total_lines=int(data.get("total_lines", 0)),
             total_tokens=int(data.get("total_tokens", 0)),
             has_syntax_error=bool(data.get("has_syntax_error", False)),
