@@ -634,13 +634,13 @@ def get_symbol_evidence(
     max_neighbors: int = 5,
 ) -> Optional[Dict[str, Any]]:
     """Retrieve structured symbol evidence package (metadata, snippet, neighbors)."""
-    materializer = _get_default_materializer(db_or_conn, repo_root=repo_root)
-    return materializer.get_symbol_evidence(
-        name_or_id,
-        window_lines=window_lines,
-        max_snippet_lines=max_snippet_lines,
-        max_neighbors=max_neighbors,
-    )
+    with _get_default_materializer(db_or_conn, repo_root=repo_root) as materializer:
+        return materializer.get_symbol_evidence(
+            name_or_id,
+            window_lines=window_lines,
+            max_snippet_lines=max_snippet_lines,
+            max_neighbors=max_neighbors,
+        )
 
 
 def get_snippet(
@@ -654,15 +654,15 @@ def get_snippet(
     repo_root: Optional[Union[Path, str]] = None,
 ) -> Optional[EvidenceWindow]:
     """Retrieve bounded code snippet for a symbol or file line range."""
-    materializer = _get_default_materializer(db_or_conn, repo_root=repo_root)
-    return materializer.get_snippet(
-        symbol_id_or_name=symbol_id_or_name,
-        file_path=file_path,
-        start_line=start_line,
-        end_line=end_line,
-        window_lines=window_lines,
-        max_snippet_lines=max_snippet_lines,
-    )
+    with _get_default_materializer(db_or_conn, repo_root=repo_root) as materializer:
+        return materializer.get_snippet(
+            symbol_id_or_name=symbol_id_or_name,
+            file_path=file_path,
+            start_line=start_line,
+            end_line=end_line,
+            window_lines=window_lines,
+            max_snippet_lines=max_snippet_lines,
+        )
 
 
 def get_file_outline(
@@ -672,8 +672,8 @@ def get_file_outline(
     max_docstring_chars: int = 100,
 ) -> Optional[Dict[str, Any]]:
     """Retrieve structural outline of a file without full code dumps."""
-    materializer = _get_default_materializer(db_or_conn, repo_root=repo_root)
-    return materializer.get_file_outline(file_path, max_docstring_chars=max_docstring_chars)
+    with _get_default_materializer(db_or_conn, repo_root=repo_root) as materializer:
+        return materializer.get_file_outline(file_path, max_docstring_chars=max_docstring_chars)
 
 
 def build_evidence_bundle(
@@ -693,18 +693,18 @@ def build_evidence_bundle(
     repo_root: Optional[Union[Path, str]] = None,
 ) -> EvidenceBundle:
     """Build a complete, token-bounded EvidenceBundle."""
-    materializer = _get_default_materializer(db_or_conn, repo_root=repo_root)
-    return materializer.build_evidence_bundle(
-        query=query,
-        candidates=candidates,
-        limit=limit,
-        max_tokens=max_tokens,
-        window_lines=window_lines,
-        max_snippet_lines=max_snippet_lines,
-        max_depth=max_depth,
-        max_fanout=max_fanout,
-        kind=kind,
-        language=language,
-        file_path=file_path,
-        ranking_method=ranking_method,
-    )
+    with _get_default_materializer(db_or_conn, repo_root=repo_root) as materializer:
+        return materializer.build_evidence_bundle(
+            query=query,
+            candidates=candidates,
+            limit=limit,
+            max_tokens=max_tokens,
+            window_lines=window_lines,
+            max_snippet_lines=max_snippet_lines,
+            max_depth=max_depth,
+            max_fanout=max_fanout,
+            kind=kind,
+            language=language,
+            file_path=file_path,
+            ranking_method=ranking_method,
+        )

@@ -173,15 +173,21 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
 - **Explainability**: Every candidate carries `reasons: Vec<String>` detailing attribution (e.g., `"Semantic match (score: 0.88)"`, `"BM25 lexical match (score: 0.95)"`, `"Exact name match ('search_symbols')"`).
 
 ### 3.10. MinHash + LSH (Locality Sensitive Hashing)
-- **Near-Duplicate Detection**: Detects copy-pasted functions, boilerplate classes, and near-miss symbol variations.
-- **Shingling & Signatures**: Decomposes code tokens into $k$-shingles, applies $m$ hash functions ($m = 128$) to form a MinHash signature.
-- **LSH Bucketing**: Groups signatures into $b$ bands of $r$ rows ($b \times r = 128$). Identifies candidates sharing buckets with Jaccard similarity threshold $\theta \ge 0.8$.
+- **Near-Duplicate & Clone Detection**: Detects copy-pasted functions, boilerplate classes, parallel interface implementations, and near-miss symbol variations without quadratic $O(N^2)$ comparisons.
+- **Shingling & Tokenization**: Decomposes symbol names (splitting camelCase, snake_case, and punctuation), signatures, docstring prefixes, and character 3-grams into normalized shingle sets.
+- **MinHash Signatures**: Applies $m = 64$ deterministic linear congruential hash permutations over Carter-Wegman Mersenne prime $2^{31} - 1$ ($h_i(x) = (a_i \cdot x + b_i) \bmod (2^{31}-1)$).
+- **LSH Band Partitioning**: Partitions the 64-dimensional signature into $b = 16$ bands of $r = 4$ rows each. Candidate pairs share an identical bucket in at least one band, providing an $S$-curve transition threshold at $t = (1/b)^{1/r} = (1/16)^{1/4} = 0.50$.
+- **Exact Jaccard Verification**: Evaluates true Jaccard similarity $J(A, B) = \frac{|A \cap B|}{|A \cup B|}$ for candidate pairs and retains matches exceeding `min_similarity` (default: 0.50).
+- **SQLite Persistence**: Stores symmetric pairs in `symbol_similarity` (`src_symbol_id`, `dst_symbol_id`, `similarity`, `created_at`) with `FOREIGN KEY ... ON DELETE CASCADE` for automated incremental cleanup.
 
 ### 3.11. Louvain Community Detection
-- **Graph Modularity Optimization**: Unsupervised partitioning of the codebase call/import graph into functional architectural clusters (e.g., "auth", "payment", "rendering", "database").
+- **Graph Modularity Optimization**: Unsupervised partitioning of the codebase symbol/file relationship graph into functional architectural clusters (e.g., "auth", "payment", "rendering", "database").
 - **Modularity Maximization**:
-  $$Q = \frac{1}{2m} \sum_{i,j} \left[ A_{ij} - \frac{k_i k_j}{2m} \right] \delta(c_i, c_j)$$
-- **Relevance Clustering**: If an agent queries a symbol in the "billing" community, other candidates belonging to the same Louvain cluster receive a proximity boost.
+  $$Q = \frac{1}{2m} \sum_{i,j} \left[ A_{ij} - \gamma \frac{k_i k_j}{2m} \right] \delta(c_i, c_j)$$
+  where $\gamma = 1.0$ resolution, $m$ is total edge weight, $k_i$ is node degree, and $\delta(c_i, c_j) = 1$ when nodes share a community.
+- **Graph Edges**: Aggregates structural graph edges (`calls`, `defines`, `inherits`, `imports`) weighted by AST confidence, augmented with MinHash `symbol_similarity` edges (damped by $0.7$), with file directory co-location fallbacks for sparse graphs.
+- **Automatic Semantic Labeling**: Assigns human-readable labels to communities based on dominant directory prefixes, high-frequency domain keywords, and central hub symbols ($c_{\text{hub}} = \arg\max_{v \in C} \deg(v)$).
+- **Persistence & API**: Stored in `symbol_communities` (`symbol_id`, `community_id`, `community_name`, `modularity`, `updated_at`) with cascade deletion. Exposed via `get_symbol_community`, `list_communities`, CLI, and MCP.
 
 ### 3.12. Aho-Corasick Multi-Pattern String Matching
 - **Linear-Time Symbol Discovery**: Builds a finite state automaton from all indexed symbol names.
@@ -195,6 +201,10 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
   - `imports`: Module import declarations and aliases.
   - `calls`: Unresolved call invocations.
   - `edges`: Directed, confidence-annotated graph edges (`src`, `dst`, `relation`, `confidence`).
+  - `symbols_fts`: SQLite FTS5 full-text index with unicode61 tokenizer & sync triggers.
+  - `symbol_embeddings`: Dense 128-dim vectors, model name, dimensions, packed float BLOB.
+  - `symbol_similarity`: MinHash/LSH near-duplicate symbol pairs with Jaccard similarity scores and cascade deletion.
+  - `symbol_communities`: Louvain modularity community IDs, human-readable semantic names, and modularity scores with cascade deletion.
 - **Prepared Statements & Transactions**: Batch inserts inside single transactions yielding 50,000+ symbol inserts per second.
 
 ### 3.14. LZ4 / zstd Compression

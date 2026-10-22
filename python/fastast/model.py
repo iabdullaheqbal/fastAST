@@ -30,6 +30,7 @@ class EdgeRelation(str, Enum):
     IMPLEMENTS = "implements"
     INHERITS = "inherits"
     REFERENCES = "references"
+    SIMILAR_TO = "similar_to"
 
 
 @dataclass

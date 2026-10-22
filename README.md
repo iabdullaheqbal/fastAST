@@ -33,6 +33,8 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
   - [4. Bounded Graph Traversal](#4-bounded-graph-traversal)
   - [5. Scan Admitted Files](#5-scan-admitted-files)
   - [6. Token-Conscious Evidence Query](#6-token-conscious-evidence-query)
+  - [7. Detect Similar Symbols (MinHash + LSH)](#7-detect-similar-symbols-minhash--lsh)
+  - [8. Community & Module Discovery (Louvain)](#8-community--module-discovery-louvain)
 - [MCP Server Setup](#mcp-server-setup)
   - [Claude Code](#claude-code)
   - [Cursor IDE](#cursor-ide)
@@ -42,6 +44,9 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
   - [`query_symbols`](#2-query_symbols)
   - [`get_call_graph`](#3-get_call_graph)
   - [`retrieve_evidence`](#4-retrieve_evidence)
+  - [`get_similar_symbols`](#5-get_similar_symbols)
+  - [`get_community`](#6-get_community)
+  - [`list_communities`](#7-list_communities)
 - [Architecture & Database Schema](#architecture--database-schema)
 - [Development & Building from Source](#development--building-from-source)
 - [License](#license)
@@ -53,7 +58,10 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
 - **Sub-Millisecond Symbol Lookups**: Pre-computes normalized symbol graphs and call hierarchies into local SQLite with indexed B-trees for instant querying.
 - **Accurate AST Parsing**: Powered by native Tree-Sitter grammars and zero-copy Rust parsers—extracts exact signatures, line spans, docstrings, and parent enclosing classes.
 - **Static Call Graph Extraction**: Discovers invocation links between functions, methods, and callees across the codebase to help agents estimate change blast radius.
-- **Fast Incremental Indexing**: Automatically skips unchanged files via SHA-256 hash checks and mtime caching.
+- **Near-Duplicate Detection (MinHash + LSH)**: Detects code clones, duplicate logic, and API variations using 64-permutation MinHash signatures and 16-band Locality-Sensitive Hashing without quadratic $O(N^2)$ comparisons.
+- **Community & Module Detection (Louvain Modularity)**: Clusters the symbol-call graph into functional architectural communities with Louvain modularity optimization ($Q$), automatic semantic labeling, and central hub discovery.
+- **Dense Semantic + BM25 Hybrid Retrieval**: Fuses 128-dim projection embeddings with SQLite FTS5 BM25 and structural heuristics (Reciprocal Rank Fusion or weighted sum).
+- **Fast Incremental Indexing**: Automatically skips unchanged files via SHA-256/xxHash3 hash checks and mtime caching with cascade deletions.
 - **Official Model Context Protocol (MCP)**: Native JSON-RPC stdio server ready for Claude Code, Cursor, and any MCP-compliant coding agent.
 - **100% Local & Offline**: Zero cloud dependencies, zero external telemetry, zero vector database bloat, zero API keys required.
 
@@ -320,6 +328,52 @@ Connected Relationships:
   handle_request --[calls conf=0.9]--> execute_query
 ```
 
+### 7. Detect Similar Symbols (MinHash + LSH)
+
+Find near-duplicate functions, code clones, and parallel interface implementations across the codebase using MinHash ($m=64$) and Locality-Sensitive Hashing ($b=16, r=4$):
+
+```bash
+# Find near-duplicate implementations of a function or class
+fastast similar "handle_request"
+
+# Adjust minimum Jaccard similarity threshold (0.0 to 1.0, default: 0.50)
+fastast similar "validate_token" --min-sim 0.60
+
+# Output results as JSON
+fastast similar "parse_json_payload" --json
+```
+
+```text
+Similar Symbols for 'handle_request' (MinHash Jaccard >= 0.50):
+  1. handle_incoming_request (function, 68% similar) in service.py:5-7
+     def handle_incoming_request(req)
+```
+
+### 8. Community & Module Discovery (Louvain)
+
+Inspect cohesive functional clusters, modules, and central hub symbols partitioned via Louvain graph modularity optimization:
+
+```bash
+# List all detected architectural communities
+fastast communities
+
+# Recompute Louvain modularity clusters on the current graph
+fastast communities --recompute
+
+# Inspect community membership, central hub, and peer symbols for a specific target
+fastast community "handle_request"
+
+# Output community details as JSON
+fastast community "handle_request" --json
+```
+
+```text
+Detected Architectural Communities (Louvain Modularity Clustering):
+  Community #0: request (hub: handle_request) (3 symbols)
+    Symbols: parse_json_data, handle_request, handle_incoming_request
+    Files: parser.py, service.py
+```
+
 ---
 
 ## MCP Server Setup
@@ -413,6 +467,29 @@ Retrieves a ranked, token-conscious evidence bundle for coding agents. Combines 
   - `ranking_method` (`string`, optional, default: `"hybrid"`): Ranking algorithm (`"hybrid"`, `"semantic"`, `"rrf"`, `"bm25"`, or `"heuristic"`).
 - **Returns:** JSON containing top-ranked candidates, bounded snippets, relevant files, connected relationships, and token estimates.
 
+### 5. `get_similar_symbols`
+Retrieves near-duplicate or structurally similar symbols across the codebase using MinHash ($m=64$) and Locality-Sensitive Hashing ($b=16, r=4$).
+- **Parameters:**
+  - `symbol` (`string`, required): Target symbol name or integer database ID.
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+  - `limit` (`integer`, optional, default: `10`): Maximum matches to return.
+  - `min_similarity` (`number`, optional, default: `0.5`): Minimum Jaccard similarity threshold (0.0 to 1.0).
+- **Returns:** JSON containing list of similar symbols with file paths, line ranges, signatures, and similarity percentages.
+
+### 6. `get_community`
+Retrieves architectural community membership, central hub symbol, and peer symbols for a target symbol using Louvain graph modularity clustering.
+- **Parameters:**
+  - `symbol` (`string`, required): Target symbol name or integer database ID.
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+- **Returns:** JSON containing community ID, community name, graph modularity score, and neighboring peer symbols.
+
+### 7. `list_communities`
+Lists all detected architectural modules and functional communities across the codebase.
+- **Parameters:**
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+  - `limit` (`integer`, optional, default: `20`): Maximum communities to return.
+- **Returns:** JSON summary of detected communities with member counts, central hubs, and sample files.
+
 ---
 
 ## Architecture & Database Schema
@@ -439,7 +516,9 @@ FastAST combines high-speed compiled Rust Tree-Sitter parsers with an embedded S
     ├── calls table (caller symbol ID, callee name, line number)
     ├── edges table (src symbol, dst symbol, relation, confidence, line number)
     ├── symbols_fts virtual table (SQLite FTS5 full-text index with unicode61 tokenizer & sync triggers)
-    └── symbol_embeddings table (dense vectors, model, dimensions, packed float BLOB)
+    ├── symbol_embeddings table (dense vectors, model, dimensions, packed float BLOB)
+    ├── symbol_similarity table (MinHash/LSH near-duplicate symbol pairs with Jaccard similarity & cascade delete)
+    └── symbol_communities table (Louvain modularity clusters, semantic names, modularity score & cascade delete)
 ```
 
 ---

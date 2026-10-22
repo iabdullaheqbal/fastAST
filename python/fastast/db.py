@@ -120,6 +120,31 @@ CREATE TABLE IF NOT EXISTS symbol_embeddings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_embeddings_model ON symbol_embeddings(model);
+
+-- Phase 9: MinHash/LSH Similarity and Louvain Community Detection
+CREATE TABLE IF NOT EXISTS symbol_similarity (
+    src_symbol_id INTEGER NOT NULL,
+    dst_symbol_id INTEGER NOT NULL,
+    similarity REAL NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (src_symbol_id, dst_symbol_id),
+    FOREIGN KEY (src_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
+    FOREIGN KEY (dst_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sim_src ON symbol_similarity(src_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_sim_dst ON symbol_similarity(dst_symbol_id);
+
+CREATE TABLE IF NOT EXISTS symbol_communities (
+    symbol_id INTEGER PRIMARY KEY,
+    community_id INTEGER NOT NULL,
+    community_name TEXT,
+    modularity REAL DEFAULT 0.0,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_comm_id ON symbol_communities(community_id);
 """
 
 
@@ -746,6 +771,165 @@ def backfill_symbol_embeddings(
         return count
     except Exception:
         return 0
+
+
+def get_similar_symbols(
+    conn: sqlite3.Connection,
+    symbol_name_or_id: str,
+    limit: int = 10,
+    min_similarity: float = 0.5,
+) -> List[Dict[str, Any]]:
+    """Retrieve symbols similar to the target symbol using MinHash/LSH records."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, name FROM symbols WHERE name = ? OR id = ? LIMIT 1",
+        (symbol_name_or_id, symbol_name_or_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        return []
+    sym_id = row[0]
+
+    try:
+        cur.execute(
+            """
+            SELECT s.id, s.name, s.kind, s.signature, s.start_line, s.end_line,
+                   f.path as file_path, sim.similarity
+            FROM symbol_similarity sim
+            JOIN symbols s ON sim.dst_symbol_id = s.id
+            JOIN files f ON s.file_id = f.id
+            WHERE sim.src_symbol_id = ? AND sim.similarity >= ?
+            ORDER BY sim.similarity DESC
+            LIMIT ?
+            """,
+            (sym_id, min_similarity, limit),
+        )
+        return [
+            {
+                "symbol_id": r["id"],
+                "name": r["name"],
+                "kind": r["kind"],
+                "signature": r["signature"],
+                "file_path": r["file_path"],
+                "start_line": r["start_line"],
+                "end_line": r["end_line"],
+                "similarity": r["similarity"],
+            }
+            for r in cur.fetchall()
+        ]
+    except Exception:
+        return []
+
+
+def get_symbol_community(
+    conn: sqlite3.Connection,
+    symbol_name_or_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve community assignment and community peers for a symbol."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, name FROM symbols WHERE name = ? OR id = ? LIMIT 1",
+        (symbol_name_or_id, symbol_name_or_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    sym_id = row[0]
+
+    try:
+        cur.execute(
+            """
+            SELECT c.community_id, c.community_name, c.modularity
+            FROM symbol_communities c
+            WHERE c.symbol_id = ?
+            """,
+            (sym_id,),
+        )
+        c_row = cur.fetchone()
+        if not c_row:
+            return None
+
+        comm_id = c_row[0]
+        comm_name = c_row[1]
+        modularity = c_row[2]
+
+        # Fetch peers in the same community
+        cur.execute(
+            """
+            SELECT s.id, s.name, s.kind, f.path as file_path
+            FROM symbol_communities c
+            JOIN symbols s ON c.symbol_id = s.id
+            JOIN files f ON s.file_id = f.id
+            WHERE c.community_id = ? AND s.id != ?
+            ORDER BY s.name
+            LIMIT 15
+            """,
+            (comm_id, sym_id),
+        )
+        peers = [
+            {"id": r["id"], "name": r["name"], "kind": r["kind"], "file_path": r["file_path"]}
+            for r in cur.fetchall()
+        ]
+
+        return {
+            "symbol_id": sym_id,
+            "symbol_name": row[1],
+            "community_id": comm_id,
+            "community_name": comm_name,
+            "modularity": modularity,
+            "peers": peers,
+        }
+    except Exception:
+        return None
+
+
+def list_communities(
+    conn: sqlite3.Connection,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """List detected architectural communities with member counts and hub symbols."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT c.community_id, c.community_name, c.modularity, COUNT(c.symbol_id) as member_count
+            FROM symbol_communities c
+            GROUP BY c.community_id
+            ORDER BY member_count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return []
+
+        results: List[Dict[str, Any]] = []
+        for r in rows:
+            comm_id = r["community_id"]
+            cur.execute(
+                """
+                SELECT s.name, f.path
+                FROM symbol_communities c
+                JOIN symbols s ON c.symbol_id = s.id
+                JOIN files f ON s.file_id = f.id
+                WHERE c.community_id = ?
+                LIMIT 5
+                """,
+                (comm_id,),
+            )
+            sample = cur.fetchall()
+            results.append({
+                "community_id": comm_id,
+                "name": r["community_name"],
+                "modularity": r["modularity"],
+                "member_count": r["member_count"],
+                "sample_symbols": [s[0] for s in sample],
+                "sample_files": sorted(list({s[1] for s in sample})),
+            })
+        return results
+    except Exception:
+        return []
 
 
 def get_call_graph(conn: sqlite3.Connection, symbol_name: str) -> Dict[str, Any]:

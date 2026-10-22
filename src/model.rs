@@ -206,6 +206,7 @@ pub enum EdgeRelation {
     Implements,
     Inherits,
     References,
+    SimilarTo,
 }
 
 impl EdgeRelation {
@@ -217,6 +218,7 @@ impl EdgeRelation {
             EdgeRelation::Implements => "implements",
             EdgeRelation::Inherits => "inherits",
             EdgeRelation::References => "references",
+            EdgeRelation::SimilarTo => "similar_to",
         }
     }
 
@@ -227,6 +229,7 @@ impl EdgeRelation {
             "defines" => EdgeRelation::Defines,
             "implements" => EdgeRelation::Implements,
             "inherits" => EdgeRelation::Inherits,
+            "similar_to" => EdgeRelation::SimilarTo,
             _ => EdgeRelation::References,
         }
     }

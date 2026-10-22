@@ -343,6 +343,16 @@ class RepositoryIndexer:
                 except Exception:
                     failed_count += 1
 
+            # Run Phase 9: Similarity indexing & Community detection when changes occurred
+            if indexed_count > 0 or deleted_count > 0:
+                try:
+                    from fastast.similarity import index_similarity
+                    from fastast.community import detect_and_store_communities
+                    index_similarity(conn)
+                    detect_and_store_communities(conn)
+                except Exception:
+                    pass
+
             # 4. Fetch final repository statistics
             stats = get_repository_stats(conn)
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0

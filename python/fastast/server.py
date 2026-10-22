@@ -510,6 +510,132 @@ def get_snippet(
         return json.dumps({"error": str(exc)}, indent=2)
 
 
+def get_similar_symbols(
+    symbol: str,
+    directory_path: str = ".",
+    limit: int = 10,
+    min_similarity: float = 0.5,
+) -> str:
+    """Retrieve near-duplicate or structurally similar symbols using MinHash + LSH.
+
+    Finds code clones, duplicate implementations, and parallel patterns across the codebase.
+
+    Args:
+        symbol: Target symbol name or integer database ID.
+        directory_path: Repository root directory (default: current directory '.').
+        limit: Maximum similar symbols to return (default: 10).
+        min_similarity: Minimum Jaccard similarity threshold (0.0 to 1.0, default: 0.5).
+
+    Returns:
+        JSON string containing the list of similar symbols.
+    """
+    if not symbol or not str(symbol).strip():
+        return json.dumps({"error": "Symbol identifier cannot be empty", "similar_symbols": []}, indent=2)
+
+    root = Path(directory_path).resolve()
+    if not root.exists():
+        return json.dumps({"error": f"Directory not found: '{directory_path}'", "similar_symbols": []}, indent=2)
+
+    if root.is_file():
+        root = root.parent
+
+    db_path = root / ".fastast.db"
+    try:
+        if not db_path.exists():
+            do_index_repository(str(root))
+
+        conn = get_connection(db_path)
+        try:
+            from fastast.db import get_similar_symbols as db_get_similar
+            sims = db_get_similar(conn, symbol.strip(), limit=limit, min_similarity=min_similarity)
+            return json.dumps({"symbol": symbol, "total_similar": len(sims), "similar_symbols": sims}, indent=2)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "similar_symbols": []}, indent=2)
+
+
+def get_community(
+    symbol: str,
+    directory_path: str = ".",
+) -> str:
+    """Retrieve community assignment, central hub, and peer symbols for a target symbol.
+
+    Provides architectural modularity context using Louvain graph community detection.
+
+    Args:
+        symbol: Target symbol name or integer database ID.
+        directory_path: Repository root directory (default: current directory '.').
+
+    Returns:
+        JSON string containing community membership details.
+    """
+    if not symbol or not str(symbol).strip():
+        return json.dumps({"error": "Symbol identifier cannot be empty", "community": None}, indent=2)
+
+    root = Path(directory_path).resolve()
+    if not root.exists():
+        return json.dumps({"error": f"Directory not found: '{directory_path}'", "community": None}, indent=2)
+
+    if root.is_file():
+        root = root.parent
+
+    db_path = root / ".fastast.db"
+    try:
+        if not db_path.exists():
+            do_index_repository(str(root))
+
+        conn = get_connection(db_path)
+        try:
+            from fastast.db import get_symbol_community as db_get_comm
+            comm = db_get_comm(conn, symbol.strip())
+            if not comm:
+                return json.dumps({"error": f"Symbol not found in community index: '{symbol}'", "community": None}, indent=2)
+            return json.dumps(comm, indent=2)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "community": None}, indent=2)
+
+
+def list_communities(
+    directory_path: str = ".",
+    limit: int = 20,
+) -> str:
+    """List detected architectural communities and modules from Louvain graph clustering.
+
+    Groups symbols into functional modules (e.g. auth, billing, db, parser) with member counts.
+
+    Args:
+        directory_path: Repository root directory (default: current directory '.').
+        limit: Maximum communities to return (default: 20).
+
+    Returns:
+        JSON string containing the summary of detected communities.
+    """
+    root = Path(directory_path).resolve()
+    if not root.exists():
+        return json.dumps({"error": f"Directory not found: '{directory_path}'", "communities": []}, indent=2)
+
+    if root.is_file():
+        root = root.parent
+
+    db_path = root / ".fastast.db"
+    try:
+        if not db_path.exists():
+            do_index_repository(str(root))
+
+        conn = get_connection(db_path)
+        try:
+            from fastast.db import list_communities as db_list_comm
+            comms = db_list_comm(conn, limit=limit)
+            return json.dumps({"total_communities": len(comms), "communities": comms}, indent=2)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "communities": []}, indent=2)
+
+
 # Register tools with MCP server if available
 if mcp is not None:
     mcp.tool()(index_repository)
@@ -520,6 +646,9 @@ if mcp is not None:
     mcp.tool()(get_symbol_evidence)
     mcp.tool()(get_file_outline)
     mcp.tool()(get_snippet)
+    mcp.tool()(get_similar_symbols)
+    mcp.tool()(get_community)
+    mcp.tool()(list_communities)
 
 
 def main() -> None:

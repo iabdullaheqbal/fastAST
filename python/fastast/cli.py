@@ -680,6 +680,225 @@ def run_snippet(
     return 0
 
 
+def run_similar(
+    symbol: str,
+    dir_path: str = ".",
+    limit: int = 10,
+    min_sim: float = 0.5,
+    json_output: bool = False,
+) -> int:
+    """Find near-duplicate or structurally similar symbols using MinHash + LSH."""
+    root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {"error": f"Directory not found: {dir_path}", "similar_symbols": []},
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    db_path = root / ".fastast.db"
+    if not db_path.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": "Database not found. Run 'fastast index' first.",
+                        "similar_symbols": [],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write("Error: Index not found. Run 'fastast index' first.\n")
+        return 1
+
+    conn = get_connection(db_path)
+    try:
+        from fastast.db import get_similar_symbols
+
+        sims = get_similar_symbols(conn, symbol, limit=limit, min_similarity=min_sim)
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "symbol": symbol,
+                        "total_similar": len(sims),
+                        "similar_symbols": sims,
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+
+        print(f"Similar Symbols for '{symbol}' (MinHash Jaccard >= {min_sim:.2f}):")
+        if not sims:
+            print(
+                f"  No near-duplicate or similar symbols found above similarity threshold {min_sim:.2f}."
+            )
+            return 0
+
+        for idx, s in enumerate(sims, start=1):
+            pct = int(round(s["similarity"] * 100))
+            print(
+                f"  {idx}. {s['name']} ({s['kind']}, {pct}% similar) in {s['file_path']}:{s['start_line']}-{s['end_line']}"
+            )
+            if s.get("signature"):
+                print(f"     {s['signature']}")
+        return 0
+    finally:
+        conn.close()
+
+
+def run_communities(
+    dir_path: str = ".",
+    limit: int = 20,
+    recompute: bool = False,
+    json_output: bool = False,
+) -> int:
+    """List detected architectural communities using Louvain modularity clustering."""
+    root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {"error": f"Directory not found: {dir_path}", "communities": []},
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    db_path = root / ".fastast.db"
+    if not db_path.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": "Database not found. Run 'fastast index' first.",
+                        "communities": [],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write("Error: Index not found. Run 'fastast index' first.\n")
+        return 1
+
+    conn = get_connection(db_path)
+    try:
+        if recompute:
+            from fastast.community import detect_and_store_communities
+
+            detect_and_store_communities(conn)
+
+        from fastast.db import list_communities
+
+        comms = list_communities(conn, limit=limit)
+        if json_output:
+            print(
+                json.dumps(
+                    {"total_communities": len(comms), "communities": comms}, indent=2
+                )
+            )
+            return 0
+
+        print("Detected Architectural Communities (Louvain Modularity Clustering):")
+        if not comms:
+            print("  No communities detected. Try running with '--recompute'.")
+            return 0
+
+        for c in comms:
+            print(
+                f"  Community #{c['community_id']}: {c['name']} ({c['member_count']} symbols)"
+            )
+            if c.get("sample_symbols"):
+                print(f"    Symbols: {', '.join(c['sample_symbols'][:6])}")
+            if c.get("sample_files"):
+                print(f"    Files:   {', '.join(c['sample_files'][:3])}")
+        return 0
+    finally:
+        conn.close()
+
+
+def run_community(
+    symbol: str,
+    dir_path: str = ".",
+    json_output: bool = False,
+) -> int:
+    """Inspect community membership and peer symbols for a target symbol."""
+    root = Path(dir_path).resolve()
+    if not root.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {"error": f"Directory not found: {dir_path}", "community": None},
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
+        return 1
+
+    db_path = root / ".fastast.db"
+    if not db_path.exists():
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": "Database not found. Run 'fastast index' first.",
+                        "community": None,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            sys.stderr.write("Error: Index not found. Run 'fastast index' first.\n")
+        return 1
+
+    conn = get_connection(db_path)
+    try:
+        from fastast.db import get_symbol_community
+
+        comm = get_symbol_community(conn, symbol)
+        if not comm:
+            if json_output:
+                print(
+                    json.dumps(
+                        {
+                            "error": f"Symbol not found in community index: {symbol}",
+                            "community": None,
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                sys.stderr.write(
+                    f"Error: Symbol not found or has no community assignment: {symbol}\n"
+                )
+            return 1
+
+        if json_output:
+            print(json.dumps(comm, indent=2))
+            return 0
+
+        print(f"Community for '{symbol}':")
+        print(f"  ID: {comm['community_id']} ({comm['community_name']})")
+        print(f"  Modularity: {comm.get('modularity', 0.0)}")
+        if comm.get("peers"):
+            print(f"  Community Peers ({len(comm['peers'])}):")
+            for p in comm["peers"][:10]:
+                print(f"    - {p['name']} ({p['kind']}) in {p['file_path']}")
+        return 0
+    finally:
+        conn.close()
+
+
 def main() -> None:
     """CLI entrypoint for fastast."""
     parser = argparse.ArgumentParser(
@@ -986,6 +1205,39 @@ def main() -> None:
     snippet_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
     snippet_parser.add_argument("--json", action="store_true", help="Output snippet as JSON")
 
+    # `similar` subcommand (Phase 9 MinHash + LSH Near-Duplicate Detection)
+    similar_parser = subparsers.add_parser(
+        "similar",
+        help="Find near-duplicate or structurally similar symbols using MinHash + LSH",
+        description="Detect code clones, duplicate implementations, and similar symbols.",
+    )
+    similar_parser.add_argument("symbol", help="Target symbol name or integer ID")
+    similar_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    similar_parser.add_argument("-n", "--limit", type=int, default=10, help="Maximum similar symbols to return")
+    similar_parser.add_argument("--min-sim", type=float, default=0.5, help="Minimum Jaccard similarity threshold (default: 0.5)")
+    similar_parser.add_argument("--json", action="store_true", help="Output results as JSON")
+
+    # `communities` subcommand (Phase 9 Louvain Modularity Clustering)
+    communities_parser = subparsers.add_parser(
+        "communities",
+        help="List detected architectural communities using Louvain modularity clustering",
+        description="Cluster the codebase graph into cohesive functional modules and domains.",
+    )
+    communities_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    communities_parser.add_argument("-n", "--limit", type=int, default=20, help="Maximum communities to list")
+    communities_parser.add_argument("--recompute", action="store_true", help="Force recomputation of community clusters")
+    communities_parser.add_argument("--json", action="store_true", help="Output communities as JSON")
+
+    # `community` subcommand (Phase 9 Single Symbol Community Inspection)
+    community_parser = subparsers.add_parser(
+        "community",
+        help="Inspect community membership and peer symbols for a target symbol",
+        description="View architectural community assignment, central hub, and peers.",
+    )
+    community_parser.add_argument("symbol", help="Target symbol name or integer ID")
+    community_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    community_parser.add_argument("--json", action="store_true", help="Output community info as JSON")
+
     args = parser.parse_args()
 
     if args.command in ("query", "evidence"):
@@ -1069,6 +1321,33 @@ def main() -> None:
                 args.symbol,
                 dir_path=args.dir,
                 quiet=getattr(args, "quiet", False),
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "similar":
+        sys.exit(
+            run_similar(
+                args.symbol,
+                dir_path=args.dir,
+                limit=args.limit,
+                min_sim=args.min_sim,
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "communities":
+        sys.exit(
+            run_communities(
+                dir_path=args.dir,
+                limit=args.limit,
+                recompute=getattr(args, "recompute", False),
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "community":
+        sys.exit(
+            run_community(
+                args.symbol,
+                dir_path=args.dir,
                 json_output=getattr(args, "json", False),
             )
         )
