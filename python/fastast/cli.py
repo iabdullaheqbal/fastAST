@@ -391,6 +391,43 @@ def run_calls(
     return 0
 
 
+def run_graph(
+    symbol_name: str,
+    dir_path: str = ".",
+    max_depth: int = 2,
+    direction: str = "both",
+    json_output: bool = False,
+) -> int:
+    """Perform bounded graph traversal from a symbol."""
+    root = Path(dir_path).resolve()
+    db_path = root / ".fastast.db"
+    if not db_path.exists():
+        from fastast.indexer import index_repository
+        index_repository(str(root))
+
+    from fastast.db import get_connection, get_graph_neighborhood
+    conn = get_connection(db_path)
+    res = get_graph_neighborhood(conn, symbol_name, max_depth=max_depth, direction=direction)
+    conn.close()
+
+    if json_output:
+        print(json.dumps(res, indent=2))
+        return 0
+
+    print(f"Graph Neighborhood for '{symbol_name}' (depth={max_depth}):")
+    print(f"Total Nodes: {res['total_nodes']}, Total Edges: {res['total_edges']}")
+    print("\nTraversed Nodes:")
+    for n in res["nodes"]:
+        name = n.get("name") or n.get("id")
+        depth = res["hop_depths"].get(name, res["hop_depths"].get(n["id"], 0))
+        conf = res["node_confidences"].get(name, res["node_confidences"].get(n["id"], 1.0))
+        print(f"  [Hop {depth}] {name} ({n.get('kind', 'symbol')}, conf={conf})")
+    print("\nTraversed Edges:")
+    for e in res["edges"]:
+        print(f"  {e['src']} --[{e['relation']} conf={e['confidence']}]--> {e['dst']}")
+    return 0
+
+
 def main() -> None:
     """CLI entrypoint for fastast."""
     parser = argparse.ArgumentParser(
@@ -556,9 +593,53 @@ def main() -> None:
         help="Output admitted files as JSON",
     )
 
+    # `graph` subcommand (Phase 3 multi-hop neighborhood expansion)
+    graph_parser = subparsers.add_parser(
+        "graph",
+        help="Bounded graph traversal and neighborhood expansion for a symbol",
+        description="Inspect multi-hop symbol neighborhood, callers, callees, definitions, and imports.",
+    )
+    graph_parser.add_argument(
+        "symbol",
+        help="Root symbol to expand neighborhood from",
+    )
+    graph_parser.add_argument(
+        "-d",
+        "--dir",
+        default=".",
+        help="Repository root directory (default: current directory)",
+    )
+    graph_parser.add_argument(
+        "--depth",
+        type=int,
+        default=2,
+        help="Maximum hop depth for bounded traversal (default: 2)",
+    )
+    graph_parser.add_argument(
+        "--direction",
+        choices=["both", "out", "in"],
+        default="both",
+        help="Traversal direction: out (callees), in (callers), or both",
+    )
+    graph_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output graph neighborhood as JSON",
+    )
+
     args = parser.parse_args()
 
-    if args.command == "scan":
+    if args.command == "graph":
+        sys.exit(
+            run_graph(
+                args.symbol,
+                dir_path=args.dir,
+                max_depth=args.depth,
+                direction=args.direction,
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "scan":
         sys.exit(
             run_scan(
                 args.dir,

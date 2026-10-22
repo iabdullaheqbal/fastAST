@@ -29,6 +29,8 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
   - [1. Index Repository](#1-index-repository)
   - [2. Search Symbols](#2-search-symbols)
   - [3. Trace Call Graphs](#3-trace-call-graphs)
+  - [4. Bounded Graph Traversal](#4-bounded-graph-traversal)
+  - [5. Scan Admitted Files](#5-scan-admitted-files)
 - [MCP Server Setup](#mcp-server-setup)
   - [Claude Code](#claude-code)
   - [Cursor IDE](#cursor-ide)
@@ -156,6 +158,57 @@ Callees (3):
   -> [python] validate_connection() at src/db.py:25
   -> [python] acquire_lock() at src/db.py:31
   -> [python] log_query() at src/db.py:88
+```
+
+### 4. Bounded Graph Traversal
+
+Traverse multi-hop code relationships (`defines`, `calls`, `inherits`, `imports`) from any symbol with depth bounding and confidence attenuation:
+
+```bash
+# Expand 2-hop neighborhood from a class or function
+fastast graph "UserService" --depth 2
+
+# Inspect outbound dependencies (callees and imports)
+fastast graph "UserService" --direction out
+
+# Inspect inbound dependencies (callers and references)
+fastast graph "UserService" --direction in
+
+# Output structured JSON for agent reasoning
+fastast graph "UserService" --json
+```
+
+```text
+Graph Neighborhood for 'UserService' (depth=2):
+Total Nodes: 6, Total Edges: 7
+
+Traversed Nodes:
+  [Hop 0] UserService (class, conf=1.0)
+  [Hop 1] BaseService (class, conf=0.85)
+  [Hop 1] authenticate (method, conf=0.85)
+  [Hop 2] verify_hash (function, conf=0.72)
+  [Hop 2] find_by_email (function, conf=0.68)
+
+Traversed Edges:
+  UserService --[inherits conf=1.0]--> BaseService
+  UserService --[defines conf=1.0]--> authenticate
+  authenticate --[calls conf=0.95]--> verify_hash
+  authenticate --[calls conf=0.9]--> find_by_email
+```
+
+### 5. Scan Admitted Files
+
+Run the File Admission Layer (multi-layer ignore rules, xxHash3 content hashing, language detection, and file classification) without modifying the database:
+
+```bash
+# Scan repository file admission status
+fastast scan .
+
+# Filter by language
+fastast scan . -L python,typescript
+
+# Output admitted FileRecords as JSON
+fastast scan . --json
 ```
 
 ---

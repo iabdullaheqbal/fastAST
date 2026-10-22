@@ -139,29 +139,44 @@ def get_file_record(conn: sqlite3.Connection, path: str) -> Optional[sqlite3.Row
 
 def store_file_data(
     conn: sqlite3.Connection,
-    file_path: str,
-    file_hash: str,
-    mtime: float,
-    file_index_result: Any,
+    file_path: Union[str, Any],
+    file_hash: Optional[str] = None,
+    mtime: Optional[float] = None,
+    file_index_result: Optional[Any] = None,
     language: Optional[str] = None,
     category: Optional[str] = None,
     status: str = "unchanged",
 ) -> int:
-    """Insert or update extracted AST symbols, imports, and calls for a file."""
+    """Insert or update extracted AST symbols, imports, calls, and edges for a file."""
+    if hasattr(file_path, "file_path") and hasattr(file_path, "symbols"):
+        facts = file_path
+        file_path_str = facts.file_path
+        file_index_result = facts
+        file_hash = file_hash or getattr(facts, "hash", "mockhash")
+        mtime = mtime if mtime is not None else getattr(facts, "mtime", 0.0)
+        language = language or facts.language
+        category = category or getattr(facts, "category", None)
+    else:
+        file_path_str = str(file_path)
+        if file_hash is None:
+            file_hash = "mockhash"
+        if mtime is None:
+            mtime = 0.0
+
     # Resolve language and category
     if not language:
         from fastast.discovery import detect_file_language
-        language = detect_file_language(Path(file_path)) or "python"
+        language = detect_file_language(Path(file_path_str)) or "python"
 
     if not category:
         from fastast.discovery import classify_file
-        category = classify_file(Path(file_path))
+        category = classify_file(Path(file_path_str))
 
     with conn:
         cur = conn.cursor()
 
         # Delete existing file entry if updating (cascades to symbols, imports, calls, edges)
-        cur.execute("DELETE FROM files WHERE path = ?", (file_path,))
+        cur.execute("DELETE FROM files WHERE path = ?", (file_path_str,))
 
         cur.execute(
             """
@@ -169,7 +184,7 @@ def store_file_data(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                file_path,
+                file_path_str,
                 language,
                 file_hash,
                 mtime,
@@ -187,19 +202,22 @@ def store_file_data(
 
         # Pass 1: Insert root symbols (parent_name is None or empty)
         for sym in file_index_result.symbols:
+            sig = sym.signature if sym.signature else f"{sym.kind} {sym.name}"
+            conf = getattr(sym, "confidence", 1.0)
             if not sym.parent_name:
                 cur.execute(
                     """
-                    INSERT INTO symbols (file_id, name, kind, signature, start_line, end_line, parent_symbol_id, docstring)
-                    VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+                    INSERT INTO symbols (file_id, name, kind, signature, start_line, end_line, confidence, parent_symbol_id, docstring)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
                     """,
                     (
                         file_id,
                         sym.name,
                         sym.kind,
-                        sym.signature,
+                        sig,
                         sym.start_line,
                         sym.end_line,
+                        conf,
                         sym.docstring,
                     ),
                 )
@@ -209,19 +227,22 @@ def store_file_data(
         # Pass 2: Insert child symbols (methods, members with parent_name)
         for sym in file_index_result.symbols:
             if sym.parent_name:
+                sig = sym.signature if sym.signature else f"{sym.kind} {sym.name}"
+                conf = getattr(sym, "confidence", 1.0)
                 parent_id = symbol_id_map.get(sym.parent_name)
                 cur.execute(
                     """
-                    INSERT INTO symbols (file_id, name, kind, signature, start_line, end_line, parent_symbol_id, docstring)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO symbols (file_id, name, kind, signature, start_line, end_line, confidence, parent_symbol_id, docstring)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         file_id,
                         sym.name,
                         sym.kind,
-                        sym.signature,
+                        sig,
                         sym.start_line,
                         sym.end_line,
+                        conf,
                         parent_id,
                         sym.docstring,
                     ),
@@ -574,4 +595,66 @@ def get_candidate_evidence(
         reasons=reasons,
         neighbors=neighbors,
         evidence_window=evidence,
+    )
+
+
+def get_graph_neighborhood(
+    conn: sqlite3.Connection,
+    symbol_name: str,
+    max_depth: int = 2,
+    max_nodes: int = 30,
+    min_confidence: float = 0.5,
+    direction: str = "both",
+) -> Dict[str, Any]:
+    """Execute bounded multi-hop neighborhood expansion from SQLite data."""
+    from fastast.graph import CodeGraph
+
+    # In-memory graph loading from open connection
+    graph = CodeGraph(min_confidence=min_confidence, prune_builtins=True)
+
+    # 1. Load symbols
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT s.id, s.name, s.kind, s.signature, s.start_line, s.end_line,
+               s.confidence, s.docstring, f.path as file_path, p.name as parent_name
+        FROM symbols s
+        JOIN files f ON s.file_id = f.id
+        LEFT JOIN symbols p ON s.parent_symbol_id = p.id
+        """
+    )
+    from fastast.graph import Node
+    for row in cur.fetchall():
+        sym_rec = SymbolRecord(
+            id=row["id"],
+            name=row["name"],
+            kind=row["kind"],
+            file=row["file_path"],
+            start_line=row["start_line"],
+            end_line=row["end_line"],
+            confidence=row["confidence"],
+            signature=row["signature"],
+            parent_name=row["parent_name"],
+            docstring=row["docstring"],
+        )
+        graph.add_node(Node.from_symbol_record(sym_rec))
+
+    # 2. Load edges
+    cur.execute("SELECT src, dst, relation, confidence, line_number FROM edges")
+    for row in cur.fetchall():
+        edge = EdgeRecord(
+            src=row["src"],
+            dst=row["dst"],
+            relation=row["relation"],
+            confidence=row["confidence"],
+            line_number=row["line_number"],
+        )
+        graph.add_edge(edge)
+
+    return graph.bounded_traversal(
+        symbol_name,
+        max_depth=max_depth,
+        max_nodes=max_nodes,
+        min_confidence=min_confidence,
+        direction=direction,
     )

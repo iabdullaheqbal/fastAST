@@ -16,6 +16,7 @@ from fastast.extractor import (
     parse_file_record,
     parse_file_records,
 )
+from fastast.graph import CodeGraph, Node
 from fastast.model import (
     Candidate,
     EdgeRecord,
@@ -134,6 +135,8 @@ __all__ = [
     "extract_file_facts",
     "parse_file_record",
     "parse_file_records",
+    "CodeGraph",
+    "Node",
     "index_repository",
     "search_symbols",
     "get_call_graph",

@@ -82,6 +82,24 @@ class PythonAstFactExtractor(ast.NodeVisitor):
                 )
             )
 
+        # Extract base class inheritance edges
+        for base in node.bases:
+            base_name = None
+            if isinstance(base, ast.Name):
+                base_name = base.id
+            elif isinstance(base, ast.Attribute):
+                base_name = base.attr
+            if base_name and base_name not in {"object"}:
+                self.edges.append(
+                    EdgeRecord(
+                        src=node.name,
+                        dst=base_name,
+                        relation=EdgeRelation.INHERITS.value,
+                        confidence=1.0,
+                        line_number=start_line,
+                    )
+                )
+
         self.scope_stack.append((node.name, "class"))
         self.generic_visit(node)
         self.scope_stack.pop()
