@@ -123,6 +123,7 @@ try:
         delete_file_record,
         delete_symbol_embedding,
         get_call_graph,
+        get_graph_neighborhood,
         get_similar_symbols,
         get_symbol_community,
         get_symbol_embedding,
@@ -171,6 +172,7 @@ except ImportError:
     sanitize_fts5_query = None  # type: ignore
     delete_file_record = None  # type: ignore
     get_call_graph = None  # type: ignore
+    get_graph_neighborhood = None  # type: ignore
     get_similar_symbols = None  # type: ignore
     get_symbol_community = None  # type: ignore
     list_communities = None  # type: ignore
@@ -250,6 +252,7 @@ __all__ = [
     "sanitize_fts5_query",
     "delete_file_record",
     "get_call_graph",
+    "get_graph_neighborhood",
     "BaseEmbeddingProvider",
     "SemanticProjectionProvider",
     "get_embedding_provider",

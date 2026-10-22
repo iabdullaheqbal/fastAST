@@ -43,10 +43,16 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
   - [`index_repository`](#1-index_repository)
   - [`query_symbols`](#2-query_symbols)
   - [`get_call_graph`](#3-get_call_graph)
-  - [`retrieve_evidence`](#4-retrieve_evidence)
-  - [`get_similar_symbols`](#5-get_similar_symbols)
-  - [`get_community`](#6-get_community)
-  - [`list_communities`](#7-list_communities)
+  - [`get_graph_neighborhood`](#4-get_graph_neighborhood)
+  - [`retrieve_evidence` / `query`](#5-retrieve_evidence--query)
+  - [`get_symbol_evidence`](#6-get_symbol_evidence)
+  - [`get_file_outline`](#7-get_file_outline)
+  - [`get_snippet`](#8-get_snippet)
+  - [`get_similar_symbols`](#9-get_similar_symbols)
+  - [`get_community`](#10-get_community)
+  - [`list_communities`](#11-list_communities)
+- [CLI and MCP Parity Matrix](#cli-and-mcp-parity-matrix)
+- [Standardized Agent Response Format](#standardized-agent-response-format)
 - [Architecture & Database Schema](#architecture--database-schema)
 - [Development & Building from Source](#development--building-from-source)
 - [License](#license)
@@ -428,20 +434,20 @@ python -m fastast.server
 
 ## MCP Tool Interface
 
-When connected as an MCP server, FastAST exposes 3 core tools to coding agents:
+When connected as an MCP server, FastAST exposes a complete suite of codebase-memory tools to AI coding agents:
 
 ### 1. `index_repository`
 Recursively scans and indexes files across the repository into the SQLite symbol and call graph.
 - **Parameters:**
   - `directory_path` (`string`, optional, default: `"."`): Root directory to index.
   - `force` (`boolean`, optional, default: `false`): Force reindexing of all files even if unchanged.
-- **Returns:** Summary JSON containing scanned files, indexed count, skipped count, symbols, imports, calls, and execution latency.
+- **Returns:** Summary JSON containing scanned files, indexed count, skipped count, symbols, imports, calls, execution latency, and metadata.
 
 ### 2. `query_symbols`
-Searches for symbol definitions across the indexed codebase. If the repository is not yet indexed, it automatically indexes it first.
+Searches for symbol definitions (functions, classes, methods, structs) across the indexed codebase. If the repository is not yet indexed, it automatically indexes it first.
 - **Parameters:**
   - `query` (`string`, required): Symbol identifier or substring (e.g. `'authenticate'`, `'Config'`).
-  - `kind` (`string`, optional): Filter (`function`, `async_function`, `class`, `method`).
+  - `kind` (`string`, optional): Filter (`function`, `async_function`, `class`, `method`, `struct`).
   - `directory_path` (`string`, optional, default: `"."`): Project root.
   - `limit` (`integer`, optional, default: `50`): Maximum matches to return.
   - `language` (`string`, optional): Language filter (`python`, `typescript`, `rust`, etc.).
@@ -450,14 +456,23 @@ Searches for symbol definitions across the indexed codebase. If the repository i
 ### 3. `get_call_graph`
 Returns incoming caller and outgoing callee relationships for a function or method.
 - **Parameters:**
-  - `symbol_name` (`string`, required): Target function or method name.
+  - `symbol` (`string`, required): Target function or method name (also accepts `symbol_name`).
   - `directory_path` (`string`, optional, default: `"."`): Project root.
-- **Returns:** Inbound callers and outbound callees with file paths and exact line references.
+- **Returns:** Inbound callers, outbound callees, structured relationships, and caller/callee counts.
 
-### 4. `retrieve_evidence`
-Retrieves a ranked, token-conscious evidence bundle for coding agents. Combines Dense Semantic Embeddings + SQLite FTS5 BM25 retrieval with structural heuristics (exact name match, symbol kind priority, path proximity, edge degree), expands 1-hop graph neighbors, extracts bounded code snippets, and strictly enforces token budgets.
+### 4. `get_graph_neighborhood`
+Traverses the multi-hop code graph neighborhood (callers, callees, definitions, inheritance, imports) from a root symbol up to a bounded depth limit.
 - **Parameters:**
-  - `query` (`string`, required): Target symbol name, conceptual phrase, or text query.
+  - `symbol` (`string`, required): Root symbol name to expand from (e.g. `'UserService'`, `'handle_request'`).
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+  - `max_depth` (`integer`, optional, default: `2`): Traversal hop limit (1 to 5).
+  - `direction` (`string`, optional, default: `"both"`): Direction (`"both"`, `"out"`, or `"in"`).
+- **Returns:** JSON containing traversed nodes, confidence-weighted edges, and hop depths.
+
+### 5. `retrieve_evidence` / `query`
+Primary search and codebase-memory retrieval tool for coding agents. Combines Dense Semantic Embeddings + SQLite FTS5 BM25 retrieval with structural heuristics (exact name match, symbol kind priority, path proximity, edge degree), expands 1-hop graph neighbors, extracts bounded code snippets, and strictly enforces token budgets.
+- **Parameters:**
+  - `query` (`string`, required): Target symbol name, conceptual phrase, or technical query.
   - `directory_path` (`string`, optional, default: `"."`): Project root.
   - `kind` (`string`, optional): Symbol kind filter (`function`, `class`, `method`).
   - `language` (`string`, optional): Language filter (`python`, `typescript`, `rust`, etc.).
@@ -467,7 +482,36 @@ Retrieves a ranked, token-conscious evidence bundle for coding agents. Combines 
   - `ranking_method` (`string`, optional, default: `"hybrid"`): Ranking algorithm (`"hybrid"`, `"semantic"`, `"rrf"`, `"bm25"`, or `"heuristic"`).
 - **Returns:** JSON containing top-ranked candidates, bounded snippets, relevant files, connected relationships, and token estimates.
 
-### 5. `get_similar_symbols`
+### 6. `get_symbol_evidence`
+Retrieves a complete, bounded evidence package for a specific symbol: definition metadata, bounded source snippet, and key incoming/outgoing graph neighbors without full file dumps.
+- **Parameters:**
+  - `symbol` (`string`, required): Target symbol identifier or integer database ID (also accepts `symbol_name_or_id`).
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+  - `window_lines` (`integer`, optional, default: `3`): Context padding lines before and after.
+  - `max_snippet_lines` (`integer`, optional, default: `50`): Maximum snippet lines before middle truncation.
+- **Returns:** JSON containing symbol declaration, bounded snippet, callers, callees, and metadata.
+
+### 7. `get_file_outline`
+Retrieves a compact structural outline of a file (classes, methods, top-level functions, line spans, docstrings) without raw code dumps. Essential for token-efficient file exploration.
+- **Parameters:**
+  - `file_path` (`string`, required): Target file relative or absolute path.
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+  - `max_docstring_chars` (`integer`, optional, default: `100`): Maximum characters per docstring summary.
+- **Returns:** JSON containing hierarchical classes, methods, functions, and import counts.
+
+### 8. `get_snippet`
+Extracts a minimal, bounded source code snippet for a symbol or direct file line range without whole-file dumps.
+- **Parameters:**
+  - `symbol` (`string`, optional): Symbol name or ID to slice.
+  - `file_path` (`string`, optional): Direct file path (used with `start_line`).
+  - `start_line` (`integer`, optional): 1-based start line.
+  - `end_line` (`integer`, optional): 1-based end line.
+  - `window_lines` (`integer`, optional, default: `3`): Context padding lines.
+  - `max_snippet_lines` (`integer`, optional, default: `60`): Maximum snippet lines.
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+- **Returns:** JSON containing bounded snippet text, start/end lines, truncation flag, and total lines.
+
+### 9. `get_similar_symbols`
 Retrieves near-duplicate or structurally similar symbols across the codebase using MinHash ($m=64$) and Locality-Sensitive Hashing ($b=16, r=4$).
 - **Parameters:**
   - `symbol` (`string`, required): Target symbol name or integer database ID.
@@ -476,19 +520,52 @@ Retrieves near-duplicate or structurally similar symbols across the codebase usi
   - `min_similarity` (`number`, optional, default: `0.5`): Minimum Jaccard similarity threshold (0.0 to 1.0).
 - **Returns:** JSON containing list of similar symbols with file paths, line ranges, signatures, and similarity percentages.
 
-### 6. `get_community`
+### 10. `get_community`
 Retrieves architectural community membership, central hub symbol, and peer symbols for a target symbol using Louvain graph modularity clustering.
 - **Parameters:**
   - `symbol` (`string`, required): Target symbol name or integer database ID.
   - `directory_path` (`string`, optional, default: `"."`): Project root.
 - **Returns:** JSON containing community ID, community name, graph modularity score, and neighboring peer symbols.
 
-### 7. `list_communities`
+### 11. `list_communities`
 Lists all detected architectural modules and functional communities across the codebase.
 - **Parameters:**
   - `directory_path` (`string`, optional, default: `"."`): Project root.
   - `limit` (`integer`, optional, default: `20`): Maximum communities to return.
 - **Returns:** JSON summary of detected communities with member counts, central hubs, and sample files.
+
+---
+
+## CLI and MCP Parity Matrix
+
+Every major capability in FastAST is available identically via standalone CLI and Model Context Protocol:
+
+| Capability | CLI Command | MCP Tool | Primary Output |
+| :--- | :--- | :--- | :--- |
+| **Repository Indexing** | `fastast index [dir]` | `index_repository` | Indexed files, symbol counts, latency |
+| **Symbol Search** | `fastast symbols <query>` | `query_symbols` | Exact declarations, line spans, signatures |
+| **Call Hierarchy** | `fastast calls <symbol>` | `get_call_graph` | Inbound callers and outbound callees |
+| **Graph Traversal** | `fastast graph <symbol>` | `get_graph_neighborhood` | Multi-hop nodes and confidence edges |
+| **Evidence Retrieval** | `fastast query <query>` | `retrieve_evidence` / `query` | Token-bounded candidates & snippets |
+| **Symbol Evidence** | `fastast snippet <sym>` | `get_symbol_evidence` | Declaration snippet + connected neighbors |
+| **File Outline** | `fastast outline <file>` | `get_file_outline` | Hierarchical class/method skeleton |
+| **Bounded Snippet** | `fastast snippet -f <file>` | `get_snippet` | Sliced source window with context padding |
+| **Similar Clones** | `fastast similar <symbol>` | `get_similar_symbols` | Near-duplicate functions (MinHash/LSH) |
+| **Community Context** | `fastast community <symbol>` | `get_community` | Architectural cluster & peer symbols |
+| **Community List** | `fastast communities` | `list_communities` | Functional modules & central hub symbols |
+| **Admission Scan** | `fastast scan [dir]` | *(Internal scanner)* | Admitted files, categories, xxHash3 |
+
+---
+
+## Standardized Agent Response Format
+
+All FastAST MCP tools and CLI commands with `--json` return standardized, agent-friendly JSON structures:
+
+- **`results` / `candidates`**: Primary list of matching items (symbols, candidates, communities, or peers).
+- **`evidence` / `snippets`**: Minimal, bounded source code snippets formatted for LLM ingestion.
+- **`relationships`**: Connected graph edges (`src`, `dst`, `relation`, `confidence`).
+- **`meta`**: Execution context, including counts, token estimates, pagination limits, and applied filters.
+- **`error`**: Set to `null` on successful execution, or an informative error string on failure.
 
 ---
 

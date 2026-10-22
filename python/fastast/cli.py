@@ -125,6 +125,13 @@ def run_scan(
             "categories": cat_counts,
             "languages": lang_counts,
             "files": [r.to_dict() for r in records],
+            "results": [r.to_dict() for r in records],
+            "meta": {
+                "total_files": len(records),
+                "categories": cat_counts,
+                "languages": lang_counts,
+            },
+            "error": None,
         }
         print(json.dumps(payload, indent=2))
         return 0
@@ -189,6 +196,16 @@ def run_index(
         return 1
 
     if json_output:
+        res["results"] = []
+        res["meta"] = {
+            "languages": res.get("languages", {}),
+            "categories": res.get("categories", {}),
+            "elapsed_ms": res.get("elapsed_ms", 0.0),
+            "indexed_files": res.get("indexed_files", 0),
+            "skipped_files": res.get("skipped_files", 0),
+            "deleted_files": res.get("deleted_files", 0),
+        }
+        res["error"] = None
         print(json.dumps(res, indent=2))
         return 0
 
@@ -274,6 +291,14 @@ def run_symbols(
             "language": language,
             "count": len(symbols),
             "symbols": symbols,
+            "results": symbols,
+            "meta": {
+                "kind": kind,
+                "language": language,
+                "limit": limit,
+                "count": len(symbols),
+            },
+            "error": None,
         }
         print(json.dumps(output, indent=2))
         return 0
@@ -349,6 +374,23 @@ def run_calls(
         conn.close()
 
     if json_output:
+        relationships = []
+        for c in graph.get("callers", []):
+            relationships.append({
+                "src": c.get("caller"),
+                "dst": graph.get("symbol"),
+                "relation": "calls",
+                "file_path": c.get("file_path"),
+                "line_number": c.get("line_number"),
+            })
+        for c in graph.get("callees", []):
+            relationships.append({
+                "src": graph.get("symbol"),
+                "dst": c.get("callee"),
+                "relation": "calls",
+                "file_path": c.get("file_path"),
+                "line_number": c.get("line_number"),
+            })
         output = {
             "call_graph": graph,
             "symbol": graph["symbol"],
@@ -356,6 +398,14 @@ def run_calls(
             "callee_count": graph["callee_count"],
             "callers": graph["callers"],
             "callees": graph["callees"],
+            "relationships": relationships,
+            "results": relationships,
+            "meta": {
+                "caller_count": graph["caller_count"],
+                "callee_count": graph["callee_count"],
+                "total_relationships": len(relationships),
+            },
+            "error": None,
         }
         print(json.dumps(output, indent=2))
         return 0
@@ -451,6 +501,16 @@ def run_graph(
     conn.close()
 
     if json_output:
+        res["symbol"] = symbol_name.strip()
+        res["results"] = res.get("nodes", [])
+        res["relationships"] = res.get("edges", [])
+        res["meta"] = {
+            "depth": max_depth,
+            "direction": direction,
+            "total_nodes": res.get("total_nodes", len(res.get("nodes", []))),
+            "total_edges": res.get("total_edges", len(res.get("edges", []))),
+        }
+        res["error"] = None
         print(json.dumps(res, indent=2))
         return 0
 
@@ -534,7 +594,16 @@ def run_query(
         )
 
     if json_output:
-        print(json.dumps(bundle.to_dict(), indent=2))
+        data = bundle.to_dict()
+        data["results"] = data.get("candidates", [])
+        data["evidence"] = data.get("snippets", [])
+        if "meta" not in data or not isinstance(data["meta"], dict):
+            data["meta"] = {}
+        data["meta"]["candidate_count"] = len(data.get("candidates", []))
+        data["meta"]["ranking_method"] = ranking_method
+        data["meta"]["max_tokens"] = max_tokens
+        data["error"] = None
+        print(json.dumps(data, indent=2))
         return 0
 
     print(f"FastAST Evidence Bundle for '{query}':")
@@ -603,6 +672,20 @@ def run_outline(
         return 1
 
     if json_output:
+        outline["results"] = (
+            outline.get("classes", [])
+            + outline.get("functions", [])
+            + outline.get("other_symbols", [])
+        )
+        outline["meta"] = {
+            "language": outline.get("language"),
+            "total_lines": outline.get("total_lines", 0),
+            "total_symbols": outline.get("total_symbols", 0),
+            "total_imports": outline.get("total_imports", 0),
+            "class_count": len(outline.get("classes", [])),
+            "function_count": len(outline.get("functions", [])),
+        }
+        outline["error"] = None
         print(json.dumps(outline, indent=2))
         return 0
 
@@ -669,7 +752,16 @@ def run_snippet(
         return 1
 
     if json_output:
-        print(json.dumps(window.to_dict(), indent=2))
+        data = window.to_dict()
+        data["evidence"] = data.get("snippet")
+        data["meta"] = {
+            "start_line": data.get("start_line"),
+            "end_line": data.get("end_line"),
+            "is_truncated": data.get("is_truncated", False),
+            "total_lines": data.get("total_lines", 0),
+        }
+        data["error"] = None
+        print(json.dumps(data, indent=2))
         return 0
 
     target_name = symbol or f"{file_path}:{start_line}-{end_line}"
@@ -729,6 +821,13 @@ def run_similar(
                         "symbol": symbol,
                         "total_similar": len(sims),
                         "similar_symbols": sims,
+                        "results": sims,
+                        "meta": {
+                            "total_similar": len(sims),
+                            "min_similarity": min_sim,
+                            "limit": limit,
+                        },
+                        "error": None,
                     },
                     indent=2,
                 )
@@ -803,7 +902,17 @@ def run_communities(
         if json_output:
             print(
                 json.dumps(
-                    {"total_communities": len(comms), "communities": comms}, indent=2
+                    {
+                        "total_communities": len(comms),
+                        "communities": comms,
+                        "results": comms,
+                        "meta": {
+                            "total_communities": len(comms),
+                            "limit": limit,
+                        },
+                        "error": None,
+                    },
+                    indent=2,
                 )
             )
             return 0
@@ -884,6 +993,14 @@ def run_community(
             return 1
 
         if json_output:
+            comm["results"] = comm.get("peers", [])
+            comm["meta"] = {
+                "community_id": comm.get("community_id"),
+                "community_name": comm.get("community_name"),
+                "modularity": comm.get("modularity", 0.0),
+                "peer_count": len(comm.get("peers", [])),
+            }
+            comm["error"] = None
             print(json.dumps(comm, indent=2))
             return 0
 
