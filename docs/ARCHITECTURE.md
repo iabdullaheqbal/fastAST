@@ -140,22 +140,30 @@ FastAST integrates 18 concrete algorithms and systems designed to operate concur
 - **Cycle Safety & Budget**: Maintains a visited set and strict max-node expansion limit (default: 50 nodes) to prevent traversing massive dependency cycles.
 
 ### 3.7. BM25 Lexical Retrieval
-- **Inverted Index**: Builds an in-memory or SQLite FTS5 BM25 index over symbol names, parameter signatures, docstrings, and relative file paths.
+- **Inverted Index**: Builds an embedded SQLite FTS5 virtual table (`symbols_fts`) over symbol names, parameter signatures, docstrings, and relative file paths using the `unicode61 remove_diacritics 2` tokenizer.
+- **Automated Synchronization Triggers**:
+  - `symbols_ai AFTER INSERT ON symbols`: Automatically inserts newly indexed symbols, signatures, docstrings, and paths into `symbols_fts`.
+  - `symbols_ad AFTER DELETE ON symbols`: Automatically removes purged symbols from `symbols_fts`. Enabled with `PRAGMA recursive_triggers = ON;` so foreign key cascade deletions propagate cleanly.
 - **Scoring Formula**:
   $$\text{Score}_{\text{BM25}}(D, Q) = \sum_{t \in Q} \text{IDF}(t) \cdot \frac{f(t, D) \cdot (k_1 + 1)}{f(t, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
   (Default parameters: $k_1 = 1.2$, $b = 0.75$).
-- **Field Boosting**: Multiplies term score by field weights: Symbol Name ($\times 3.0$) > Signature ($\times 2.0$) > Docstring ($\times 1.0$).
+- **Field Boosting**: Multiplies term score by column weights: Symbol Name ($\times 3.0$) > Signature ($\times 2.0$) > Docstring ($\times 1.0$) > File Path ($\times 1.0$).
+- **Score Normalization**: Raw negative FTS5 rank values are normalized into $[0.0, 1.0]$ via $1.0 / (1.0 + \log(1.0 + |\text{rank}|))$.
 
 ### 3.8. Embeddings & Semantic Search
-- **Dense Vector Index**: Generates dense embeddings for high-level semantic intent queries (e.g., *"where is user authentication verified?"*).
+- **Dense Vector Index**: Designed for dense embeddings to support high-level semantic intent queries (e.g., *"where is user authentication verified?"*).
 - **Lightweight Embedding Models**: Quantized ONNX or MiniLM models running locally via Candle/tract, indexing symbol docstrings and structural summaries.
 - **Vector Search**: Cosine similarity via HNSW or Flat IP vector table in SQLite.
 
-### 3.9. Hybrid Ranking (Reciprocal Rank Fusion)
-- **Score Fusion**: Combines lexical (BM25), semantic (dense embedding), and structural (graph PageRank / BFS) rankings using Reciprocal Rank Fusion (RRF):
-  $$\text{RRF}(d) = \sum_{m \in M} \frac{w_m}{k + \text{rank}_m(d)}$$
-  where $k = 60$ and $w_m$ are modal weights ($w_{\text{BM25}} = 0.4$, $w_{\text{Vector}} = 0.3$, $w_{\text{Graph}} = 0.3$).
-- **Explainability**: Every candidate carries `reasons: Vec<String>` specifying which modalities triggered the match.
+### 3.9. Hybrid Ranking (Weighted Fusion & Reciprocal Rank Fusion)
+- **Score Fusion**: FastAST supports two complementary ranking fusion modes:
+  1. **Weighted Hybrid Sum (default)**:
+     $$\text{Score} = 0.30 \cdot S_{\text{BM25}} + 0.30 \cdot S_{\text{name}} + 0.10 \cdot S_{\text{type}} + 0.10 \cdot S_{\text{path}} + 0.10 \cdot S_{\text{edge}} + 0.10 \cdot S_{\text{conf}}$$
+  2. **Reciprocal Rank Fusion (RRF)**:
+     $$\text{RRF}(d) = \sum_{m \in M} \frac{w_m}{k + \text{rank}_m(d)}$$
+     where $k = 60$, fusing BM25 lexical rank and heuristic structural rank.
+  3. **Heuristic Fallback**: Gracefully disables BM25 if the FTS5 table is unavailable or when invoked with `ranking_method="heuristic"`.
+- **Explainability**: Every candidate carries `reasons: Vec<String>` specifying which modalities triggered the match (e.g., `"BM25 lexical match (score: 0.91)"`, `"Exact name match"`, `"Primary definition (function)"`).
 
 ### 3.10. MinHash + LSH (Locality Sensitive Hashing)
 - **Near-Duplicate Detection**: Detects copy-pasted functions, boilerplate classes, and near-miss symbol variations.

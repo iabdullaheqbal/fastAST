@@ -474,6 +474,7 @@ class EvidenceMaterializer:
         kind: Optional[str] = None,
         language: Optional[str] = None,
         file_path: Optional[str] = None,
+        ranking_method: str = "hybrid",
     ) -> EvidenceBundle:
         """Assemble an agent-safe, token-bounded EvidenceBundle.
 
@@ -497,6 +498,7 @@ class EvidenceMaterializer:
                 max_fanout=max_fanout,
                 window_lines=window_lines,
                 max_tokens=None,  # Materializer enforces the snippet token budget and truncation
+                ranking_method=ranking_method,
             )
 
         cur = self.conn.cursor()
@@ -686,6 +688,7 @@ def build_evidence_bundle(
     kind: Optional[str] = None,
     language: Optional[str] = None,
     file_path: Optional[str] = None,
+    ranking_method: str = "hybrid",
     db_or_conn: Optional[Union[sqlite3.Connection, Path, str]] = None,
     repo_root: Optional[Union[Path, str]] = None,
 ) -> EvidenceBundle:
@@ -703,4 +706,5 @@ def build_evidence_bundle(
         kind=kind,
         language=language,
         file_path=file_path,
+        ranking_method=ranking_method,
     )

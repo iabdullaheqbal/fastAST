@@ -285,6 +285,7 @@ def retrieve_evidence(
     file_path: Optional[str] = None,
     limit: int = 5,
     max_tokens: int = 2048,
+    ranking_method: str = "hybrid",
 ) -> str:
     """Retrieve token-bounded evidence bundle for an agent query.
 
@@ -300,6 +301,7 @@ def retrieve_evidence(
         file_path: Optional file path filter or bias.
         limit: Maximum candidate symbols to retrieve (default: 5).
         max_tokens: Maximum token budget for evidence snippets (default: 2048).
+        ranking_method: Ranking algorithm ('hybrid', 'rrf', or 'heuristic', default: 'hybrid').
 
     Returns:
         JSON string containing the structured EvidenceBundle.
@@ -312,6 +314,7 @@ def retrieve_evidence(
         file_path=file_path,
         limit=limit,
         max_tokens=max_tokens,
+        ranking_method=ranking_method,
     )
 
 
@@ -323,6 +326,7 @@ def build_evidence_bundle(
     file_path: Optional[str] = None,
     limit: int = 5,
     max_tokens: int = 2048,
+    ranking_method: str = "hybrid",
 ) -> str:
     """Build a compact, token-bounded EvidenceBundle for an agent query."""
     if not query or not query.strip():
@@ -349,6 +353,7 @@ def build_evidence_bundle(
                 file_path=file_path,
                 limit=limit,
                 max_tokens=max_tokens,
+                ranking_method=ranking_method,
             )
             return json.dumps(bundle.to_dict(), indent=2)
     except Exception as exc:

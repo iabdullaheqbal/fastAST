@@ -84,10 +84,12 @@ def score_candidate(
     target_path: Optional[str] = None,
     signature: Optional[str] = None,
     docstring: Optional[str] = None,
+    bm25_score: float = 0.0,
 ) -> Tuple[float, List[str]]:
     """Compute multi-factor relevance score and explainability reasons for a symbol candidate.
 
     Heuristic components:
+    0. BM25 full-text score over name, signature, docstring, and path
     1. Name match (exact, case-insensitive, prefix, word boundary, substring)
     2. Type match (target kind match or executable construct priority)
     3. Path relevance (target path match, query in path, source vs test category)
@@ -98,6 +100,9 @@ def score_candidate(
     q = query.strip()
     q_lower = q.lower()
     name_lower = sym_name.lower()
+
+    if bm25_score > 0.0:
+        reasons.append(f"BM25 lexical match (score: {bm25_score:.2f})")
 
     # 1. Name Match Score (Weight: 0.40)
     name_score = 0.0
@@ -187,14 +192,24 @@ def score_candidate(
     if conf_score < 0.9:
         reasons.append(f"Syntax error penalty: {conf_score:.2f}")
 
-    # Composite weighted score
-    composite = (
-        0.40 * name_score
-        + 0.15 * type_score
-        + 0.15 * path_score
-        + 0.15 * edge_score
-        + 0.15 * conf_score
-    )
+    # Composite weighted score (Hybrid fusion when BM25 signal is available)
+    if bm25_score > 0.0:
+        composite = (
+            0.30 * bm25_score
+            + 0.30 * name_score
+            + 0.10 * type_score
+            + 0.10 * path_score
+            + 0.10 * edge_score
+            + 0.10 * conf_score
+        )
+    else:
+        composite = (
+            0.40 * name_score
+            + 0.15 * type_score
+            + 0.15 * path_score
+            + 0.15 * edge_score
+            + 0.15 * conf_score
+        )
     return round(composite, 4), reasons
 
 
@@ -667,15 +682,18 @@ class RetrievalEngine:
         max_fanout: int = 5,
         window_lines: int = 3,
         max_tokens: Optional[int] = None,
+        ranking_method: str = "hybrid",
     ) -> List[Candidate]:
-        """Search, rank, and expand candidate symbols with query-time pruning.
+        """Search, rank, and expand candidate symbols with hybrid BM25 + structural ranking.
 
-        1. Fetches candidate matches from SQLite (by name, signature, docstring, or path).
-        2. Computes multi-factor relevance scores (exact name, kind, path, edge density, confidence).
-        3. Prunes candidates below min_score (query-time noise reduction).
-        4. Keeps top-K candidates.
-        5. For top candidates: extracts bounded evidence snippets and bounded graph neighbors.
-        6. Enforces token budget if max_tokens is specified.
+        1. Fetches BM25 lexical relevance scores from SQLite FTS5 index.
+        2. Retrieves candidate matches from SQLite (BM25 hits + exact/lexical LIKE matches).
+        3. Computes multi-factor relevance scores (BM25, exact name, kind, path, edge density, confidence).
+        4. Applies ranking fusion (weighted hybrid sum or Reciprocal Rank Fusion).
+        5. Prunes candidates below min_score (query-time noise reduction).
+        6. Keeps top-K candidates.
+        7. For top candidates: extracts bounded evidence snippets and bounded graph neighbors.
+        8. Enforces token budget if max_tokens is specified.
         """
         cur = self.conn.cursor()
         q_clean = query.strip()
@@ -686,13 +704,26 @@ class RetrievalEngine:
         if not terms:
             return []
 
-        # Build candidate retrieval SQL
-        conditions = [
-            """
-            (s.name LIKE ? OR s.signature LIKE ? OR s.docstring LIKE ? OR f.path LIKE ?)
-            """
-        ]
-        params: List[Any] = [like_query, like_query, like_query, like_query]
+        # 1. Retrieve BM25 full-text scores from SQLite FTS5 index (when hybrid or rrf ranking)
+        from fastast.db import search_symbols_bm25
+
+        use_bm25 = ranking_method.lower() in {"hybrid", "rrf"}
+        bm25_scores = (
+            search_symbols_bm25(self.conn, q_clean, limit=150) if use_bm25 else {}
+        )
+        bm25_ids = list(bm25_scores.keys())
+
+        # 2. Build candidate retrieval SQL combining BM25 matches + lexical LIKE
+        sub_conds = ["(s.name LIKE ? OR s.signature LIKE ? OR s.docstring LIKE ? OR f.path LIKE ?)"]
+        sub_params: List[Any] = [like_query, like_query, like_query, like_query]
+
+        if bm25_ids:
+            placeholders = ",".join("?" for _ in bm25_ids)
+            sub_conds.insert(0, f"s.id IN ({placeholders})")
+            sub_params = bm25_ids + sub_params
+
+        conditions = [f"({' OR '.join(sub_conds)})"]
+        params: List[Any] = sub_params
 
         if kind:
             conditions.append("s.kind = ?")
@@ -715,7 +746,7 @@ class RetrievalEngine:
             FROM symbols s
             JOIN files f ON s.file_id = f.id
             WHERE {where_clause}
-            LIMIT 150
+            LIMIT 200
             """,
             params,
         )
@@ -742,9 +773,11 @@ class RetrievalEngine:
                 edge_counts[er["name"]] = er["cnt"]
 
         # Score candidates
-        scored_candidates: List[Tuple[float, List[str], Any]] = []
+        scored_candidates: List[Tuple[float, List[str], Any, float]] = []
         for r in raw_rows:
             deg = edge_counts.get(r["name"], 0)
+            bm25_val = bm25_scores.get(r["id"], 0.0)
+
             score, reasons = score_candidate(
                 sym_name=r["name"],
                 sym_kind=r["kind"],
@@ -757,13 +790,35 @@ class RetrievalEngine:
                 target_path=file_path,
                 signature=r["signature"],
                 docstring=r["docstring"],
+                bm25_score=bm25_val,
             )
 
             # Query-time pruning: drop low-score noise
             if score < min_score:
                 continue
 
-            scored_candidates.append((score, reasons, r))
+            scored_candidates.append((score, reasons, r, bm25_val))
+
+        # Apply Reciprocal Rank Fusion (RRF) if requested
+        if ranking_method.lower() == "rrf" and len(scored_candidates) >= 1:
+            by_bm25 = sorted(scored_candidates, key=lambda x: x[3], reverse=True)
+            bm25_ranks = {item[2]["id"]: i + 1 for i, item in enumerate(by_bm25)}
+
+            by_heur = sorted(scored_candidates, key=lambda x: x[0], reverse=True)
+            heur_ranks = {item[2]["id"]: i + 1 for i, item in enumerate(by_heur)}
+
+            k = 60.0
+            max_rrf = (0.50 / (k + 1.0)) + (0.50 / (k + 1.0))
+            rrf_candidates: List[Tuple[float, List[str], Any, float]] = []
+            for score, reasons, r, bm25_v in scored_candidates:
+                r_bm25 = bm25_ranks.get(r["id"], len(scored_candidates) + 50)
+                r_heur = heur_ranks.get(r["id"], len(scored_candidates) + 50)
+                raw_rrf = (0.50 / (k + r_bm25)) + (0.50 / (k + r_heur))
+                norm_rrf = round(raw_rrf / max_rrf, 4)
+                reasons_with_rrf = reasons + [f"RRF score: {norm_rrf:.2f}"]
+                rrf_candidates.append((norm_rrf, reasons_with_rrf, r, bm25_v))
+
+            scored_candidates = rrf_candidates
 
         # Sort descending by score
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
@@ -772,7 +827,7 @@ class RetrievalEngine:
         results: List[Candidate] = []
         cumulative_tokens = 0
 
-        for score, reasons, r in top_candidates:
+        for score, reasons, r, _bm25_v in top_candidates:
             sym_id = r["id"]
             sym_name = r["name"]
 
@@ -885,6 +940,7 @@ class RetrievalEngine:
         window_lines: int = 3,
         max_depth: int = 1,
         max_fanout: int = 5,
+        ranking_method: str = "hybrid",
     ) -> EvidenceBundle:
         """Assemble a complete, token-bounded EvidenceBundle for an agent query."""
         candidates = self.search_symbols(
@@ -898,6 +954,7 @@ class RetrievalEngine:
             max_fanout=max_fanout,
             window_lines=window_lines,
             max_tokens=max_tokens,
+            ranking_method=ranking_method,
         )
 
         # Assemble compact symbol list
@@ -1069,9 +1126,10 @@ def search_symbols(
     max_fanout: int = 5,
     window_lines: int = 3,
     max_tokens: Optional[int] = None,
+    ranking_method: str = "hybrid",
     repo_root: Optional[Union[Path, str]] = None,
 ) -> List[Candidate]:
-    """Search and rank candidate symbols with bounded evidence and graph neighbors."""
+    """Search and rank candidate symbols with bounded evidence, graph neighbors, and BM25 hybrid ranking."""
     if isinstance(query_or_conn, (sqlite3.Connection, Path)) and query is not None:
         engine = RetrievalEngine(query_or_conn, repo_root=repo_root)
         actual_query = query
@@ -1094,6 +1152,7 @@ def search_symbols(
         max_fanout=max_fanout,
         window_lines=window_lines,
         max_tokens=max_tokens,
+        ranking_method=ranking_method,
     )
 
 
@@ -1185,10 +1244,11 @@ def retrieve_bundle(
     window_lines: int = 3,
     max_depth: int = 1,
     max_fanout: int = 5,
+    ranking_method: str = "hybrid",
     db_or_conn: Optional[Union[sqlite3.Connection, Path, str]] = None,
     repo_root: Optional[Union[Path, str]] = None,
 ) -> EvidenceBundle:
-    """Retrieve structured EvidenceBundle for an agent query."""
+    """Retrieve structured EvidenceBundle for an agent query with BM25 hybrid ranking."""
     engine = _get_default_engine(db_or_conn, repo_root=repo_root)
     return engine.retrieve_bundle(
         query=query,
@@ -1200,6 +1260,7 @@ def retrieve_bundle(
         window_lines=window_lines,
         max_depth=max_depth,
         max_fanout=max_fanout,
+        ranking_method=ranking_method,
     )
 
 
@@ -1215,6 +1276,7 @@ def build_evidence_bundle(
     max_snippet_lines: int = 40,
     max_depth: int = 1,
     max_fanout: int = 5,
+    ranking_method: str = "hybrid",
     db_or_conn: Optional[Union[sqlite3.Connection, Path, str]] = None,
     repo_root: Optional[Union[Path, str]] = None,
 ) -> EvidenceBundle:
@@ -1232,6 +1294,7 @@ def build_evidence_bundle(
         kind=kind,
         language=language,
         file_path=file_path,
+        ranking_method=ranking_method,
         db_or_conn=db_or_conn,
         repo_root=repo_root,
     )

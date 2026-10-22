@@ -480,6 +480,7 @@ def run_query(
     file_path: Optional[str] = None,
     limit: int = 5,
     max_tokens: int = 2048,
+    ranking_method: str = "hybrid",
     json_output: bool = False,
 ) -> int:
     """Retrieve ranked symbol evidence and bounded graph context for a query."""
@@ -529,6 +530,7 @@ def run_query(
             file_path=file_path,
             limit=limit,
             max_tokens=max_tokens,
+            ranking_method=ranking_method,
         )
 
     if json_output:
@@ -927,6 +929,12 @@ def main() -> None:
         help="Maximum total evidence snippet tokens budget (default: 2048)",
     )
     query_parser.add_argument(
+        "--ranking",
+        choices=["hybrid", "rrf", "heuristic"],
+        default="hybrid",
+        help="Ranking algorithm: hybrid (BM25 + structural, default), rrf (Reciprocal Rank Fusion), or heuristic",
+    )
+    query_parser.add_argument(
         "--json",
         action="store_true",
         help="Output evidence bundle as structured JSON",
@@ -984,6 +992,7 @@ def main() -> None:
                 file_path=getattr(args, "file_path", None),
                 limit=args.limit,
                 max_tokens=args.max_tokens,
+                ranking_method=getattr(args, "ranking", "hybrid"),
                 json_output=getattr(args, "json", False),
             )
         )

@@ -118,7 +118,13 @@ except ImportError:
 
 try:
     from fastast.indexer import RepositoryIndexer, index_repository
-    from fastast.db import get_call_graph, search_symbols
+    from fastast.db import (
+        delete_file_record,
+        get_call_graph,
+        sanitize_fts5_query,
+        search_symbols,
+        search_symbols_bm25,
+    )
     from fastast.evidence import (
         EvidenceMaterializer,
         build_evidence_bundle,
@@ -130,6 +136,9 @@ except ImportError:
     RepositoryIndexer = None  # type: ignore
     index_repository = None  # type: ignore
     search_symbols = None  # type: ignore
+    search_symbols_bm25 = None  # type: ignore
+    sanitize_fts5_query = None  # type: ignore
+    delete_file_record = None  # type: ignore
     get_call_graph = None  # type: ignore
     EvidenceMaterializer = None  # type: ignore
     build_evidence_bundle = None  # type: ignore
@@ -182,5 +191,8 @@ __all__ = [
     "RepositoryIndexer",
     "index_repository",
     "search_symbols",
+    "search_symbols_bm25",
+    "sanitize_fts5_query",
+    "delete_file_record",
     "get_call_graph",
 ]

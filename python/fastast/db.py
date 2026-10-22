@@ -1,8 +1,9 @@
 """SQLite database schema and access layer for FastAST symbol graph."""
 
+import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from fastast.model import (
     Candidate,
@@ -89,20 +90,39 @@ CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);
 CREATE INDEX IF NOT EXISTS idx_edges_relation ON edges(relation);
+
+-- Phase 7: Full-Text Search (FTS5) for BM25 lexical retrieval
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    name,
+    signature,
+    docstring,
+    file_path,
+    tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(rowid, name, signature, docstring, file_path)
+    SELECT new.id, new.name, new.signature, coalesce(new.docstring, ''), (SELECT path FROM files WHERE id = new.file_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+    DELETE FROM symbols_fts WHERE rowid = old.id;
+END;
 """
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
-    """Connect to SQLite database with foreign keys and WAL mode."""
+    """Connect to SQLite database with foreign keys, recursive triggers, and WAL mode."""
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA recursive_triggers = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     return conn
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Initialize SQLite database tables, indices, and run schema migrations."""
+    """Initialize SQLite database tables, indices, FTS5 virtual table, and run schema migrations."""
     cur = conn.cursor()
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='files';")
     if cur.fetchone():
@@ -129,12 +149,38 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_files_category ON files(category);")
     conn.commit()
 
+    # Backfill FTS5 index if table exists but is empty while symbols exist
+    try:
+        cur.execute("SELECT COUNT(*) FROM symbols_fts")
+        fts_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM symbols")
+        sym_count = cur.fetchone()[0]
+        if fts_count == 0 and sym_count > 0:
+            cur.execute(
+                """
+                INSERT INTO symbols_fts (rowid, name, signature, docstring, file_path)
+                SELECT s.id, s.name, s.signature, coalesce(s.docstring, ''), f.path
+                FROM symbols s
+                JOIN files f ON s.file_id = f.id
+                """
+            )
+            conn.commit()
+    except Exception:
+        pass
+
 
 def get_file_record(conn: sqlite3.Connection, path: str) -> Optional[sqlite3.Row]:
     """Retrieve indexed file metadata by path."""
     cur = conn.cursor()
     cur.execute("SELECT * FROM files WHERE path = ?", (path,))
     return cur.fetchone()
+
+
+def delete_file_record(conn: sqlite3.Connection, path: str) -> None:
+    """Delete an indexed file record and cascade remove symbols, edges, and FTS entries."""
+    with conn:
+        conn.execute("DELETE FROM files WHERE path = ?", (path,))
+
 
 
 def store_file_data(
@@ -417,6 +463,58 @@ def search_symbols(
             }
         )
     return results
+
+
+def sanitize_fts5_query(raw_query: str) -> str:
+    """Sanitize and structure a raw search string into a valid SQLite FTS5 query."""
+    tokens = [t.lower() for t in re.findall(r"\w+", raw_query) if t]
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        return f'"{tokens[0]}"*'
+    and_part = " ".join(f'"{t}"*' for t in tokens)
+    or_part = " OR ".join(f'"{t}"*' for t in tokens)
+    return f"({and_part}) OR {or_part}"
+
+
+def search_symbols_bm25(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 100,
+) -> Dict[int, float]:
+    """Retrieve symbols matching query via SQLite FTS5 BM25 scoring.
+
+    Returns mapping of symbol_id -> normalized BM25 score in [0.0, 1.0].
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='symbols_fts'")
+        if not cur.fetchone():
+            return {}
+
+        fts_query = sanitize_fts5_query(query)
+        if not fts_query:
+            return {}
+
+        cur.execute(
+            """
+            SELECT rowid, -bm25(symbols_fts, 3.0, 2.0, 1.0, 1.0) as score
+            FROM symbols_fts
+            WHERE symbols_fts MATCH ?
+            ORDER BY score DESC
+            LIMIT ?
+            """,
+            (fts_query, limit),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return {}
+        max_score = max(r[1] for r in rows)
+        if max_score <= 0:
+            return {}
+        return {r[0]: round(r[1] / max_score, 4) for r in rows}
+    except Exception:
+        return {}
 
 
 def get_call_graph(conn: sqlite3.Connection, symbol_name: str) -> Dict[str, Any]:
