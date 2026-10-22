@@ -447,24 +447,77 @@ fastast/
 │   └── fastast/
 │       ├── __init__.py              # Public exports
 │       ├── model.py                 # Dataclasses: FileRecord, SymbolRecord, EdgeRecord, Candidate
-│       ├── db.py                    # SQLite engine and schema migrations
-│       ├── indexer.py               # Repository indexer and recursive walker
+│       ├── config.py                # Configuration, environment overrides, path validation
+│       ├── locking.py               # Inter-process atomic repository locking
+│       ├── watcher.py               # Background debounced filesystem watcher
+│       ├── diagnostics.py           # Comprehensive repository health and integrity checks
+│       ├── db.py                    # SQLite engine, FTS5 triggers, schema migrations
+│       ├── indexer.py               # Repository indexer and incremental walker
+│       ├── evidence.py              # Bounded snippet and file outline materializer
+│       ├── retrieval.py             # Hybrid ranking, BM25, and semantic candidate engine
+│       ├── embeddings.py            # Dense vector projections and cosine similarity
+│       ├── similarity.py            # MinHash + LSH duplicate detection
+│       ├── community.py             # Louvain modularity clustering
 │       ├── server.py                # FastMCP stdio server
 │       └── cli.py                   # Terminal command-line interface
 │
 └── tests/                           # Multi-language and integration test suites
+    ├── test_cli.py
+    ├── test_css.py
+    ├── test_discovery.py
+    ├── test_evidence.py
+    ├── test_extractor.py
+    ├── test_graph.py
+    ├── test_hardening_resilience.py # Path traversal, locking, corruption recovery, watcher
+    └── ... (24 total test suites)
 ```
 
-### 4.2. In-Tree Modular Mapping (Phase 0 Foundation)
-During Phase 0, all core Rust modules live cleanly within `src/` to ensure immediate compilation with `pyo3` and `maturin`, directly preparing for extraction into crates:
+### 4.2. In-Tree Modular Mapping
 - `src/model.rs` $\rightarrow$ Core Data Model (`FileRecord`, `SymbolRecord`, `EdgeRecord`, `Candidate`)
 - `src/parser.rs` & `src/<lang>/` $\rightarrow$ `fastast-parsing`
 - `src/language.rs` $\rightarrow$ Language Detection
 - `src/indexer.rs` $\rightarrow$ AST Symbol Walker
-- `python/fastast/db.py` $\rightarrow$ `fastast-storage`
+- `python/fastast/config.py` $\rightarrow$ Configuration & Path Traversal Security
+- `python/fastast/locking.py` $\rightarrow$ Inter-process Atomic Concurrency Control
+- `python/fastast/watcher.py` $\rightarrow$ Background Filesystem Debounced Watcher
+- `python/fastast/diagnostics.py` $\rightarrow$ Health, Schema Version, & Corruption Auditing
+- `python/fastast/db.py` $\rightarrow$ `fastast-storage` (WAL, FTS5, Migrations)
 - `python/fastast/indexer.py` $\rightarrow$ `fastast-discovery`
 - `python/fastast/server.py` $\rightarrow$ `fastast-mcp`
 - `python/fastast/cli.py` $\rightarrow$ `fastast-cli`
+
+---
+
+## 5. Production Hardening & Resilience Architecture
+
+### 5.1. Path Traversal & Security Boundary
+All file resolution inside `indexer.py`, `evidence.py`, and `retrieval.py` passes through `validate_safe_path(target, repo_root)`:
+- Strictly verifies that canonical real paths reside within the allowed repository directory.
+- Intercepts directory traversal exploits (`../../etc/passwd`), absolute path escapes (`/var/...`), and symlink escapes with `PathTraversalError`.
+- Rejects oversized files (`> max_file_size_bytes`) before file reads to prevent memory exhaustion and DoS.
+
+### 5.2. Inter-Process Concurrency & Atomic Locking
+Multi-agent and background daemon architectures require mutual exclusion during index mutations:
+- `RepositoryLock` uses atomic `os.O_CREAT | os.O_EXCL` flags on `.fastast.lock`.
+- Lock files contain JSON metadata with process PID, hostname, creation timestamp, and unique run token.
+- Automatic stale lock detection inspects process liveness (`os.kill(pid, 0)`) and timeouts (`stale_lock_seconds`), automatically breaking orphaned locks left by killed processes.
+
+### 5.3. SQLite Persistence Safety & Self-Healing
+- **Busy Timeout**: Sets `PRAGMA busy_timeout = 15000` (15 seconds) so concurrent readers and writers wait rather than crashing with immediate lock contention.
+- **WAL Mode & Foreign Keys**: SQLite configured with write-ahead logging (`WAL`), recursive triggers, and `FOREIGN KEY ... ON DELETE CASCADE`.
+- **Integrity Verification**: `check_database_integrity` runs `PRAGMA quick_check` or `integrity_check`.
+- **Automatic Corruption Recovery**: If an unrecoverable SQLite corruption is detected, `safe_repair_or_recreate_db()` isolates the damaged database into `.fastast.db.corrupt.<timestamp>` and reinitializes a pristine database automatically.
+- **Schema Migration Versioning**: Managed via `schema_migrations`, `fastast_metadata`, and `PRAGMA user_version = 10`.
+
+### 5.4. Background Debounced Watcher
+- `RepositoryWatcher` runs an asynchronous daemon thread monitoring file modifications, additions, and deletions.
+- Groups rapid IDE save bursts and git branch checkouts into a configurable quiet window (`watch_debounce_ms = 300ms`).
+- Automatically claims `RepositoryLock` during rebuild passes without crashing if CLI or MCP queries are in flight.
+
+### 5.5. Bounded Resource Guarantees
+- Bounded BFS neighbor expansion (`depth <= 3`, `fanout <= 20`, `total_nodes <= 50`).
+- Sliced code snippets clamped to `max_snippet_lines <= 500` with middle truncation indicators.
+- Query candidate sets clamped to `limit <= 200` and token budgets capped to `max_tokens <= 100,000`.
 
 ---
 
@@ -474,4 +527,5 @@ During Phase 0, all core Rust modules live cleanly within `src/` to ensure immed
 2. **Deterministic Confidence**: Every edge and candidate has an explicit confidence attribution.
 3. **Bounded Context**: Agents never receive raw, unmetered files; evidence is precisely bounded with line numbers and snippets.
 4. **Zero Cloud Dependencies**: 100% local operation using embedded SQLite and local native libraries.
+5. **Self-Healing Resilience**: Automatically isolates damaged databases, reclaims dead locks, and guards against path traversal vulnerabilities.
 

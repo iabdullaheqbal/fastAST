@@ -1091,6 +1091,118 @@ def run_stats(
         conn.close()
 
 
+def run_doctor(
+    dir_path: str = ".",
+    full: bool = False,
+    clean_locks: bool = False,
+    json_output: bool = False,
+) -> int:
+    """Run comprehensive repository diagnostics and health checks."""
+    from fastast.diagnostics import clean_stale_locks, diagnose_repository
+
+    root = Path(dir_path).resolve()
+    cleaned = False
+    if clean_locks:
+        cleaned = clean_stale_locks(root)
+
+    report = diagnose_repository(root, full_integrity=full)
+    if cleaned:
+        report["recommendations"].insert(0, "Stale lock file was successfully cleaned.")
+
+    if json_output:
+        report["results"] = [report.copy()]
+        report["meta"] = {
+            "status": report.get("status"),
+            "issues_count": len(report.get("issues", [])),
+            "recommendations_count": len(report.get("recommendations", [])),
+        }
+        report["error"] = None if report.get("status") != "error" else "; ".join(report.get("issues", []))
+        print(json.dumps(report, indent=2))
+        return 0 if report.get("status") != "error" else 1
+
+    status = report.get("status", "unknown").upper()
+    print(f"FastAST Doctor Health Check: [{status}]")
+    print(f"  Repository: {report['repository']['path']}")
+    print(f"    Admitted disk files: {report['repository']['admitted_disk_files']}")
+    print(f"    Config file found:   {report['repository']['config_file_exists']}")
+
+    lock = report["lock"]
+    print(f"  Lock Status: {'LOCKED' if lock['is_locked'] else 'FREE'}")
+    if lock["is_locked"]:
+        alive_str = "alive" if lock["pid_alive"] else "DEAD"
+        print(f"    PID: {lock['pid']} ({alive_str}), age: {lock['age_seconds']}s")
+
+    db = report["database"]
+    print(f"  Database: {'PRESENT' if db['exists'] else 'NOT FOUND'}")
+    if db["exists"]:
+        size_kb = round(db["size_bytes"] / 1024.0, 1)
+        integ_str = "OK" if db["integrity_ok"] else "FAIL"
+        print(f"    Size: {size_kb} KB, Integrity: {integ_str}, Schema: v{db['user_version']}")
+
+    cov = report["coverage"]
+    print(f"  Coverage: {cov['db_files_count']} indexed / {cov['disk_files_count']} disk files")
+    print(f"    Entities: {cov['symbols_count']} symbols, {cov['edges_count']} edges, {cov['calls_count']} calls")
+
+    issues = report.get("issues", [])
+    if issues:
+        print("\n  Issues Detected:")
+        for iss in issues:
+            print(f"    [!] {iss}")
+
+    recs = report.get("recommendations", [])
+    if recs:
+        print("\n  Recommendations:")
+        for r in recs:
+            print(f"    - {r}")
+
+    return 0 if report.get("status") != "error" else 1
+
+
+def run_watch(
+    dir_path: str = ".",
+    poll_interval: float = 0.5,
+    debounce_ms: Optional[int] = None,
+    force: bool = False,
+) -> int:
+    """Run interactive foreground filesystem watcher."""
+    from fastast.watcher import RepositoryWatcher
+
+    root = Path(dir_path).resolve()
+    print(f"Starting FastAST filesystem watcher on '{root}'...")
+
+    def on_change(added, modified, deleted):
+        parts = []
+        if added:
+            parts.append(f"{len(added)} added")
+        if modified:
+            parts.append(f"{len(modified)} modified")
+        if deleted:
+            parts.append(f"{len(deleted)} deleted")
+        print(f"[change detected] {', '.join(parts)}")
+
+    def on_complete(stats):
+        print(
+            f"[re-indexed] {stats.get('indexed_files', 0)} files indexed, "
+            f"{stats.get('skipped_files', 0)} skipped in {stats.get('elapsed_ms', 0)}ms"
+        )
+
+    def on_err(exc):
+        sys.stderr.write(f"[watcher error] {exc}\n")
+
+    watcher = RepositoryWatcher(
+        repo_path=root,
+        poll_interval=poll_interval,
+        debounce_ms=debounce_ms,
+        on_change_detected=on_change,
+        on_index_complete=on_complete,
+        on_error=on_err,
+    )
+    if force:
+        watcher.run_once(force=True)
+    watcher.run_forever()
+    return 0
+
+
 def main() -> None:
     """CLI entrypoint for fastast."""
     parser = argparse.ArgumentParser(
@@ -1439,6 +1551,28 @@ def main() -> None:
     stats_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
     stats_parser.add_argument("--json", action="store_true", help="Output statistics as JSON")
 
+    # `doctor` subcommand (Production Hardening & Diagnostics)
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Diagnose repository health, database integrity, and lock status",
+        description="Verify repository filesystem, lock state, SQLite integrity, and schema synchronization.",
+    )
+    doctor_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    doctor_parser.add_argument("--full", action="store_true", help="Perform full SQLite integrity check instead of quick check")
+    doctor_parser.add_argument("--clean-locks", action="store_true", help="Automatically release stale or dead locks")
+    doctor_parser.add_argument("--json", action="store_true", help="Output diagnostic report as JSON")
+
+    # `watch` subcommand (Production Background Watcher)
+    watch_parser = subparsers.add_parser(
+        "watch",
+        help="Watch repository for changes and incrementally update the AST index",
+        description="Background/daemon filesystem watcher with debouncing and safe locking.",
+    )
+    watch_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    watch_parser.add_argument("--poll", type=float, default=0.5, help="Poll interval in seconds (default: 0.5)")
+    watch_parser.add_argument("--debounce", type=int, default=None, help="Debounce quiet period in milliseconds (default: 300)")
+    watch_parser.add_argument("--force", action="store_true", help="Force immediate initial index before watching")
+
     args = parser.parse_args()
 
     if args.command in ("query", "evidence"):
@@ -1557,6 +1691,24 @@ def main() -> None:
             run_stats(
                 dir_path=args.dir,
                 json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "doctor":
+        sys.exit(
+            run_doctor(
+                dir_path=args.dir,
+                full=getattr(args, "full", False),
+                clean_locks=getattr(args, "clean_locks", False),
+                json_output=getattr(args, "json", False),
+            )
+        )
+    elif args.command == "watch":
+        sys.exit(
+            run_watch(
+                dir_path=args.dir,
+                poll_interval=getattr(args, "poll", 0.5),
+                debounce_ms=getattr(args, "debounce", None),
+                force=getattr(args, "force", False),
             )
         )
     else:

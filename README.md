@@ -35,6 +35,8 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
   - [6. Token-Conscious Evidence Query](#6-token-conscious-evidence-query)
   - [7. Detect Similar Symbols (MinHash + LSH)](#7-detect-similar-symbols-minhash--lsh)
   - [8. Community & Module Discovery (Louvain)](#8-community--module-discovery-louvain)
+  - [9. Repository Diagnostics (Doctor)](#9-repository-diagnostics-doctor)
+  - [10. Background Watcher (Watch)](#10-background-watcher-watch)
 - [MCP Server Setup](#mcp-server-setup)
   - [Claude Code](#claude-code)
   - [Cursor IDE](#cursor-ide)
@@ -51,8 +53,10 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
   - [`get_similar_symbols`](#9-get_similar_symbols)
   - [`get_community`](#10-get_community)
   - [`list_communities`](#11-list_communities)
+  - [`diagnose_repository`](#12-diagnose_repository)
 - [CLI and MCP Parity Matrix](#cli-and-mcp-parity-matrix)
 - [Standardized Agent Response Format](#standardized-agent-response-format)
+- [Production Hardening & Operational Readiness](#production-hardening--operational-readiness)
 - [Architecture & Database Schema](#architecture--database-schema)
 - [Development & Building from Source](#development--building-from-source)
 - [License](#license)
@@ -380,6 +384,54 @@ Detected Architectural Communities (Louvain Modularity Clustering):
     Files: parser.py, service.py
 ```
 
+### 9. Repository Diagnostics (Doctor)
+
+Inspect repository health, database integrity, schema version, lock state, and index coverage:
+
+```bash
+# Perform standard repository diagnostics
+fastast doctor .
+
+# Perform deep SQLite integrity check
+fastast doctor . --full
+
+# Output diagnostics as structured JSON
+fastast doctor . --json
+
+# Automatically reclaim stale or dead locks
+fastast doctor . --clean-locks
+```
+
+```text
+FastAST Doctor Health Check: [HEALTHY]
+  Repository: /workspace/myproject
+    Admitted disk files: 126
+    Config file found:   True
+  Lock Status: FREE
+  Database: PRESENT
+    Size: 3244.0 KB, Integrity: OK, Schema: v10
+  Coverage: 126 indexed / 126 disk files
+    Entities: 1035 symbols, 6757 edges, 5347 calls
+
+  Recommendations:
+    - Repository index is healthy, up to date, and ready for queries.
+```
+
+### 10. Background Watcher (Watch)
+
+Run an interactive background filesystem watcher that continuously monitors admitted source files, debounces rapid multi-file saves, and incrementally refreshes the AST symbol index:
+
+```bash
+# Start background watcher with default 300ms debounce
+fastast watch .
+
+# Configure custom poll interval (seconds) and debounce quiet period (milliseconds)
+fastast watch . --poll 0.5 --debounce 250
+
+# Force an immediate baseline index before beginning watch loop
+fastast watch . --force
+```
+
 ---
 
 ## MCP Server Setup
@@ -534,6 +586,13 @@ Lists all detected architectural modules and functional communities across the c
   - `limit` (`integer`, optional, default: `20`): Maximum communities to return.
 - **Returns:** JSON summary of detected communities with member counts, central hubs, and sample files.
 
+### 12. `diagnose_repository`
+Runs comprehensive system diagnostics, lock status checks, SQLite integrity validation, and synchronization analysis.
+- **Parameters:**
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+  - `full_integrity` (`boolean`, optional, default: `false`): Run full SQLite integrity check.
+- **Returns:** JSON report containing status (`healthy`, `warning`, `error`), issues list, and actionable recommendations.
+
 ---
 
 ## CLI and MCP Parity Matrix
@@ -553,6 +612,8 @@ Every major capability in FastAST is available identically via standalone CLI an
 | **Similar Clones** | `fastast similar <symbol>` | `get_similar_symbols` | Near-duplicate functions (MinHash/LSH) |
 | **Community Context** | `fastast community <symbol>` | `get_community` | Architectural cluster & peer symbols |
 | **Community List** | `fastast communities` | `list_communities` | Functional modules & central hub symbols |
+| **Repository Health** | `fastast doctor [dir]` | `diagnose_repository` | Integrity check, lock state, recommendations |
+| **Background Watcher** | `fastast watch [dir]` | *(Background Daemon)* | Debounced continuous incremental AST index |
 | **Admission Scan** | `fastast scan [dir]` | *(Internal scanner)* | Admitted files, categories, xxHash3 |
 
 ---
@@ -566,6 +627,46 @@ All FastAST MCP tools and CLI commands with `--json` return standardized, agent-
 - **`relationships`**: Connected graph edges (`src`, `dst`, `relation`, `confidence`).
 - **`meta`**: Execution context, including counts, token estimates, pagination limits, and applied filters.
 - **`error`**: Set to `null` on successful execution, or an informative error string on failure.
+
+---
+
+## Production Hardening & Operational Readiness
+
+FastAST is engineered for zero-maintenance, high-reliability deployment in mission-critical agent environments:
+
+### 1. Filesystem Containment & Path Traversal Prevention
+- All file access in `index_file`, `get_snippet`, and `search_symbols` is verified via `validate_safe_path()`.
+- Rejects directory traversal attempts (`../../etc/passwd`), absolute path escapes, and unapproved symlink jailbreaks with `PathTraversalError`.
+- Never reads files exceeding `max_file_size_bytes` (default 10 MB) into memory.
+
+### 2. Inter-Process Mutual Exclusion & Stale Lock Reclamation
+- Prevents concurrent writer collisions across CLI, MCP, and daemon watcher sessions using atomic file locks (`.fastast.lock`).
+- Contains owner PID, host, and timestamp metadata.
+- Automatically reclaims abandoned locks if the owning process has exited (`os.kill(pid, 0)`) or if lock age exceeds `stale_lock_seconds`.
+
+### 3. SQLite Persistence Safety & Automatic Corruption Recovery
+- Configured with `PRAGMA busy_timeout = 15000` (15s) to eliminate spurious `database is locked` concurrency errors.
+- Enforces strict foreign keys (`PRAGMA foreign_keys = ON`) with cascade deletions on file changes.
+- Automatic corruption detection (`check_database_integrity` via `PRAGMA quick_check`).
+- If a corrupt database is detected, `safe_repair_or_recreate_db` archives the damaged file as `.fastast.db.corrupt.<timestamp>` and transparently reinitializes a pristine database.
+- Schema migration tracking via `schema_migrations` and `PRAGMA user_version` (Version 10).
+
+### 4. Bounded Resource Guarantees
+- Graph expansion is strictly bounded (`max_depth <= 3`, `max_fanout <= 20`, `max_total_nodes <= 50`).
+- Snippet line lengths are clamped (`window_lines <= 50`, `max_snippet_lines <= 500`).
+- Candidate query generation is capped (`limit <= 200`, `max_tokens <= 100,000`).
+
+### 5. Centralized Configuration
+Configurable via `.fastastrc.json` in the project root or environment variables:
+| Environment Variable | Config Property | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `FASTAST_DB_NAME` | `db_name` | `.fastast.db` | SQLite database file name |
+| `FASTAST_MAX_TOKENS` | `max_tokens` | `2048` | Default token budget for evidence bundles |
+| `FASTAST_LOG_LEVEL` | `log_level` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `FASTAST_LOCK_TIMEOUT`| `lock_timeout_seconds` | `30.0` | Maximum seconds to wait for repository lock |
+| `FASTAST_WATCH_DEBOUNCE_MS` | `watch_debounce_ms` | `300` | Quiet window before triggering watcher index |
+| `FASTAST_MAX_FILE_SIZE` | `max_file_size_bytes` | `10485760` | Maximum admitted file size in bytes (10 MB) |
+| `FASTAST_DEFAULT_RANKING` | `default_ranking_method` | `hybrid` | Default ranking: `hybrid`, `semantic`, `rrf`, `bm25` |
 
 ---
 
@@ -595,7 +696,9 @@ FastAST combines high-speed compiled Rust Tree-Sitter parsers with an embedded S
     ├── symbols_fts virtual table (SQLite FTS5 full-text index with unicode61 tokenizer & sync triggers)
     ├── symbol_embeddings table (dense vectors, model, dimensions, packed float BLOB)
     ├── symbol_similarity table (MinHash/LSH near-duplicate symbol pairs with Jaccard similarity & cascade delete)
-    └── symbol_communities table (Louvain modularity clusters, semantic names, modularity score & cascade delete)
+    ├── symbol_communities table (Louvain modularity clusters, semantic names, modularity score & cascade delete)
+    ├── schema_migrations table (migration version, applied timestamp, description)
+    └── fastast_metadata table (key-value system properties, schema version)
 ```
 
 ---

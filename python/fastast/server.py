@@ -1404,6 +1404,69 @@ def list_communities(
         )
 
 
+def diagnose_repository(
+    directory_path: str = ".",
+    full_integrity: bool = False,
+    path: Optional[str] = None,
+    dir_path: Optional[str] = None,
+) -> str:
+    """Run comprehensive system diagnostics, lock checks, and SQLite integrity validation.
+
+    Agent Guidance:
+        Use this tool when encountering unexpected errors, suspecting database corruption,
+        or validating index status before large refactorings or code searches.
+
+    Args:
+        directory_path: Path to the repository or project directory (default: '.').
+        full_integrity: If True, executes PRAGMA integrity_check instead of PRAGMA quick_check.
+        path: Optional alias for directory_path.
+        dir_path: Optional alias for directory_path.
+
+    Returns:
+        JSON string containing repository diagnostic details, health rating, and recommendations.
+    """
+    root, _ = _resolve_repo_root(directory_path, path=path, dir_path=dir_path)
+    target_dir = path or dir_path or directory_path
+    if root is None:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": f"Directory not found: '{target_dir}'",
+                "directory_path": str(target_dir),
+                "issues": [f"Directory not found: '{target_dir}'"],
+                "recommendations": ["Verify directory path."],
+                "results": [],
+                "meta": {},
+            },
+            indent=2,
+        )
+
+    from fastast.diagnostics import diagnose_repository as do_diagnose
+    try:
+        report = do_diagnose(root, full_integrity=full_integrity)
+        report["results"] = [report.copy()]
+        report["meta"] = {
+            "status": report.get("status"),
+            "issues_count": len(report.get("issues", [])),
+            "recommendations_count": len(report.get("recommendations", [])),
+        }
+        report["error"] = None if report.get("status") != "error" else "; ".join(report.get("issues", []))
+        return json.dumps(report, indent=2)
+    except Exception as exc:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": str(exc),
+                "directory_path": str(root),
+                "issues": [str(exc)],
+                "recommendations": ["Re-index the repository using index_repository with force=True."],
+                "results": [],
+                "meta": {},
+            },
+            indent=2,
+        )
+
+
 # Register tools with MCP server if available
 if mcp is not None:
     mcp.tool()(index_repository)
@@ -1420,6 +1483,7 @@ if mcp is not None:
     mcp.tool()(get_similar_symbols)
     mcp.tool()(get_community)
     mcp.tool()(list_communities)
+    mcp.tool()(diagnose_repository)
 
 
 def main() -> None:
@@ -1449,6 +1513,7 @@ __all__ = [
     "get_similar_symbols",
     "get_community",
     "list_communities",
+    "diagnose_repository",
     "create_server",
     "main",
 ]

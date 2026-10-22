@@ -21,11 +21,18 @@ try:
 except ImportError:
     index_code = None
 
+from fastast.config import (
+    PathTraversalError,
+    load_config,
+    validate_safe_path,
+)
 from fastast.db import (
+    check_database_integrity,
     get_connection,
     get_file_record,
     get_repository_stats,
     init_db,
+    safe_repair_or_recreate_db,
     store_file_data,
 )
 from fastast.discovery import (
@@ -39,6 +46,7 @@ from fastast.discovery import (
     discover_files,
 )
 from fastast.extractor import extract_file_facts
+from fastast.locking import RepositoryLock, RepositoryLockedError
 from fastast.model import ExtractedFileFacts, FileRecord
 
 
@@ -53,8 +61,11 @@ class RepositoryIndexer:
         languages: Optional[Set[str]] = None,
         extra_ignores: Optional[List[str]] = None,
         categories: Optional[Set[str]] = None,
+        lock: bool = True,
+        lock_timeout: Optional[float] = None,
     ):
         self.repo_path = Path(repo_path).resolve()
+        self.config = load_config(self.repo_path)
         if db_path is not None:
             self.db_path = Path(db_path).resolve()
         else:
@@ -63,6 +74,10 @@ class RepositoryIndexer:
         self.languages = {lang.lower() for lang in languages} if languages else None
         self.extra_ignores = extra_ignores
         self.categories = {cat.lower() for cat in categories} if categories else None
+        self.lock_enabled = lock
+        self.lock_timeout = (
+            lock_timeout if lock_timeout is not None else self.config.lock_timeout_seconds
+        )
 
     def clean_deleted_files(
         self, conn: sqlite3.Connection, current_admitted_paths: Set[str]
@@ -112,21 +127,45 @@ class RepositoryIndexer:
         and extracted entity counts.
         """
         path_obj = Path(file_path)
-        if not path_obj.is_absolute():
-            abs_path = (self.repo_path / path_obj).resolve()
-            rel_path = str(path_obj)
-        else:
-            abs_path = path_obj.resolve()
+        try:
+            abs_path = validate_safe_path(path_obj, self.repo_path)
             try:
                 rel_path = str(abs_path.relative_to(self.repo_path))
             except ValueError:
                 rel_path = str(abs_path)
+        except PathTraversalError as pte:
+            return {
+                "path": str(file_path),
+                "status": "failed",
+                "error": str(pte),
+                "symbols": 0,
+                "edges": 0,
+            }
 
         if not abs_path.exists() or not abs_path.is_file():
             return {
                 "path": rel_path,
                 "status": "failed",
                 "error": f"File does not exist: {abs_path}",
+                "symbols": 0,
+                "edges": 0,
+            }
+
+        try:
+            stat = abs_path.stat()
+            if stat.st_size > self.config.max_file_size_bytes:
+                return {
+                    "path": rel_path,
+                    "status": "skipped",
+                    "reason": f"file_size_exceeded ({stat.st_size} > {self.config.max_file_size_bytes} bytes)",
+                    "symbols": 0,
+                    "edges": 0,
+                }
+        except Exception as stat_err:
+            return {
+                "path": rel_path,
+                "status": "failed",
+                "error": f"Stat error: {stat_err}",
                 "symbols": 0,
                 "edges": 0,
             }
@@ -213,12 +252,13 @@ class RepositoryIndexer:
         """Execute full or incremental repository indexing across all admitted files.
 
         Pipeline stages:
-        1. Discover admitted files according to ignore rules, category, and language filters.
-        2. Detect and purge stale database records for deleted files.
-        3. Check mtime and content hash to skip unmodified files in O(1) time.
-        4. Parse and extract syntactic symbols, calls, imports, and edges.
-        5. Atomically insert or update database tables.
-        6. Compute and return aggregate repository statistics.
+        1. Acquire inter-process repository lock and verify DB integrity.
+        2. Discover admitted files according to ignore rules, category, and language filters.
+        3. Detect and purge stale database records for deleted files.
+        4. Check mtime and content hash to skip unmodified files in O(1) time.
+        5. Parse and extract syntactic symbols, calls, imports, and edges.
+        6. Atomically insert or update database tables.
+        7. Compute and return aggregate repository statistics.
 
         Args:
             force_reindex: If True, re-parses and overwrites all files regardless of mtime/hash.
@@ -232,55 +272,98 @@ class RepositoryIndexer:
         if not self.repo_path.exists():
             raise FileNotFoundError(f"Repository directory not found: {self.repo_path}")
 
-        conn = get_connection(self.db_path)
-        init_db(conn)
+        def _do_index() -> Dict[str, Any]:
+            # Integrity verification and automatic corruption recovery
+            if self.db_path.exists():
+                safe_repair_or_recreate_db(self.db_path)
 
-        try:
-            # 1. Discover admitted files
-            extra = list(self.extra_ignores or [])
-            db_name = self.db_path.name
-            extra.extend([db_name, f"{db_name}*", "*.db", "*.db-wal", "*.db-shm"])
-            admitted_files = discover_files(
-                self.repo_path,
-                extra_ignores=extra,
-                languages=self.languages,
-                categories=self.categories,
-            )
+            conn = get_connection(self.db_path)
+            init_db(conn)
 
-            current_paths = {record.path for record in admitted_files}
+            try:
+                # 1. Discover admitted files
+                extra = list(self.extra_ignores or [])
+                db_name = self.db_path.name
+                extra.extend([db_name, f"{db_name}*", "*.db", "*.db-wal", "*.db-shm"])
+                admitted_files = discover_files(
+                    self.repo_path,
+                    extra_ignores=extra,
+                    languages=self.languages,
+                    categories=self.categories,
+                )
 
-            # 2. Clean deleted files from previous indexing runs
-            deleted_count = self.clean_deleted_files(conn, current_paths)
+                current_paths = {record.path for record in admitted_files}
 
-            indexed_count = 0
-            skipped_count = 0
-            failed_count = 0
-            syntax_error_count = 0
-            total_admitted = len(admitted_files)
+                # 2. Clean deleted files from previous indexing runs
+                deleted_count = self.clean_deleted_files(conn, current_paths)
 
-            # 3. Process candidate files
-            for idx, record in enumerate(admitted_files, start=1):
-                rel_path = record.path
-                file_path = self.repo_path / rel_path
-                mtime = record.mtime
-                file_hash = record.hash
+                indexed_count = 0
+                skipped_count = 0
+                failed_count = 0
+                syntax_error_count = 0
+                total_admitted = len(admitted_files)
 
-                if progress_callback:
+                # 3. Process candidate files
+                for idx, record in enumerate(admitted_files, start=1):
+                    rel_path = record.path
+                    file_path = self.repo_path / rel_path
+
+                    # Security path validation
                     try:
-                        progress_callback(rel_path, idx, total_admitted)
-                    except Exception:
-                        pass
-
-                # Incremental skip checks
-                existing = get_file_record(conn, rel_path)
-                if not force_reindex and existing:
-                    # Fast mtime check
-                    if abs(existing["mtime"] - mtime) < 0.001:
-                        skipped_count += 1
+                        validate_safe_path(file_path, self.repo_path)
+                    except PathTraversalError:
+                        failed_count += 1
                         continue
 
-                    # Content hash check (handles touch / checkout without change)
-                    if existing["hash"] == file_hash:
+                    # File size validation
+                    try:
+                        stat = file_path.stat()
+                        if stat.st_size > self.config.max_file_size_bytes:
+                            skipped_count += 1
+                            continue
+                        mtime = stat.st_mtime
+                    except Exception:
+                        failed_count += 1
+                        continue
+
+                    file_hash = record.hash
+
+                    if progress_callback:
+                        try:
+                            progress_callback(rel_path, idx, total_admitted)
+                        except Exception:
+                            pass
+
+                    # Incremental skip checks
+                    existing = get_file_record(conn, rel_path)
+                    if not force_reindex and existing:
+                        # Fast mtime check
+                        if abs(existing["mtime"] - mtime) < 0.001:
+                            skipped_count += 1
+                            continue
+
+                        # Content hash check (handles touch / checkout without change)
+                        if existing["hash"] == file_hash:
+                            with conn:
+                                conn.execute(
+                                    "UPDATE files SET mtime = ? WHERE id = ?",
+                                    (mtime, existing["id"]),
+                                )
+                            skipped_count += 1
+                            continue
+
+                    # Read source text
+                    try:
+                        code_text = file_path.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        failed_count += 1
+                        continue
+
+                    # Content hash verification
+                    if not file_hash or file_hash == "mockhash":
+                        file_hash = compute_content_hash(code_text)
+
+                    if not force_reindex and existing and existing["hash"] == file_hash:
                         with conn:
                             conn.execute(
                                 "UPDATE files SET mtime = ? WHERE id = ?",
@@ -289,94 +372,85 @@ class RepositoryIndexer:
                         skipped_count += 1
                         continue
 
-                # Read source text
-                try:
-                    code_text = file_path.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    failed_count += 1
-                    continue
-
-                # Content hash verification
-                if not file_hash or file_hash == "mockhash":
-                    file_hash = compute_content_hash(code_text)
-
-                if not force_reindex and existing and existing["hash"] == file_hash:
-                    with conn:
-                        conn.execute(
-                            "UPDATE files SET mtime = ? WHERE id = ?",
-                            (mtime, existing["id"]),
+                    # Extract AST facts
+                    lang = record.language or detect_file_language(file_path) or "python"
+                    try:
+                        facts = extract_file_facts(code_text, rel_path, language=lang)
+                        if facts.has_syntax_error:
+                            syntax_error_count += 1
+                    except Exception as parse_err:
+                        # Robustness: syntax/parse errors do not crash whole index run
+                        facts = ExtractedFileFacts(
+                            file_path=rel_path,
+                            language=lang,
+                            total_lines=len(code_text.splitlines()),
+                            total_tokens=len(code_text.split()),
+                            has_syntax_error=True,
+                            error_message=str(parse_err),
                         )
-                    skipped_count += 1
-                    continue
-
-                # Extract AST facts
-                lang = record.language or detect_file_language(file_path) or "python"
-                try:
-                    facts = extract_file_facts(code_text, rel_path, language=lang)
-                    if facts.has_syntax_error:
                         syntax_error_count += 1
-                except Exception as parse_err:
-                    # Robustness: syntax/parse errors do not crash whole index run
-                    facts = ExtractedFileFacts(
-                        file_path=rel_path,
-                        language=lang,
-                        total_lines=len(code_text.splitlines()),
-                        total_tokens=len(code_text.split()),
-                        has_syntax_error=True,
-                        error_message=str(parse_err),
-                    )
-                    syntax_error_count += 1
 
-                # Persist in SQLite
-                try:
-                    store_file_data(
-                        conn,
-                        rel_path,
-                        file_hash,
-                        mtime,
-                        facts,
-                        language=lang,
-                        category=record.category,
-                        status="indexed",
-                    )
-                    indexed_count += 1
-                except Exception:
-                    failed_count += 1
+                    # Persist in SQLite
+                    try:
+                        store_file_data(
+                            conn,
+                            rel_path,
+                            file_hash,
+                            mtime,
+                            facts,
+                            language=lang,
+                            category=record.category,
+                            status="indexed",
+                        )
+                        indexed_count += 1
+                    except Exception:
+                        failed_count += 1
 
-            # Run Phase 9: Similarity indexing & Community detection when changes occurred
-            if indexed_count > 0 or deleted_count > 0:
-                try:
-                    from fastast.similarity import index_similarity
-                    from fastast.community import detect_and_store_communities
-                    index_similarity(conn)
-                    detect_and_store_communities(conn)
-                except Exception:
-                    pass
+                # Run Phase 9: Similarity indexing & Community detection when changes occurred
+                if indexed_count > 0 or deleted_count > 0:
+                    try:
+                        from fastast.similarity import index_similarity
+                        from fastast.community import detect_and_store_communities
+                        index_similarity(conn)
+                        detect_and_store_communities(conn)
+                    except Exception:
+                        pass
 
-            # 4. Fetch final repository statistics
-            stats = get_repository_stats(conn)
-            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                # 4. Fetch final repository statistics
+                stats = get_repository_stats(conn)
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
-            return {
-                "repo_path": str(self.repo_path),
-                "db_path": str(self.db_path),
-                "total_files": total_admitted,
-                "indexed_files": indexed_count,
-                "skipped_files": skipped_count,
-                "deleted_files": deleted_count,
-                "failed_files": failed_count,
-                "error_files": failed_count,  # backward compatibility alias
-                "syntax_error_files": syntax_error_count,
-                "total_symbols": stats.get("symbols", 0),
-                "total_edges": stats.get("edges", 0),
-                "total_imports": stats.get("imports", 0),
-                "total_calls": stats.get("calls", 0),
-                "languages": stats.get("languages", {}),
-                "categories": stats.get("categories", {}),
-                "elapsed_ms": round(elapsed_ms, 2),
-            }
-        finally:
-            conn.close()
+                return {
+                    "repo_path": str(self.repo_path),
+                    "db_path": str(self.db_path),
+                    "total_files": total_admitted,
+                    "indexed_files": indexed_count,
+                    "skipped_files": skipped_count,
+                    "deleted_files": deleted_count,
+                    "failed_files": failed_count,
+                    "error_files": failed_count,  # backward compatibility alias
+                    "syntax_error_files": syntax_error_count,
+                    "total_symbols": stats.get("symbols", 0),
+                    "total_edges": stats.get("edges", 0),
+                    "total_imports": stats.get("imports", 0),
+                    "total_calls": stats.get("calls", 0),
+                    "languages": stats.get("languages", {}),
+                    "categories": stats.get("categories", {}),
+                    "elapsed_ms": round(elapsed_ms, 2),
+                }
+            finally:
+                conn.close()
+
+        if self.lock_enabled:
+            lock = RepositoryLock(
+                self.repo_path,
+                timeout=self.lock_timeout,
+                stale_timeout=self.config.stale_lock_seconds,
+            )
+            with lock:
+                return _do_index()
+        else:
+            return _do_index()
 
     def get_stats(self) -> Dict[str, Any]:
         """Retrieve current repository statistics from the indexed database."""
@@ -424,6 +498,8 @@ def index_repository(
     languages: Optional[Set[str]] = None,
     extra_ignores: Optional[List[str]] = None,
     categories: Optional[Set[str]] = None,
+    lock: bool = True,
+    lock_timeout: Optional[float] = None,
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
 ) -> Dict[str, Any]:
     """Scan directory, parse all supported language files, and populate SQLite symbol graph.
@@ -439,6 +515,8 @@ def index_repository(
         languages: Optional set of language names to restrict indexing to.
         extra_ignores: Optional extra glob patterns to ignore.
         categories: Optional set of categories to restrict indexing to.
+        lock: If True, acquires RepositoryLock before indexing to prevent concurrency conflicts.
+        lock_timeout: Maximum seconds to wait for lock before raising RepositoryLockedError.
         progress_callback: Optional progress callback function.
 
     Returns:
@@ -450,6 +528,8 @@ def index_repository(
         languages=languages,
         extra_ignores=extra_ignores,
         categories=categories,
+        lock=lock,
+        lock_timeout=lock_timeout,
     )
     return indexer.run(
         force_reindex=force_reindex,

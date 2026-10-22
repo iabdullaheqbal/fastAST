@@ -553,6 +553,9 @@ class RetrievalEngine:
         inserting an omission indicator for long functions or classes.
         Degrades gracefully if the file is missing from disk.
         """
+        window_lines = max(0, min(int(window_lines), 50))
+        max_snippet_lines = max(5, min(int(max_snippet_lines), 500))
+
         cur = self.conn.cursor()
         if isinstance(symbol_id, int) or symbol_id.isdigit():
             cur.execute(
@@ -583,7 +586,8 @@ class RetrievalEngine:
         start_line = max(1, row["start_line"] - window_lines)
         end_line = row["end_line"] + window_lines
 
-        # Resolve path against repo_root
+        # Resolve path safely against repo_root
+        from fastast.config import validate_safe_path
         file_path_str = row["file_path"]
         candidate_paths = [
             Path(file_path_str),
@@ -592,9 +596,13 @@ class RetrievalEngine:
         ]
         target_path: Optional[Path] = None
         for p in candidate_paths:
-            if p.exists() and p.is_file():
-                target_path = p
-                break
+            try:
+                safe_p = validate_safe_path(p, self.repo_root)
+                if safe_p.exists() and safe_p.is_file():
+                    target_path = safe_p
+                    break
+            except Exception:
+                continue
 
         if not target_path:
             # File missing or deleted: return bounded span with None snippet
@@ -644,6 +652,8 @@ class RetrievalEngine:
         self, query: str, limit: int = 20
     ) -> List[Dict[str, Any]]:
         """Search and rank repository files by path, category, or language."""
+        limit = max(1, min(int(limit), 200))
+
         cur = self.conn.cursor()
         q_clean = query.strip()
         like_query = f"%{q_clean}%"
@@ -723,6 +733,11 @@ class RetrievalEngine:
         7. For top candidates: extracts bounded evidence snippets and bounded graph neighbors.
         8. Enforces token budget if max_tokens is specified.
         """
+        limit = max(1, min(int(limit), 200))
+        if max_tokens is not None:
+            max_tokens = max(1, min(int(max_tokens), 100000))
+        window_lines = max(0, min(int(window_lines), 50))
+
         cur = self.conn.cursor()
         q_clean = query.strip()
         like_query = f"%{q_clean}%"
@@ -946,6 +961,10 @@ class RetrievalEngine:
         max_total_nodes: int = 15,
     ) -> List[str]:
         """Expand bounded 1-to-k hop graph neighbors with fan-out capping."""
+        max_depth = max(1, min(int(max_depth), 3))
+        max_fanout = max(1, min(int(max_fanout), 20))
+        max_total_nodes = max(1, min(int(max_total_nodes), 50))
+
         cur = self.conn.cursor()
         visited: Set[str] = {start_symbol}
         current_level: Set[str] = {start_symbol}

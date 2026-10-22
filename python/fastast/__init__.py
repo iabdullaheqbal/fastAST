@@ -31,6 +31,27 @@ from fastast.retrieval import (
     score_candidate,
     search_files,
 )
+from fastast.config import (
+    FastASTConfig,
+    PathTraversalError,
+    load_config,
+    validate_safe_path,
+)
+from fastast.db import (
+    check_database_integrity,
+    safe_repair_or_recreate_db,
+)
+from fastast.diagnostics import (
+    clean_stale_locks,
+    diagnose_repository,
+)
+from fastast.locking import (
+    RepositoryLock,
+    RepositoryLockedError,
+)
+from fastast.watcher import (
+    RepositoryWatcher,
+)
 from fastast.model import (
     Candidate,
     EdgeRecord,
@@ -276,4 +297,15 @@ __all__ = [
     "detect_and_store_communities",
     "get_symbol_community",
     "list_communities",
+    "FastASTConfig",
+    "load_config",
+    "validate_safe_path",
+    "PathTraversalError",
+    "RepositoryLock",
+    "RepositoryLockedError",
+    "RepositoryWatcher",
+    "diagnose_repository",
+    "clean_stale_locks",
+    "check_database_integrity",
+    "safe_repair_or_recreate_db",
 ]

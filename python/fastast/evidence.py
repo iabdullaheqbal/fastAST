@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+from fastast.config import PathTraversalError, load_config, validate_safe_path
 from fastast.graph import BUILTIN_CALL_NOISE
 from fastast.model import Candidate, EvidenceWindow, SymbolRecord
 from fastast.retrieval import EvidenceBundle, RetrievalEngine, estimate_tokens
@@ -31,7 +32,7 @@ class EvidenceMaterializer:
         if isinstance(db_or_conn, sqlite3.Connection):
             self.conn = db_or_conn
             self._close_conn = False
-            self.repo_root = Path(repo_root) if repo_root else Path(".")
+            self.repo_root = Path(repo_root).resolve() if repo_root else Path(".").resolve()
         else:
             db_path = Path(db_or_conn)
             if not db_path.exists() and repo_root:
@@ -49,8 +50,9 @@ class EvidenceMaterializer:
             else:
                 self.conn = get_connection(db_path)
             self._close_conn = True
-            self.repo_root = Path(repo_root) if repo_root else db_path.parent
+            self.repo_root = Path(repo_root).resolve() if repo_root else db_path.parent.resolve()
 
+        self.config = load_config(self.repo_root)
         self._retrieval_engine = RetrievalEngine(self.conn, repo_root=self.repo_root)
 
     def close(self) -> None:
@@ -83,6 +85,9 @@ class EvidenceMaterializer:
         Caps snippet length to `max_snippet_lines` with an omission indicator.
         Degrades gracefully if file is missing on disk.
         """
+        window_lines = max(0, min(int(window_lines), 50))
+        max_snippet_lines = max(5, min(int(max_snippet_lines), 500))
+
         resolved_file: Optional[str] = None
         s_line: int = 1
         e_line: int = 1
@@ -127,7 +132,7 @@ class EvidenceMaterializer:
         bounded_start = max(1, s_line - window_lines)
         bounded_end = max(bounded_start, e_line + window_lines)
 
-        # Locate file on disk
+        # Locate file on disk safely within repo_root
         target_path: Optional[Path] = None
         candidates = [
             Path(resolved_file),
@@ -135,9 +140,20 @@ class EvidenceMaterializer:
             Path.cwd() / resolved_file,
         ]
         for p in candidates:
-            if p.exists() and p.is_file():
-                target_path = p
-                break
+            try:
+                safe_p = validate_safe_path(p, self.repo_root)
+                if safe_p.exists() and safe_p.is_file():
+                    # Reject oversized files to prevent memory exhaustion
+                    if safe_p.stat().st_size > self.config.max_file_size_bytes:
+                        return EvidenceWindow(
+                            start_line=bounded_start,
+                            end_line=bounded_end,
+                            snippet=None,
+                        )
+                    target_path = safe_p
+                    break
+            except Exception:
+                continue
 
         if not target_path:
             # Degrade gracefully on missing file: return bounded coordinates without code
@@ -200,6 +216,10 @@ class EvidenceMaterializer:
         - Structural parent-child relationships (defines) and inheritance
         - Related files connected through the graph
         """
+        window_lines = max(0, min(int(window_lines), 50))
+        max_snippet_lines = max(5, min(int(max_snippet_lines), 500))
+        max_neighbors = max(1, min(int(max_neighbors), 50))
+
         cur = self.conn.cursor()
         if isinstance(name_or_id, int) or str(name_or_id).isdigit():
             cur.execute(

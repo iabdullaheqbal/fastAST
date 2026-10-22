@@ -2,6 +2,7 @@
 
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -167,16 +168,32 @@ CREATE TABLE IF NOT EXISTS symbol_communities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_comm_id ON symbol_communities(community_id);
+
+-- Phase 10: Production Hardening, Schema Migrations, and System Metadata
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at REAL NOT NULL,
+    description TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fastast_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
+CURRENT_SCHEMA_VERSION = 10
 
-def get_connection(db_path: Path) -> sqlite3.Connection:
-    """Connect to SQLite database with foreign keys, recursive triggers, and WAL mode."""
-    conn = sqlite3.connect(str(db_path))
+
+def get_connection(db_path: Path, busy_timeout_ms: int = 15000) -> sqlite3.Connection:
+    """Connect to SQLite database with foreign keys, recursive triggers, WAL mode, and busy timeout."""
+    conn = sqlite3.connect(str(db_path), timeout=busy_timeout_ms / 1000.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA recursive_triggers = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms};")
     return conn
 
 
@@ -255,6 +272,88 @@ def init_db(conn: sqlite3.Connection) -> None:
             backfill_symbol_embeddings(conn)
     except Exception:
         pass
+
+    # Record migration and set PRAGMA user_version
+    now_ts = time.time()
+    try:
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO schema_migrations (version, applied_at, description)
+            VALUES (?, ?, ?)
+            """,
+            (CURRENT_SCHEMA_VERSION, now_ts, "Phase 10 Hardened Schema with Migrations and Metadata"),
+        )
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO fastast_metadata (key, value, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            ("schema_version", str(CURRENT_SCHEMA_VERSION), now_ts),
+        )
+        conn.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION};")
+        conn.commit()
+    except Exception:
+        pass
+
+
+def check_database_integrity(conn: sqlite3.Connection, quick: bool = True) -> Tuple[bool, List[str]]:
+    """Verify SQLite database file integrity via PRAGMA quick_check or integrity_check."""
+    cur = conn.cursor()
+    pragma = "PRAGMA quick_check;" if quick else "PRAGMA integrity_check;"
+    try:
+        cur.execute(pragma)
+        rows = cur.fetchall()
+        messages = [r[0] for r in rows]
+        if messages == ["ok"]:
+            return True, []
+        return False, messages
+    except Exception as exc:
+        return False, [str(exc)]
+
+
+def safe_repair_or_recreate_db(db_path: Path) -> bool:
+    """Detect corrupted SQLite database, create timestamped backup, and recreate a clean database.
+
+    Returns:
+        True if repair/recreation took place, False if database is intact.
+    """
+    if not db_path.exists():
+        return False
+
+    is_corrupt = False
+    reasons: List[str] = []
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        ok, msgs = check_database_integrity(conn, quick=True)
+        conn.close()
+        if not ok:
+            is_corrupt = True
+            reasons = msgs
+    except Exception as exc:
+        is_corrupt = True
+        reasons = [str(exc)]
+
+    if not is_corrupt:
+        return False
+
+    now_ts = int(time.time())
+    backup_base = db_path.parent / f"{db_path.name}.corrupt.{now_ts}"
+    for ext in ["", "-wal", "-shm"]:
+        p = Path(f"{db_path}{ext}")
+        if p.exists():
+            try:
+                p.rename(Path(f"{backup_base}{ext}"))
+            except Exception:
+                pass
+
+    new_conn = get_connection(db_path)
+    try:
+        init_db(new_conn)
+    finally:
+        new_conn.close()
+
+    return True
 
 
 def get_file_record(conn: sqlite3.Connection, path: str) -> Optional[sqlite3.Row]:
