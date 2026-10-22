@@ -1,4 +1,5 @@
-import ast
+"""FastAST MCP Server for AST-based repository indexing and symbol queries."""
+
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -14,7 +15,6 @@ except (ImportError, ModuleNotFoundError):
         MCP_AVAILABLE = False
         FastMCP = None
 
-from fastast._core import prune_file
 from fastast.db import get_call_graph as db_get_call_graph
 from fastast.db import get_connection, search_symbols
 from fastast.indexer import index_repository as do_index_repository
@@ -47,200 +47,6 @@ SUPPORTED_LANGUAGES = {
 mcp = None
 if MCP_AVAILABLE and FastMCP is not None:
     mcp = FastMCP("fastast")
-
-
-def _validate_syntax(code: str, language: Optional[str]) -> bool:
-    """Validate syntax of code for supported runtime parsers (Python, JSON, TOML)."""
-    lang = (language or "python").strip().lower()
-    if lang in ("python", "py"):
-        try:
-            ast.parse(code)
-            return True
-        except SyntaxError:
-            return False
-    elif lang == "json":
-        try:
-            json.loads(code)
-            return True
-        except Exception:
-            return False
-    elif lang == "toml":
-        try:
-            import tomllib
-            tomllib.loads(code)
-            return True
-        except Exception:
-            return False
-    # For JS, TS, Java, Rust, HTML, CSS: Tree-sitter error checking in native engine
-    return True
-
-
-def prune_context(
-    code_text: str,
-    focus_query: str,
-    threshold: float = 0.5,
-    language: Optional[str] = None,
-) -> str:
-    """Prune source code to retain query-relevant logic while guaranteeing syntactically valid structure.
-
-    Use this tool to reduce context token usage (typically 40-80% reduction) before feeding
-    large files or modules into reasoning, planning, or code generation prompts. Irrelevant
-    function, class, and block bodies are replaced with language-appropriate valid stubs
-    (e.g., 'pass' in Python, empty bodies in JS/Rust, '{}' in JSON), while imports, signatures,
-    and transitive dependencies are preserved.
-
-    Supported languages:
-        - python (or py)
-        - javascript (or js, jsx, mjs, cjs)
-        - typescript (or ts, tsx, mts, cts)
-        - java
-        - rust (or rs)
-        - html (or htm)
-        - css
-        - json
-        - toml
-
-    Args:
-        code_text: Complete source code snippet or file content to prune.
-        focus_query: Target symbol, function name, keywords, or semantic intent to retain (e.g. 'auth_middleware', 'calculate_tax', 'ButtonProps').
-        threshold: Relevance score cutoff between 0.0 and 1.0 (default: 0.5).
-                   Use 0.7-0.9 for aggressive pruning (keeping only direct matches);
-                   use 0.2-0.4 for broader retention (keeping related context and helpers).
-        language: Optional language name (e.g. 'python', 'typescript', 'rust', 'json').
-                  If omitted, defaults to 'python'.
-
-    Returns:
-        JSON string with keys:
-            - pruned_code (str): The syntactically valid pruned code to insert into prompt context.
-            - original_tokens (int): Estimated token count of the original input.
-            - pruned_tokens (int): Estimated token count of the pruned output.
-            - savings_pct (float): Percentage of tokens saved (0.0 to 100.0).
-            - total_lines (int): Total line count of input.
-            - kept_lines (int): Lines preserved in pruned output.
-            - latency_ms (float): Execution latency in milliseconds (typically <1ms).
-            - syntax_valid (bool): True if output passed AST/parser syntax verification.
-            - language (str): The language parser used.
-            - error (str, optional): Error code if an issue occurred (e.g. 'PREEXISTING_SYNTAX_ERROR').
-    """
-    lang_name = (language or "python").strip().lower()
-
-    # Handle empty or whitespace-only code
-    if not code_text.strip():
-        return json.dumps(
-            {
-                "pruned_code": "",
-                "original_tokens": 0,
-                "pruned_tokens": 0,
-                "savings_pct": 0.0,
-                "total_lines": 0,
-                "kept_lines": 0,
-                "latency_ms": 0.0,
-                "syntax_valid": True,
-                "language": lang_name,
-            },
-            indent=2,
-        )
-
-    # Normalize threshold (handle values passed as percentages e.g. 50 -> 0.5)
-    try:
-        norm_threshold = float(threshold)
-        if norm_threshold > 1.0:
-            norm_threshold = norm_threshold / 100.0 if norm_threshold <= 100.0 else 1.0
-        norm_threshold = max(0.0, min(1.0, norm_threshold))
-    except (ValueError, TypeError):
-        norm_threshold = 0.5
-
-    try:
-        res = prune_file(code_text, focus_query or "", norm_threshold, language=language)
-    except ValueError as val_err:
-        return json.dumps(
-            {
-                "error": "UNSUPPORTED_LANGUAGE",
-                "message": str(val_err),
-                "pruned_code": code_text,
-                "original_tokens": 0,
-                "pruned_tokens": 0,
-                "savings_pct": 0.0,
-                "total_lines": len(code_text.splitlines()),
-                "kept_lines": len(code_text.splitlines()),
-                "latency_ms": 0.0,
-                "syntax_valid": False,
-                "language": lang_name,
-            },
-            indent=2,
-        )
-    except Exception as exc:
-        return json.dumps(
-            {
-                "error": "PRUNING_FAILED",
-                "message": str(exc),
-                "pruned_code": code_text,
-                "original_tokens": 0,
-                "pruned_tokens": 0,
-                "savings_pct": 0.0,
-                "total_lines": len(code_text.splitlines()),
-                "kept_lines": len(code_text.splitlines()),
-                "latency_ms": 0.0,
-                "syntax_valid": False,
-                "language": lang_name,
-            },
-            indent=2,
-        )
-
-    if res.has_syntax_error:
-        # Pre-existing syntax error in input code
-        return json.dumps(
-            {
-                "error": "PREEXISTING_SYNTAX_ERROR",
-                "pruned_code": code_text,
-                "original_tokens": res.original_tokens,
-                "pruned_tokens": res.pruned_tokens,
-                "savings_pct": 0.0,
-                "total_lines": res.total_lines,
-                "kept_lines": res.total_lines,
-                "latency_ms": round(res.latency_ms, 3),
-                "syntax_valid": False,
-                "language": lang_name,
-            },
-            indent=2,
-        )
-
-    # Validate output syntax
-    syntax_valid = not res.has_syntax_error
-    if syntax_valid:
-        syntax_valid = _validate_syntax(res.pruned_code, language)
-
-    if not syntax_valid:
-        return json.dumps(
-            {
-                "error": "PRUNING_SYNTAX_ERROR",
-                "pruned_code": res.pruned_code,
-                "original_tokens": res.original_tokens,
-                "pruned_tokens": res.pruned_tokens,
-                "savings_pct": round(res.savings_pct, 2),
-                "total_lines": res.total_lines,
-                "kept_lines": res.kept_lines,
-                "latency_ms": round(res.latency_ms, 3),
-                "syntax_valid": False,
-                "language": lang_name,
-            },
-            indent=2,
-        )
-
-    return json.dumps(
-        {
-            "pruned_code": res.pruned_code,
-            "original_tokens": res.original_tokens,
-            "pruned_tokens": res.pruned_tokens,
-            "savings_pct": round(res.savings_pct, 2),
-            "total_lines": res.total_lines,
-            "kept_lines": res.kept_lines,
-            "latency_ms": round(res.latency_ms, 3),
-            "syntax_valid": True,
-            "language": lang_name,
-        },
-        indent=2,
-    )
 
 
 def index_repository(directory_path: str = ".", force: bool = False) -> str:
@@ -473,7 +279,6 @@ def get_call_graph(symbol_name: str, directory_path: str = ".") -> str:
 
 # Register tools with MCP server if available
 if mcp is not None:
-    mcp.tool()(prune_context)
     mcp.tool()(index_repository)
     mcp.tool()(query_symbols)
     mcp.tool()(get_call_graph)

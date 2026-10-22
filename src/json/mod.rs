@@ -1,120 +1,12 @@
 //! JSON Language Engine for FastAST
 //!
-//! Provides AST parsing, dual-rubric semantic/structural pruning,
-//! and symbol indexing for JSON documents.
+//! Provides AST parsing and symbol/import indexing for JSON documents.
 
 pub mod parser;
-pub mod repair;
-pub mod scorer;
 
 use pyo3::prelude::*;
 use crate::indexer::{ExtractedImport, ExtractedSymbol, FileIndexResult};
 use crate::count_tokens;
-use crate::PruneResult;
-
-pub struct JsonPruneResult {
-    pub pruned_code: String,
-    pub original_tokens: usize,
-    pub pruned_tokens: usize,
-    pub savings_pct: f64,
-    pub total_lines: usize,
-    pub kept_lines: usize,
-    pub latency_ms: f64,
-    pub has_syntax_error: bool,
-}
-
-pub fn prune_json(code_text: &str, focus_query: &str, threshold: f64) -> JsonPruneResult {
-    let prune_start = std::time::Instant::now();
-    let total_lines = code_text.lines().count();
-    let original_tokens = count_tokens(code_text);
-
-    if code_text.trim().is_empty() {
-        let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-        return JsonPruneResult {
-            pruned_code: "{}".to_string(),
-            original_tokens: 0,
-            pruned_tokens: 0,
-            savings_pct: 0.0,
-            total_lines: 0,
-            kept_lines: 1,
-            latency_ms: elapsed,
-            has_syntax_error: false,
-        };
-    }
-
-    if focus_query.trim().is_empty() {
-        let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-        return JsonPruneResult {
-            pruned_code: code_text.to_string(),
-            original_tokens,
-            pruned_tokens: original_tokens,
-            savings_pct: 0.0,
-            total_lines,
-            kept_lines: total_lines,
-            latency_ms: elapsed,
-            has_syntax_error: false,
-        };
-    }
-
-    let root_val = match parser::parse_json(code_text) {
-        Ok(v) => v,
-        Err(_) => {
-            let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-            return JsonPruneResult {
-                pruned_code: code_text.to_string(),
-                original_tokens,
-                pruned_tokens: original_tokens,
-                savings_pct: 0.0,
-                total_lines,
-                kept_lines: total_lines,
-                latency_ms: elapsed,
-                has_syntax_error: true,
-            };
-        }
-    };
-
-    let scopes = parser::collect_scopes(&root_val);
-    let score_res = scorer::evaluate_scopes(&scopes, focus_query, threshold);
-    let pruned_code = repair::reconstruct_code(code_text, &scopes, &score_res.decisions);
-    let prune_elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-
-    let pruned_tokens = count_tokens(&pruned_code);
-    let kept_lines = pruned_code.lines().count();
-    let savings_pct = if original_tokens > 0 {
-        ((original_tokens.saturating_sub(pruned_tokens)) as f64 / original_tokens as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    JsonPruneResult {
-        pruned_code,
-        original_tokens,
-        pruned_tokens,
-        savings_pct,
-        total_lines,
-        kept_lines,
-        latency_ms: prune_elapsed,
-        has_syntax_error: false,
-    }
-}
-
-pub fn prune_file(
-    code_text: &str,
-    focus_query: &str,
-    threshold: f64,
-) -> PyResult<PruneResult> {
-    let res = prune_json(code_text, focus_query, threshold);
-    Ok(PruneResult {
-        pruned_code: res.pruned_code,
-        original_tokens: res.original_tokens,
-        pruned_tokens: res.pruned_tokens,
-        savings_pct: res.savings_pct,
-        total_lines: res.total_lines,
-        kept_lines: res.kept_lines,
-        latency_ms: res.latency_ms,
-        has_syntax_error: res.has_syntax_error,
-    })
-}
 
 pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
     let total_tokens = count_tokens(code_text);
@@ -221,71 +113,13 @@ mod tests {
   "version": "1.0.0",
   "scripts": {
     "build": "tsc --build",
-    "test": "jest --coverage",
-    "lint": "eslint"
+    "test": "jest --coverage"
   },
   "dependencies": {
     "express": "^4.19.2",
     "zod": "^3.23.8"
-  },
-  "keywords": [
-    "ast",
-    "pruning",
-    "tree-sitter"
-  ]
+  }
 }"#;
-
-    #[test]
-    fn test_json_prune_scripts_test() {
-        let res = prune_json(SAMPLE_JSON, "scripts test", 0.3);
-        assert!(!res.has_syntax_error);
-        println!("PRUNED JSON (scripts test):\n{}", res.pruned_code);
-
-        // Verify valid JSON
-        let parsed: serde_json::Value = serde_json::from_str(&res.pruned_code).expect("Must be valid JSON");
-        assert!(parsed.get("scripts").is_some());
-        assert_eq!(
-            parsed["scripts"]["test"].as_str(),
-            Some("jest --coverage")
-        );
-        // build and lint not kept
-        assert!(parsed["scripts"].get("build").is_none());
-        assert!(parsed["scripts"].get("lint").is_none());
-        // dependencies not kept
-        assert!(parsed.get("dependencies").is_none());
-        assert!(res.savings_pct > 0.0);
-    }
-
-    #[test]
-    fn test_json_prune_dependencies_entire_object() {
-        let res = prune_json(SAMPLE_JSON, "dependencies", 0.3);
-        assert!(!res.has_syntax_error);
-        println!("PRUNED JSON (dependencies):\n{}", res.pruned_code);
-
-        let parsed: serde_json::Value = serde_json::from_str(&res.pruned_code).expect("Must be valid JSON");
-        assert!(parsed.get("dependencies").is_some());
-        assert_eq!(parsed["dependencies"]["express"].as_str(), Some("^4.19.2"));
-        assert_eq!(parsed["dependencies"]["zod"].as_str(), Some("^3.23.8"));
-        assert!(parsed.get("scripts").is_none());
-    }
-
-    #[test]
-    fn test_json_zero_match_structural_skeleton() {
-        let res = prune_json(SAMPLE_JSON, "unrelatedQueryXYZ", 0.5);
-        assert!(!res.has_syntax_error);
-        println!("ZERO MATCH SKELETON:\n{}", res.pruned_code);
-
-        let parsed: serde_json::Value = serde_json::from_str(&res.pruned_code).expect("Must be valid JSON");
-        assert_eq!(parsed["name"].as_str(), Some("fastast-app"));
-        assert_eq!(parsed["version"].as_str(), Some("1.0.0"));
-        // scripts and dependencies are kept as empty skeletons
-        assert!(parsed["scripts"].is_object());
-        assert!(parsed["scripts"].as_object().unwrap().is_empty());
-        assert!(parsed["dependencies"].is_object());
-        assert!(parsed["dependencies"].as_object().unwrap().is_empty());
-        assert!(parsed["keywords"].is_array());
-        assert!(parsed["keywords"].as_array().unwrap().is_empty());
-    }
 
     #[test]
     fn test_json_index_code() {

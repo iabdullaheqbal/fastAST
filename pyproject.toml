@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "fastast"
 version = "0.1.0"
-description = "High-performance syntax-guaranteed context engine and symbol indexer for coding agents"
+description = "High-performance AST-based repository indexer and symbol graph engine for coding agents"
 readme = "README.md"
 authors = [
     { name = "Abdullah Eqbal", email = "iabdullaheqbal@gmail.com" }
@@ -15,8 +15,8 @@ requires-python = ">=3.10"
 keywords = [
     "ast",
     "tree-sitter",
-    "pruning",
-    "context-engine",
+    "indexer",
+    "sqlite",
     "mcp",
     "model-context-protocol",
     "ai-agents",

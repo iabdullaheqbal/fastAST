@@ -1,109 +1,12 @@
-//! Rust Language Engine for FastAST
+//! Rust Language Indexing Engine for FastAST
 //!
-//! Provides AST parsing, dual-rubric semantic/dependency pruning,
-//! and symbol indexing for Rust source code.
+//! Provides AST parsing and symbol/import/call indexing for Rust source code.
 
 pub mod parser;
-pub mod repair;
-pub mod scorer;
 
 use pyo3::prelude::*;
 use crate::indexer::{ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult};
 use crate::count_tokens;
-use crate::PruneResult;
-
-pub struct RustPruneResult {
-    pub pruned_code: String,
-    pub original_tokens: usize,
-    pub pruned_tokens: usize,
-    pub savings_pct: f64,
-    pub total_lines: usize,
-    pub kept_lines: usize,
-    pub latency_ms: f64,
-    pub has_syntax_error: bool,
-}
-
-pub fn prune_rust(code_text: &str, focus_query: &str, threshold: f64) -> RustPruneResult {
-    let prune_start = std::time::Instant::now();
-    let total_lines = code_text.lines().count();
-    let original_tokens = count_tokens(code_text);
-
-    let tree = match parser::parse_ast(code_text) {
-        Ok(t) => t,
-        Err(_) => {
-            let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-            return RustPruneResult {
-                pruned_code: code_text.to_string(),
-                original_tokens,
-                pruned_tokens: original_tokens,
-                savings_pct: 0.0,
-                total_lines,
-                kept_lines: total_lines,
-                latency_ms: elapsed,
-                has_syntax_error: true,
-            };
-        }
-    };
-
-    if tree.root_node().has_error() {
-        let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-        return RustPruneResult {
-            pruned_code: code_text.to_string(),
-            original_tokens,
-            pruned_tokens: original_tokens,
-            savings_pct: 0.0,
-            total_lines,
-            kept_lines: total_lines,
-            latency_ms: elapsed,
-            has_syntax_error: true,
-        };
-    }
-
-    let source_bytes = code_text.as_bytes();
-    let lines: Vec<&str> = code_text.lines().collect();
-
-    let scopes = parser::collect_scopes(&tree, source_bytes, &lines);
-    let score_res = scorer::evaluate_scopes(&scopes, focus_query, threshold);
-    let pruned_code = repair::reconstruct_code(code_text, &scopes, &score_res.decisions);
-    let prune_elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-
-    let pruned_tokens = count_tokens(&pruned_code);
-    let kept_lines = pruned_code.lines().count();
-    let savings_pct = if original_tokens > 0 {
-        ((original_tokens.saturating_sub(pruned_tokens)) as f64 / original_tokens as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    RustPruneResult {
-        pruned_code,
-        original_tokens,
-        pruned_tokens,
-        savings_pct,
-        total_lines,
-        kept_lines,
-        latency_ms: prune_elapsed,
-        has_syntax_error: false,
-    }
-}
-
-pub fn prune_file(
-    code_text: &str,
-    focus_query: &str,
-    threshold: f64,
-) -> PyResult<PruneResult> {
-    let res = prune_rust(code_text, focus_query, threshold);
-    Ok(PruneResult {
-        pruned_code: res.pruned_code,
-        original_tokens: res.original_tokens,
-        pruned_tokens: res.pruned_tokens,
-        savings_pct: res.savings_pct,
-        total_lines: res.total_lines,
-        kept_lines: res.kept_lines,
-        latency_ms: res.latency_ms,
-        has_syntax_error: res.has_syntax_error,
-    })
-}
 
 pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
     let total_tokens = count_tokens(code_text);
@@ -341,33 +244,18 @@ impl Calculator {
         self.result = a + b;
         self.result
     }
-
-    pub fn subtract(&mut self, a: i32, b: i32) -> i32 {
-        self.result = a - b;
-        self.result
-    }
 }
 "#;
 
     #[test]
-    fn test_rust_prune_add_method() {
-        let res = prune_rust(SAMPLE_CODE, "add", 0.3);
+    fn test_rust_indexing() {
+        let res = index_code(SAMPLE_CODE).unwrap();
         assert!(!res.has_syntax_error);
-        assert!(res.pruned_code.contains("pub fn add(&mut self, a: i32, b: i32) -> i32 {"));
-        assert!(res.pruned_code.contains("self.result = a + b;"));
-        assert!(res.pruned_code.contains("pub fn subtract(&mut self, a: i32, b: i32) -> i32 { todo!() }"));
-        assert!(res.pruned_code.contains("pub fn new() -> Self { todo!() }"));
-        assert!(res.savings_pct > 0.0);
-    }
-
-    #[test]
-    fn test_rust_zero_match_structural_skeleton() {
-        let res = prune_rust(SAMPLE_CODE, "nonexistent_xyz", 0.5);
-        assert!(!res.has_syntax_error);
-        assert!(res.pruned_code.contains("use std::collections::HashMap;"));
-        assert!(res.pruned_code.contains("pub struct Calculator"));
-        assert!(res.pruned_code.contains("impl Calculator"));
-        assert!(res.pruned_code.contains("pub fn add(&mut self, a: i32, b: i32) -> i32 { todo!() }"));
-        assert!(!res.pruned_code.contains("self.result = a + b;"));
+        let sym_names: Vec<&str> = res.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(sym_names.contains(&"Calculator"));
+        assert!(sym_names.contains(&"add"));
+        assert!(sym_names.contains(&"new"));
+        assert_eq!(res.imports.len(), 1);
+        assert_eq!(res.imports[0].module, "std::collections::HashMap");
     }
 }

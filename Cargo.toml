@@ -2,13 +2,13 @@
 name = "fastast"
 version = "0.1.0"
 edition = "2021"
-description = "High-performance syntax-guaranteed context engine and symbol indexer for coding agents"
+description = "High-performance AST-based repository indexer and symbol graph engine for coding agents"
 authors = ["Abdullah Eqbal <iabdullaheqbal@gmail.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/iabdullaheqbal/fastAST"
 homepage = "https://github.com/iabdullaheqbal/fastAST"
 readme = "README.md"
-keywords = ["ast", "tree-sitter", "pruning", "context-engine", "mcp"]
+keywords = ["ast", "tree-sitter", "indexer", "sqlite", "mcp"]
 categories = ["development-tools", "parsing", "text-processing"]
 
 [lib]

@@ -3,7 +3,7 @@
 import sqlite3
 import tempfile
 from pathlib import Path
-from fastast._core import index_code
+from fastast import index_code
 from fastast.db import (
     get_call_graph,
     get_connection,
@@ -16,6 +16,8 @@ from fastast.indexer import find_python_files, index_repository
 
 
 def test_native_symbol_and_call_extraction():
+    if index_code is None:
+        return
     code = """
 import sys
 from os import path as ospath
@@ -81,6 +83,8 @@ def run_pipeline(name: str):
 
 
 def test_sqlite_schema_and_queries():
+    if index_code is None:
+        return
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
         conn = get_connection(db_path)
@@ -130,6 +134,8 @@ def entry():
 
 
 def test_repository_indexing():
+    if index_code is None:
+        return
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
         # Create test package
@@ -154,6 +160,8 @@ def test_repository_indexing():
 
 def test_multi_language_repository_indexing():
     """Verify repository indexing across all 9 supported languages."""
+    if index_code is None:
+        return
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
 

@@ -1,7 +1,7 @@
 {
   "name": "fastast-app",
   "version": "1.0.0",
-  "description": "Fast AST context pruning and indexer engine",
+  "description": "Fast AST repository indexer engine",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc --build",
@@ -27,10 +27,10 @@
   },
   "keywords": [
     "ast",
-    "pruning",
+    "indexer",
     "tree-sitter",
-    "context",
-    "llm"
+    "sqlite",
+    "mcp"
   ],
   "author": "DeepMind Agentic Team",
   "license": "Apache-2.0"

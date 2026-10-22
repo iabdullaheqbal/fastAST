@@ -6,7 +6,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from fastast._core import index_code
+try:
+    from fastast._core import index_code
+except ImportError:
+    index_code = None
 from fastast.db import (
     get_connection,
     get_file_record,
@@ -99,7 +102,7 @@ def find_source_files(
     files_list: List[Path] = []
 
     for root, dirs, files in os.walk(root_dir):
-        # Prune ignored directory trees in-place
+        # Skip ignored directory trees in-place
         dirs[:] = [
             d for d in dirs
             if d not in ignores and not d.endswith(".egg-info")
@@ -140,6 +143,11 @@ def index_repository(
     Returns:
         Dictionary summarizing files scanned, indexed, symbols, and elapsed latency.
     """
+    if index_code is None:
+        raise RuntimeError(
+            "FastAST native engine (_core) is not compiled. Please build with `maturin develop` or install fastast."
+        )
+
     start_time = time.perf_counter()
     root = Path(repo_path).resolve()
     db_path = root / db_name

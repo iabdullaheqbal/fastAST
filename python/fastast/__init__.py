@@ -1,6 +1,6 @@
-"""FastAST: High-performance syntax-guaranteed context pruner for AI coding agents."""
+"""FastAST: AST-based repository indexer for coding agents."""
 
-from typing import Optional
+from typing import List, Optional
 
 __version__ = "0.1.0"
 
@@ -10,23 +10,70 @@ try:
         ExtractedImport,
         ExtractedSymbol,
         FileIndexResult,
-        PruneResult,
         index_code,
-        prune_file,
     )
 except ImportError:
-    PruneResult = None  # type: ignore
-    prune_file = None  # type: ignore
-    index_code = None  # type: ignore
-    ExtractedSymbol = None  # type: ignore
-    ExtractedImport = None  # type: ignore
-    ExtractedCall = None  # type: ignore
-    FileIndexResult = None  # type: ignore
+    class ExtractedSymbol:  # type: ignore
+        def __init__(
+            self,
+            name: str,
+            kind: str,
+            signature: str = "",
+            start_line: int = 0,
+            end_line: int = 0,
+            parent_name: Optional[str] = None,
+            docstring: Optional[str] = None,
+        ):
+            self.name = name
+            self.kind = kind
+            self.signature = signature
+            self.start_line = start_line
+            self.end_line = end_line
+            self.parent_name = parent_name
+            self.docstring = docstring
 
-try:
-    from fastast.server import prune_context
-except ImportError:
-    prune_context = None  # type: ignore
+    class ExtractedImport:  # type: ignore
+        def __init__(
+            self,
+            module: str,
+            name: Optional[str] = None,
+            alias: Optional[str] = None,
+            line_number: int = 0,
+        ):
+            self.module = module
+            self.name = name
+            self.alias = alias
+            self.line_number = line_number
+
+    class ExtractedCall:  # type: ignore
+        def __init__(
+            self,
+            callee_name: str,
+            caller_name: Optional[str] = None,
+            line_number: int = 0,
+        ):
+            self.caller_name = caller_name
+            self.callee_name = callee_name
+            self.line_number = line_number
+
+    class FileIndexResult:  # type: ignore
+        def __init__(
+            self,
+            symbols: Optional[List[ExtractedSymbol]] = None,
+            imports: Optional[List[ExtractedImport]] = None,
+            calls: Optional[List[ExtractedCall]] = None,
+            total_lines: int = 0,
+            total_tokens: int = 0,
+            has_syntax_error: bool = False,
+        ):
+            self.symbols = symbols or []
+            self.imports = imports or []
+            self.calls = calls or []
+            self.total_lines = total_lines
+            self.total_tokens = total_tokens
+            self.has_syntax_error = has_syntax_error
+
+    index_code = None  # type: ignore
 
 try:
     from fastast.indexer import index_repository
@@ -38,14 +85,11 @@ except ImportError:
 
 __all__ = [
     "__version__",
-    "PruneResult",
-    "prune_file",
     "index_code",
     "ExtractedSymbol",
     "ExtractedImport",
     "ExtractedCall",
     "FileIndexResult",
-    "prune_context",
     "index_repository",
     "search_symbols",
     "get_call_graph",

@@ -10,10 +10,9 @@ from fastast.cli import (
     detect_language_from_path,
     run_calls,
     run_index,
-    run_prune,
     run_symbols,
-    validate_syntax,
 )
+from fastast.db import get_connection, init_db
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -31,105 +30,101 @@ def test_detect_language():
     assert detect_language_from_path(Path("unknown.xyz")) is None
 
 
-def test_validate_syntax():
-    # Python
-    ok, _ = validate_syntax("def add(a, b): return a + b", "python")
-    assert ok is True
-    ok, _ = validate_syntax("def broken(:", "python")
-    assert ok is False
-
-    # JSON
-    ok, _ = validate_syntax('{"a": 1, "b": [2, 3]}', "json")
-    assert ok is True
-    ok, _ = validate_syntax('{"a": 1, broken}', "json")
-    assert ok is False
-
-    # TOML
-    ok, _ = validate_syntax('[package]\nname = "fastast"', "toml")
-    assert ok is True
-    ok, _ = validate_syntax('[broken\nname = ', "toml")
-    assert ok is False
-
-
-def test_run_prune_python(tmp_path: Path):
-    f = tmp_path / "test.py"
-    f.write_text("def target(): return 42\ndef unused(): return 0\n")
-
-    # Human readable
-    ret = run_prune(str(f), "target", 0.5, quiet=True)
-    assert ret == 0
-
-    # JSON mode
-    ret = run_prune(str(f), "target", 0.5, json_output=True)
-    assert ret == 0
-
-
-def test_run_prune_json_file(tmp_path: Path):
-    f = tmp_path / "config.json"
-    f.write_text('{"target_key": "val", "other": {"x": 1}}\n')
-
-    ret = run_prune(str(f), "target_key", 0.5, json_output=True)
-    assert ret == 0
-
-
-def test_run_prune_toml_file(tmp_path: Path):
-    f = tmp_path / "config.toml"
-    f.write_text('[section]\ntarget = "value"\n[other]\nfoo = "bar"\n')
-
-    ret = run_prune(str(f), "target", 0.5, json_output=True)
-    assert ret == 0
-
-
-def test_run_prune_missing_file():
-    ret = run_prune("/nonexistent/path/to/missing.py", "query", 0.5)
-    assert ret == 1
-
-
-def test_run_prune_unsupported_language(tmp_path: Path):
-    f = tmp_path / "test.txt"
-    f.write_text("hello world")
-
-    ret = run_prune(str(f), "hello", 0.5, language="brainfuck")
-    assert ret == 1
-
-
 def test_cli_subprocess_version():
     res = subprocess.run(
         [sys.executable, "-m", "fastast.cli", "--version"],
         capture_output=True,
         text=True,
+        env={"PYTHONPATH": "python"},
     )
     assert res.returncode == 0
     assert "fastast 0.1.0" in res.stdout
 
 
-def test_cli_subprocess_shorthand(tmp_path: Path):
-    f = tmp_path / "simple.py"
-    f.write_text("def foo(): return 1\ndef bar(): return 2\n")
-
+def test_cli_subprocess_help():
     res = subprocess.run(
-        [sys.executable, "-m", "fastast.cli", str(f), "-q", "foo", "--json"],
+        [sys.executable, "-m", "fastast.cli", "--help"],
         capture_output=True,
         text=True,
+        env={"PYTHONPATH": "python"},
     )
     assert res.returncode == 0
-    data = json.loads(res.stdout)
-    assert data["syntax_valid"] is True
-    assert "def foo():" in data["pruned_code"]
+    assert "FastAST: AST-based repository indexer for coding agents." in res.stdout
+    assert "index" in res.stdout
+    assert "symbols" in res.stdout
+    assert "calls" in res.stdout
+
+
+def test_run_index_missing_dir():
+    ret = run_index("/nonexistent/path/for/fastast", quiet=True)
+    assert ret == 1
+
+
+def test_run_symbols_missing_dir():
+    ret = run_symbols("test_sym", dir_path="/nonexistent/path/for/fastast", quiet=True)
+    assert ret == 1
+
+
+def test_run_calls_missing_dir():
+    ret = run_calls("test_call", dir_path="/nonexistent/path/for/fastast", quiet=True)
+    assert ret == 1
+
+
+def test_run_symbols_with_db(tmp_path: Path):
+    db_path = tmp_path / ".fastast.db"
+    conn = get_connection(db_path)
+    init_db(conn)
+    with conn:
+        conn.execute(
+            "INSERT INTO files (path, language, hash, mtime, total_lines, total_tokens) VALUES (?, ?, ?, ?, ?, ?)",
+            ("app1.py", "python", "hash123", 1000.0, 10, 20),
+        )
+        file_id = conn.execute("SELECT id FROM files WHERE path = 'app1.py'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO symbols (file_id, name, kind, signature, start_line, end_line) VALUES (?, ?, ?, ?, ?, ?)",
+            (file_id, "handle_request", "function", "def handle_request():", 1, 5),
+        )
+    conn.close()
+
+    ret = run_symbols("handle_request", dir_path=str(tmp_path), json_output=True)
+    assert ret == 0
+
+
+def test_run_calls_with_db(tmp_path: Path):
+    db_path = tmp_path / ".fastast.db"
+    conn = get_connection(db_path)
+    init_db(conn)
+    with conn:
+        conn.execute(
+            "INSERT INTO files (path, language, hash, mtime, total_lines, total_tokens) VALUES (?, ?, ?, ?, ?, ?)",
+            ("app2.py", "python", "hash123", 1000.0, 10, 20),
+        )
+        file_id = conn.execute("SELECT id FROM files WHERE path = 'app2.py'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO symbols (file_id, name, kind, signature, start_line, end_line) VALUES (?, ?, ?, ?, ?, ?)",
+            (file_id, "caller_func", "function", "def caller_func():", 1, 5),
+        )
+        sym_id = conn.execute("SELECT id FROM symbols WHERE name = 'caller_func'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO calls (file_id, caller_symbol_id, callee_name, line_number) VALUES (?, ?, ?, ?)",
+            (file_id, sym_id, "callee_func", 3),
+        )
+    conn.close()
+
+    ret = run_calls("callee_func", dir_path=str(tmp_path), json_output=True)
+    assert ret == 0
 
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         test_detect_language()
-        test_validate_syntax()
-        test_run_prune_python(tmp)
-        test_run_prune_json_file(tmp)
-        test_run_prune_toml_file(tmp)
-        test_run_prune_missing_file()
-        test_run_prune_unsupported_language(tmp)
         test_cli_subprocess_version()
-        test_cli_subprocess_shorthand(tmp)
+        test_cli_subprocess_help()
+        test_run_index_missing_dir()
+        test_run_symbols_missing_dir()
+        test_run_calls_missing_dir()
+        test_run_symbols_with_db(tmp)
+        test_run_calls_with_db(tmp)
 
-    print("All 9 CLI tests passed successfully!")
-
+    print("All CLI tests passed successfully!")

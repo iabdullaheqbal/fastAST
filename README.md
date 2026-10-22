@@ -1,19 +1,19 @@
 # FastAST
 
-**High-performance, syntax-guaranteed context pruning and repository symbol graph engine for AI coding agents.**
+**High-performance, AST-based repository indexer and symbol graph engine for AI coding agents.**
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Language: Rust + Python](https://img.shields.io/badge/Language-Rust%20%2B%20Python-orange.svg)](https://www.rust-lang.org/)
 [![Model Context Protocol](https://img.shields.io/badge/Protocol-MCP%20JSON--RPC-purple.svg)](https://modelcontextprotocol.io/)
 [![Database: SQLite WAL](https://img.shields.io/badge/Database-SQLite%20WAL-blue.svg)](https://www.sqlite.org/)
-[![Latency: < 15ms](https://img.shields.io/badge/Latency-%3C15ms%20pruning-brightgreen.svg)]()
-[![Syntax: 100% Guaranteed](https://img.shields.io/badge/Syntax-100%25%20Guaranteed-success.svg)]()
+[![Performance: Tree--Sitter AST](https://img.shields.io/badge/Parser-Tree--Sitter%20AST-brightgreen.svg)]()
 
-FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Windsurf**, and **SWE-bench harnesses**) with a unified repository context engine:
+FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Windsurf**, and **SWE-bench harnesses**) with instant, deterministic repository intelligence:
 
-1. **Full-Repository Symbol & Call Graph:** Scans entire project trees, extracts symbols (functions, classes, methods, docstrings, imports, call relationships), and stores them in a local SQLite database for sub-millisecond retrieval.
-2. **Syntax-Guaranteed Context Pruning:** Compresses large files (1,500–3,000+ lines) by up to 95% while guaranteeing **100% syntactically valid output** at **sub-15ms native speed**.
-3. **Multi-Language Support:** First-class pruning and symbol indexing for 8+ languages: **Python, JavaScript, TypeScript, Java, Rust, HTML, CSS, JSON, and TOML**.
+1. **Full-Repository Symbol & Call Graph:** Scans entire project trees, extracts symbols (functions, classes, methods, interfaces, types, docstrings, imports, call relationships), and stores them in a local SQLite database for sub-millisecond retrieval.
+2. **Incremental Indexing with SHA-256 Caching:** Uses file modification timestamps and SHA-256 content hashes to skip unchanged files instantly, keeping the database in sync in milliseconds.
+3. **Multi-Language AST Extraction:** Native Tree-Sitter parsing across 8+ languages: **Python, JavaScript, TypeScript, Java, Rust, HTML, CSS, JSON, and TOML**.
+4. **Agent-Native Integration:** Built-in Model Context Protocol (MCP) server exposing tools for automated symbol discovery and call graph traversal.
 
 ---
 
@@ -23,13 +23,18 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
 - [Supported Languages](#supported-languages)
 - [Installation](#installation)
 - [Quick Start (CLI)](#quick-start-cli)
+  - [1. Index Repository](#1-index-repository)
+  - [2. Search Symbols](#2-search-symbols)
+  - [3. Trace Call Graphs](#3-trace-call-graphs)
 - [MCP Server Setup](#mcp-server-setup)
   - [Claude Code](#claude-code)
   - [Cursor IDE](#cursor-ide)
   - [Custom MCP Clients](#custom-mcp-clients)
 - [MCP Tool Interface](#mcp-tool-interface)
-- [Full-Repository Indexing](#full-repository-indexing)
-- [Architecture Overview](#architecture-overview)
+  - [`index_repository`](#1-index_repository)
+  - [`query_symbols`](#2-query_symbols)
+  - [`get_call_graph`](#3-get_call_graph)
+- [Architecture & Database Schema](#architecture--database-schema)
 - [Development & Building from Source](#development--building-from-source)
 - [License](#license)
 
@@ -37,53 +42,38 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
 
 ## Key Features
 
-- **Deterministic Syntax Guarantees**: Never produces broken code. Unkept bodies are synthesized with valid language-appropriate stubs (`pass` in Python, `{ todo!() }` in Rust, `/* empty */` in JS/TS/Java, `<!-- empty -->` in HTML, `{}`/`[]` in JSON).
-- **Sub-15ms Native Speed**: Compiled pure Rust core with zero-copy PyO3 bindings processes multi-thousand line files in 1–15 milliseconds with zero garbage collection overhead.
-- **Accurate Token Reductions**: Measures real OpenAI/Anthropic token consumption via built-in `cl100k_base` BPE tables (`tiktoken-rs`)—no estimates or guesswork.
-- **Local SQLite Symbol & Call Graph**: Fast incremental repository walker with caller/callee tracing, symbol search, and SHA-256 change caching.
+- **Sub-Millisecond Symbol Lookups**: Pre-computes normalized symbol graphs and call hierarchies into local SQLite with indexed B-trees for instant querying.
+- **Accurate AST Parsing**: Powered by native Tree-Sitter grammars and zero-copy Rust parsers—extracts exact signatures, line spans, docstrings, and parent enclosing classes.
+- **Static Call Graph Extraction**: Discovers invocation links between functions, methods, and callees across the codebase to help agents estimate change blast radius.
+- **Fast Incremental Indexing**: Automatically skips unchanged files via SHA-256 hash checks and mtime caching.
 - **Official Model Context Protocol (MCP)**: Native JSON-RPC stdio server ready for Claude Code, Cursor, and any MCP-compliant coding agent.
-- **100% Local & Offline**: Zero cloud dependencies, zero external telemetry, zero API keys required.
+- **100% Local & Offline**: Zero cloud dependencies, zero external telemetry, zero vector database bloat, zero API keys required.
 
 ---
 
 ## Supported Languages
 
-FastAST provides dedicated AST parsers, dual-rubric scoring, dependency closure, and syntactic repair across all major languages:
+FastAST provides dedicated AST parsers and symbol/import/call extraction across all major languages:
 
-| Language | Extensions | Pruning Strategy & Syntax Stubs |
+| Language | Extensions | Extracted Symbols & Constructs |
 | :--- | :--- | :--- |
-| **Python** | `.py`, `.pyi`, `.pyw` | Scope stubs (`pass`), stacked decorator preservation, import closure |
-| **TypeScript / TSX** | `.ts`, `.tsx`, `.mts`, `.cts` | Interfaces, type aliases, enums, React components, stubs (`/* empty */`) |
-| **JavaScript / JSX** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, methods, arrow functions, React components |
-| **Java** | `.java` | Classes, interfaces, enums, constructors, methods (`/* empty */`) |
-| **Rust** | `.rs` | Functions, structs, enums, traits, impl blocks (`{ todo!() }`) |
-| **HTML** | `.html`, `.htm` | Structural hierarchy preservation, semantic sections (`<header>`, `<main>`, `<article>`) |
-| **CSS** | `.css` | Rulesets, selectors, media queries, keyframe blocks |
-| **JSON** | `.json` | Key-value pruning, object/array stubs (`{}` / `[]`), valid JSON output |
-| **TOML** | `.toml` | Tables (`[table]`), arrays of tables (`[[bin]]`), key-value filtering, valid TOML output |
+| **Python** | `.py`, `.pyi`, `.pyw` | Functions, async functions, classes, methods, docstrings, imports, call relationships |
+| **TypeScript / TSX** | `.ts`, `.tsx`, `.mts`, `.cts` | Interfaces, type aliases, enums, functions, arrow functions, classes, methods, React components |
+| **JavaScript / JSX** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, async functions, arrow functions, classes, methods, getters, setters, React components, JSDoc |
+| **Java** | `.java` | Packages, imports, classes, interfaces, enums, records, constructors, methods, fields |
+| **Rust** | `.rs` | Functions, structs, enums, traits, impl blocks, modules, consts, statics, type aliases, calls |
+| **HTML** | `.html`, `.htm`, `.xhtml` | Semantic sections (`<header>`, `<main>`, `<article>`, `<form>`), IDs (`#id`), classes (`.class`), `<link>`/`<script>` imports |
+| **CSS** | `.css` | Rulesets, selectors, media queries, keyframe animations, `@import` statements |
+| **JSON** | `.json`, `.jsonc` | Top-level objects, arrays, keys, package dependencies extracted as imports |
+| **TOML** | `.toml` | Tables (`[table]`), arrays of tables (`[[bin]]`), configuration keys, dependencies extracted as imports |
 
 ---
 
 ## Installation
 
-### From PyPI (Recommended - No Rust Required)
-
-FastAST publishes pre-built binary wheels for Linux (`manylinux`), macOS (Intel & Apple Silicon), and Windows with stable ABI support (`cp310-abi3`):
-
-```bash
-# Using pip:
-pip install fastast
-
-# Using uv:
-uv add fastast
-
-# As a standalone CLI tool:
-uv tool install fastast
-```
-
 ### From Source
 
-Building from source requires **Python >= 3.10** and **Rust >= 1.70**:
+Building FastAST requires **Python >= 3.10** and **Rust >= 1.70**:
 
 ```bash
 git clone https://github.com/iabdullaheqbal/fastAST.git
@@ -92,7 +82,7 @@ cd fastAST
 # Install in development mode
 pip install -e .
 
-# Or build release wheels using maturin
+# Or build release wheel using maturin
 maturin build --release
 ```
 
@@ -100,50 +90,12 @@ maturin build --release
 
 ## Quick Start (CLI)
 
-FastAST includes a standalone CLI (`fastast`) with four primary commands: `prune`, `index`, `symbols`, and `calls`.
-
-### 1. Context Pruning
-
-Prune a large file targeting a specific function or query:
-
-```bash
-# Prune Python file focusing on a specific function
-fastast prune tests/fixtures/sample_large.py -q "handle_request" --preview
-
-# Prune TypeScript / TSX component
-fastast prune src/components/UserProfile.tsx -q "UserProfile Avatar"
-
-# Prune JSON configuration down to relevant dependencies
-fastast prune package.json -q "scripts test"
-
-# Prune TOML configuration targeting specific crates
-fastast prune Cargo.toml -q "dependencies pyo3"
-
-# Output structured metrics as JSON for agent automation
-fastast prune src/database.py -q "ConnectionPool" --json
-```
-
-#### Pruning Output Example
-```text
-FastAST Pruning Complete in 1.24ms [VALID: ast.parse OK]
-Tokens: 12,183 -> 594 (95.12% reduction)
-Lines:  1,542 -> 166 (89.23% reduction)
-```
-
-CLI Pruning Flags:
-- `-q, --query <str>`: Query keywords, function names, or task descriptions.
-- `-t, --threshold <float>`: Relevance sensitivity cutoff (default: `0.5`, range `0.0`–`1.0`).
-- `-o, --output <path>`: Write pruned code directly to file.
-- `--preview`: Display pruned code preview in terminal.
-- `--json`: Output full telemetry JSON (`pruned_code`, `savings_pct`, `latency_ms`, `syntax_valid`).
-
----
-
-## Full-Repository Indexing
-
-FastAST indexes your codebase into a lightweight, high-performance SQLite database (`.fastast.db`) stored directly in your project root.
+FastAST includes a standalone CLI (`fastast`) with three primary commands: `index`, `symbols`, and `calls`.
 
 ### 1. Index Repository
+
+Index a project directory into a lightweight, high-performance SQLite database (`.fastast.db`):
+
 ```bash
 # Index the current repository
 fastast index .
@@ -151,49 +103,63 @@ fastast index .
 # Force re-indexing of all files (bypasses SHA-256 cache)
 fastast index . --force
 
-# JSON output mode
+# Output indexing statistics in JSON format
 fastast index . --json
 ```
 
+#### Indexing Output Example
 ```text
-FastAST Repository Indexing Complete in 142.18ms
-Database: /workspace/project/.fastast.db
-Files:    48 scanned (48 indexed, 0 skipped, 0 errors)
-Graph:    312 symbols, 94 imports, 186 calls
+FastAST Repository Indexing Complete
+Path:     /workspace/myproject
+Database: /workspace/myproject/.fastast.db
+Latency:  84.32 ms
+Files:    54 scanned (54 indexed, 0 skipped, 0 errors)
+Graph:    428 symbols, 112 imports, 260 calls
+Languages: python (32), typescript (14), rust (4), toml (4)
 ```
 
 ### 2. Search Symbols
+
 Search for functions, classes, interfaces, or methods across the entire codebase with line ranges and signatures:
 
 ```bash
+# Search by symbol name or substring
+fastast symbols "handle_request"
+
+# Filter by symbol kind (function, class, method, async_function)
 fastast symbols "execute" --kind function
-fastast symbols "DatabasePool"
+
+# Filter by programming language
+fastast symbols "Config" -L python
+
+# Output results as JSON for agent automation
+fastast symbols "UserProfile" --json
 ```
 
 ### 3. Trace Call Graphs
-Inspect all callers (inbound) and callees (outbound) for any function:
+
+Inspect inbound callers (who calls this) and outbound callees (what this calls) for any symbol:
 
 ```bash
-fastast calls "prune_file"
+fastast calls "execute_query"
 ```
 
 ```text
-Call Graph for 'prune_file':
-Callers (3):
-  <- run_prune (function) in python/fastast/cli.py:91
-  <- prune_context (function) in python/fastast/server.py:53
-Callees (4):
-  -> parse_ast() at src/lib.rs:113
-  -> collect_scopes() at src/lib.rs:147
-  -> evaluate_scopes() at src/lib.rs:148
-  -> reconstruct_code() at src/lib.rs:149
+Call Graph for 'execute_query':
+Callers (2):
+  <- [python] handle_request (function) in src/api.py:42
+  <- [python] batch_runner (function) in src/tasks.py:118
+Callees (3):
+  -> [python] validate_connection() at src/db.py:25
+  -> [python] acquire_lock() at src/db.py:31
+  -> [python] log_query() at src/db.py:88
 ```
 
 ---
 
 ## MCP Server Setup
 
-FastAST includes a native [Model Context Protocol](https://modelcontextprotocol.io/) server (`fastast-mcp`) providing stdio JSON-RPC 2.0 communication.
+FastAST includes a native [Model Context Protocol](https://modelcontextprotocol.io/) server (`fastast-mcp`) communicating over stdio JSON-RPC 2.0.
 
 ### Claude Code
 
@@ -243,72 +209,57 @@ python -m fastast.server
 
 ## MCP Tool Interface
 
-When connected as an MCP server, FastAST exposes 4 tools to coding agents:
+When connected as an MCP server, FastAST exposes 3 core tools to coding agents:
 
-### 1. `prune_context`
-Prunes a source code file down to query-relevant logic while guaranteeing syntactically valid code.
+### 1. `index_repository`
+Recursively scans and indexes files across the repository into the SQLite symbol and call graph.
 - **Parameters:**
-  - `code_text` (`string`, required): Source code content to prune.
-  - `focus_query` (`string`, required): Search terms, function names, or task intent.
-  - `threshold` (`float`, optional, default `0.5`): Relevance cutoff $\in [0.0, 1.0]$.
-  - `language` (`string`, optional): Language hint (`python`, `javascript`, `typescript`, `java`, `rust`, `html`, `css`, `json`, `toml`).
-- **Returns:** JSON object containing `pruned_code`, `savings_pct`, `pruned_tokens`, and `syntax_valid`.
+  - `directory_path` (`string`, optional, default: `"."`): Root directory to index.
+  - `force` (`boolean`, optional, default: `false`): Force reindexing of all files even if unchanged.
+- **Returns:** Summary JSON containing scanned files, indexed count, skipped count, symbols, imports, calls, and execution latency.
 
-### 2. `index_repository`
-Indexes files across the repository into the SQLite symbol and call graph.
+### 2. `query_symbols`
+Searches for symbol definitions across the indexed codebase. If the repository is not yet indexed, it automatically indexes it first.
 - **Parameters:**
-  - `directory_path` (`string`, optional, default `"."`): Root directory to index.
-- **Returns:** Summary of indexed files, extracted symbols, imports, and execution latency.
+  - `query` (`string`, required): Symbol identifier or substring (e.g. `'authenticate'`, `'Config'`).
+  - `kind` (`string`, optional): Filter (`function`, `async_function`, `class`, `method`).
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+  - `limit` (`integer`, optional, default: `50`): Maximum matches to return.
+  - `language` (`string`, optional): Language filter (`python`, `typescript`, `rust`, etc.).
+- **Returns:** JSON list of matching symbols with file paths, signatures, line ranges, and docstrings.
 
-### 3. `query_symbols`
-Searches for symbol definitions across the repository.
-- **Parameters:**
-  - `query` (`string`, required): Symbol identifier or substring.
-  - `kind` (`string`, optional): Filter (`function`, `class`, `method`, `interface`, etc.).
-  - `directory_path` (`string`, optional, default `"."`): Project root.
-- **Returns:** List of matching symbols with file paths, signatures, docstrings, and line spans.
-
-### 4. `get_call_graph`
-Returns caller and callee relationships for a given function or method.
+### 3. `get_call_graph`
+Returns incoming caller and outgoing callee relationships for a function or method.
 - **Parameters:**
   - `symbol_name` (`string`, required): Target function or method name.
-  - `directory_path` (`string`, optional, default `"."`): Project root.
-- **Returns:** Inbound callers and outbound callees with exact line references.
+  - `directory_path` (`string`, optional, default: `"."`): Project root.
+- **Returns:** Inbound callers and outbound callees with file paths and exact line references.
 
 ---
 
-## Architecture Overview
+## Architecture & Database Schema
 
-FastAST combines native compiled Tree-Sitter parsing with Python bindings:
+FastAST combines high-speed compiled Rust Tree-Sitter parsers with an embedded SQLite WAL database:
 
 ```
 [Coding Agent: Claude Code / Cursor / Windsurf]
                         │
                         ▼ (1) JSON-RPC stdio
-           [MCP Server: fastast-mcp]
-          /                         \
-         / (Tools)                   \ (Index)
-        ▼                             ▼
- [Core: fastast._core]       [SQLite Index: .fastast.db]
-   ├── Tree-Sitter Parsers     ├── files table (SHA-256 & mtime)
-   ├── Dual-Rubric Scorer      ├── symbols table (functions, classes, lines)
-   ├── Dependency Closure      ├── imports table (module relationships)
-   ├── AST Structural Repair   └── calls table (call graph relationships)
-   └── BPE Token Counting
-        │
-        ▼
- [Guaranteed Valid Pruned Code + Metrics]
+            [MCP Server: fastast-mcp]
+           /                         \
+          / (Query)                   \ (Index)
+         ▼                             ▼
+  [Symbol & Graph Queries]     [Indexer: indexer.py]
+         │                             │
+         │                             ├──► [Rust Core: _core] (Tree-Sitter AST Parsers)
+         │                             └──► [SQLite DB: .fastast.db]
+         ▼
+  [Local SQLite Database: .fastast.db]
+    ├── files table (file path, language, SHA-256 hash, mtime, line count, token count)
+    ├── symbols table (name, kind, signature, line spans, docstring, parent symbol)
+    ├── imports table (module, imported name, alias, line number)
+    └── calls table (caller symbol ID, callee name, line number)
 ```
-
-### Dual-Rubric & Dependency Closure Engine
-
-1. **Rubric A (Semantic Relevance):** Evaluates Jaccard subtoken overlap between the query and identifiers, class names, method signatures, and keywords.
-2. **Rubric B (Dependency Closure):** Automatically retains all structural companions:
-   - Enclosing scopes (parent classes, functions, and interfaces).
-   - Module imports required by retained logic.
-   - Control-flow companions (`try`/`except`/`finally`, `if`/`else`).
-3. **Query-Adaptive Gating:** Automatically detects structural vs. functional query intent, dynamically balancing semantic relevance against structural breadth.
-4. **Zero-Match Skeleton Fallback:** If a query has no lexical match, FastAST returns a clean architectural skeleton (imports + signatures with stubbed bodies) so the agent receives the file API map without token bloat.
 
 ---
 
@@ -316,34 +267,28 @@ FastAST combines native compiled Tree-Sitter parsing with Python bindings:
 
 ### Running Tests
 
-FastAST contains unit and integration tests across all 8 supported languages:
+FastAST contains unit and integration tests across CLI, MCP server, SQLite layer, and all supported languages:
 
 ```bash
-# Run multi-language test suite
-python tests/test_multi_language.py
-
-# Run individual language test suites
-python tests/test_pruner.py        # Python pruning & closure tests
-python tests/test_rust.py          # Rust structs, traits, and impl blocks
-python tests/test_typescript.py    # TypeScript & TSX components
-python tests/test_javascript.py    # JavaScript & JSX components
-python tests/test_java.py          # Java classes & methods
-python tests/test_html.py          # HTML structural pruning
-python tests/test_css.py           # CSS rulesets & media queries
-python tests/test_json.py          # JSON key-value & array filtering
-python tests/test_toml.py          # TOML tables & array of tables
-python tests/test_server.py        # MCP server tool tests
+# Run all test suites
+for f in tests/test_*.py; do
+    python3 "$f"
+done
 ```
 
-### Building Binary Wheels
+### Building Binary Extension
 
-Build an optimized release wheel:
+Build the native Rust PyO3 extension module:
+
+```bash
+maturin develop
+```
+
+Or build an optimized release wheel:
 
 ```bash
 maturin build --release
 ```
-
-Generated wheels are saved to `target/wheels/`.
 
 ---
 

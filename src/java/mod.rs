@@ -1,114 +1,137 @@
-//! Java language pruning engine with Tree-sitter AST parsing
-//!
-//! Three-module architecture:
-//! 1. parser.rs: Tree-sitter AST parsing and scope extraction
-//! 2. scorer.rs: Dual-rubric (semantic + structural) scoring
-//! 3. repair.rs: Valid Java reconstruction with method stubs
+//! Java language indexing engine with Tree-sitter AST parsing
 
 pub mod parser;
-pub mod scorer;
-pub mod repair;
 
-use crate::{count_tokens, PruneResult};
+use crate::{
+    count_tokens,
+    indexer::{ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult},
+};
 
-pub fn prune_file(
-    code_text: &str,
-    focus_query: &str,
-    threshold: f64,
-) -> PruneResult {
-    let start = std::time::Instant::now();
-
-    if code_text.trim().is_empty() {
-        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        return PruneResult {
-            pruned_code: String::new(),
-            original_tokens: 0,
-            pruned_tokens: 0,
-            savings_pct: 0.0,
-            total_lines: 0,
-            kept_lines: 0,
-            latency_ms: elapsed,
-            has_syntax_error: false,
-        };
-    }
-
-    let total_lines = code_text.lines().count();
-    let original_tokens = count_tokens(code_text);
-    let prune_start = std::time::Instant::now();
-
+pub fn index_code(code_text: &str) -> FileIndexResult {
+    let total_tokens = count_tokens(code_text);
     let lines: Vec<&str> = code_text.lines().collect();
 
-    // Parse AST
     let tree = match parser::parse_ast(code_text) {
         Ok(t) => t,
         Err(_) => {
-            let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-            return PruneResult {
-                pruned_code: code_text.to_string(),
-                original_tokens,
-                pruned_tokens: original_tokens,
-                savings_pct: 0.0,
-                total_lines,
-                kept_lines: total_lines,
-                latency_ms: elapsed,
+            return FileIndexResult {
+                symbols: Vec::new(),
+                imports: Vec::new(),
+                calls: Vec::new(),
+                total_lines: lines.len(),
+                total_tokens,
                 has_syntax_error: true,
             };
         }
     };
 
-    if tree.root_node().has_error() {
-        let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-        return PruneResult {
-            pruned_code: code_text.to_string(),
-            original_tokens,
-            pruned_tokens: original_tokens,
-            savings_pct: 0.0,
-            total_lines,
-            kept_lines: total_lines,
-            latency_ms: elapsed,
-            has_syntax_error: true,
-        };
-    }
-
+    let has_syntax_error = tree.root_node().has_error();
     let source_bytes = code_text.as_bytes();
-    
-    // Extract scopes
     let scopes = parser::collect_scopes(&tree, source_bytes, &lines);
-    
-    // Score scopes
-    let score_res = scorer::evaluate_scopes(&scopes, focus_query, threshold);
-    
-    // Reconstruct code
-    let pruned_code = repair::reconstruct_code(&lines, &scopes, &score_res.decisions);
 
-    let prune_elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-    let pruned_tokens = count_tokens(&pruned_code);
-    let kept_lines = pruned_code.lines().count();
-    let savings_pct = if original_tokens > 0 {
-        ((original_tokens.saturating_sub(pruned_tokens)) as f64 / original_tokens as f64) * 100.0
-    } else {
-        0.0
-    };
+    let mut symbols = Vec::new();
+    let mut imports = Vec::new();
+    let calls = Vec::new();
 
-    PruneResult {
-        pruned_code,
-        original_tokens,
-        pruned_tokens,
-        savings_pct,
-        total_lines,
-        kept_lines,
-        latency_ms: prune_elapsed,
-        has_syntax_error: false,
+    // Map scopes to symbols and imports
+    let scope_map: std::collections::HashMap<usize, &parser::JavaScope> =
+        scopes.iter().map(|s| (s.id, s)).collect();
+
+    for scope in &scopes {
+        match scope.kind {
+            parser::JavaNodeKind::Package => {
+                imports.push(ExtractedImport {
+                    module: scope.name.clone(),
+                    name: None,
+                    alias: None,
+                    line_number: scope.start_line + 1,
+                });
+            }
+            parser::JavaNodeKind::Import => {
+                let cleaned = scope.name.trim().trim_start_matches("import ").trim_end_matches(';').trim();
+                imports.push(ExtractedImport {
+                    module: cleaned.to_string(),
+                    name: None,
+                    alias: None,
+                    line_number: scope.start_line + 1,
+                });
+            }
+            parser::JavaNodeKind::Class
+            | parser::JavaNodeKind::Interface
+            | parser::JavaNodeKind::Enum => {
+                let kind_str = match scope.kind {
+                    parser::JavaNodeKind::Class => "class",
+                    parser::JavaNodeKind::Interface => "interface",
+                    parser::JavaNodeKind::Enum => "enum",
+                    _ => "class",
+                };
+                let parent_name = scope
+                    .parent_id
+                    .and_then(|pid| scope_map.get(&pid))
+                    .map(|p| p.name.clone());
+
+                let first_line = lines.get(scope.start_line).unwrap_or(&"").trim().to_string();
+
+                symbols.push(ExtractedSymbol {
+                    name: scope.name.clone(),
+                    kind: kind_str.to_string(),
+                    signature: first_line,
+                    start_line: scope.start_line + 1,
+                    end_line: scope.end_line + 1,
+                    parent_name,
+                    docstring: None,
+                });
+            }
+            parser::JavaNodeKind::Constructor | parser::JavaNodeKind::Method => {
+                let kind_str = match scope.kind {
+                    parser::JavaNodeKind::Constructor => "constructor",
+                    _ => "method",
+                };
+                let parent_name = scope
+                    .parent_id
+                    .and_then(|pid| scope_map.get(&pid))
+                    .map(|p| p.name.clone());
+
+                let first_line = lines.get(scope.start_line).unwrap_or(&"").trim().to_string();
+
+                symbols.push(ExtractedSymbol {
+                    name: scope.name.clone(),
+                    kind: kind_str.to_string(),
+                    signature: first_line,
+                    start_line: scope.start_line + 1,
+                    end_line: scope.end_line + 1,
+                    parent_name,
+                    docstring: None,
+                });
+            }
+            parser::JavaNodeKind::Field => {
+                let parent_name = scope
+                    .parent_id
+                    .and_then(|pid| scope_map.get(&pid))
+                    .map(|p| p.name.clone());
+
+                let first_line = lines.get(scope.start_line).unwrap_or(&"").trim().to_string();
+
+                symbols.push(ExtractedSymbol {
+                    name: scope.name.clone(),
+                    kind: "field".to_string(),
+                    signature: first_line,
+                    start_line: scope.start_line + 1,
+                    end_line: scope.end_line + 1,
+                    parent_name,
+                    docstring: None,
+                });
+            }
+            _ => {}
+        }
     }
-}
 
-pub fn index_code(code_text: &str) -> crate::FileIndexResult {
-    crate::FileIndexResult {
-        symbols: vec![],
-        imports: vec![],
-        calls: vec![],
-        total_lines: code_text.lines().count(),
-        total_tokens: crate::count_tokens(code_text),
-        has_syntax_error: false,
+    FileIndexResult {
+        symbols,
+        imports,
+        calls,
+        total_lines: lines.len(),
+        total_tokens,
+        has_syntax_error,
     }
 }

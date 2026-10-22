@@ -1,23 +1,10 @@
-//! JavaScript / JSX language pruning engine — production-ready
+//! JavaScript / JSX language indexing engine
 //!
-//! Design decisions driven by test expectations:
-//! - Imports always kept
-//! - Matched functions/arrows: full body preserved
-//! - Unmatched functions: stubbed as `function name() {}`
-//! - Unmatched arrows: stubbed as `export const name = (...) => {};`
-//! - Unmatched class methods: stubbed as `name() {}`
-//! - Constructor: stubbed when class kept but constructor unmatched
-//! - Zero-match: skeleton (all stubbed, class body = `class X {}`)
-//! - Multi-hop dependency closure via body reference scanning
-//! - Getter/setter companion pairing
-//! - JSDoc extraction for indexing
-//! - Nested function indexing with parent_name
-//! - Call graph extraction
+//! Extracts symbols, imports, and function calls from JavaScript, JSX, MJS, and CJS files.
 
 use crate::{
     count_tokens,
     indexer::{ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult},
-    PruneResult,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -48,45 +35,11 @@ struct Scope {
     tokens: Vec<String>,   // camelCase-split lowercase
     parent_id: Option<usize>,
     docstring: Option<String>,
-    /// Identifiers referenced in body (for dependency closure)
     body_refs: Vec<String>,
-    /// Whether the original code ends with ; (for arrow stubs)
     ends_with_semi: bool,
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
-
-pub fn prune_file(code_text: &str, focus_query: &str, threshold: f64) -> PruneResult {
-    let start = std::time::Instant::now();
-    if code_text.trim().is_empty() {
-        return empty_result(start);
-    }
-    let total_lines = code_text.lines().count();
-    let original_tokens = count_tokens(code_text);
-    let lines: Vec<&str> = code_text.lines().collect();
-    let scopes = extract_scopes(&lines);
-
-    let query_tokens: Vec<String> = focus_query
-        .split_whitespace()
-        .flat_map(|s| split_camel(s))
-        .map(|s| s.to_lowercase())
-        .collect();
-
-    let kept_ids = score_and_expand(&scopes, &query_tokens, threshold);
-    let pruned_code = reconstruct(&lines, &scopes, &kept_ids, &query_tokens);
-
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-    let pruned_tokens = count_tokens(&pruned_code);
-    let kept_lines = pruned_code.lines().count();
-    let savings_pct = if original_tokens > 0 {
-        ((original_tokens.saturating_sub(pruned_tokens)) as f64 / original_tokens as f64) * 100.0
-    } else { 0.0 };
-
-    PruneResult {
-        pruned_code, original_tokens, pruned_tokens, savings_pct,
-        total_lines, kept_lines, latency_ms: elapsed, has_syntax_error: false,
-    }
-}
 
 pub fn index_code(code_text: &str) -> FileIndexResult {
     let lines: Vec<&str> = code_text.lines().collect();
@@ -102,7 +55,8 @@ pub fn index_code(code_text: &str) -> FileIndexResult {
             Kind::Import => {
                 imports.push(ExtractedImport {
                     module: s.name.clone(),
-                    name: None, alias: None,
+                    name: None,
+                    alias: None,
                     line_number: s.start_line + 1,
                 });
             }
@@ -142,7 +96,9 @@ pub fn index_code(code_text: &str) -> FileIndexResult {
     }
 
     FileIndexResult {
-        symbols, imports, calls,
+        symbols,
+        imports,
+        calls,
         total_lines: lines.len(),
         total_tokens: count_tokens(code_text),
         has_syntax_error: false,
@@ -154,15 +110,12 @@ pub fn index_code(code_text: &str) -> FileIndexResult {
 fn extract_scopes(lines: &[&str]) -> Vec<Scope> {
     let mut scopes: Vec<Scope> = Vec::new();
     let mut next_id = 0usize;
-    // Stack of (scope_id, end_line) for container types (classes, outer functions)
     let mut class_stack: Vec<(usize, usize)> = Vec::new();
-    // Stack for tracking nested function parents
     let mut func_stack: Vec<(usize, usize)> = Vec::new();
     let mut pending_doc: Option<String> = None;
 
     let mut i = 0;
     while i < lines.len() {
-        // Pop stacks
         while class_stack.last().map(|&(_, end)| i > end).unwrap_or(false) { class_stack.pop(); }
         while func_stack.last().map(|&(_, end)| i > end).unwrap_or(false) { func_stack.pop(); }
 
@@ -212,7 +165,7 @@ fn extract_scopes(lines: &[&str]) -> Vec<Scope> {
             let name = extract_class_name(trimmed);
             let end = find_brace_end(lines, i).unwrap_or(i);
             let body_refs = collect_refs(lines, i + 1, end.saturating_sub(1));
-            let parent = class_parent; // nested class support
+            let parent = class_parent;
             let sid = push_scope(&mut scopes, &mut next_id, Kind::Class, &name, trimmed, i, end, parent, pending_doc.take(), &body_refs, false);
             class_stack.push((sid, end));
             i += 1; continue;
@@ -250,39 +203,29 @@ fn extract_scopes(lines: &[&str]) -> Vec<Scope> {
             // ── Regular method ──
             if is_class_method_line(trimmed) {
                 let name = extract_method_name(trimmed);
-                let end = find_brace_end(lines, i).unwrap_or(i);
-                push_scope(&mut scopes, &mut next_id, Kind::Method, &name, trimmed, i, end, class_parent, pending_doc.take(), &[], false);
+                if !name.is_empty() {
+                    let end = find_brace_end(lines, i).unwrap_or(i);
+                    push_scope(&mut scopes, &mut next_id, Kind::Method, &name, trimmed, i, end, class_parent, pending_doc.take(), &[], false);
+                    i += 1; continue;
+                }
+            }
+        }
+
+        // ── Arrow function (standalone or exported) ──
+        if is_arrow_or_const(trimmed) {
+            let name = extract_const_name(trimmed);
+            if !name.is_empty() {
+                let (end, ends_semi) = find_arrow_end(lines, i);
+                let body_refs = collect_refs(lines, i + 1, end.saturating_sub(1));
+                let parent = func_parent.or(class_parent);
+                let sid = push_scope(&mut scopes, &mut next_id, Kind::ArrowFunction, &name, trimmed, i, end, parent, pending_doc.take(), &body_refs, ends_semi);
+                func_stack.push((sid, end));
                 i += 1; continue;
             }
         }
 
-        // ── Top-level or nested functions (not in class) ──
-        // Arrow / const function
-        if is_arrow_or_const(trimmed) && class_stack.is_empty() {
-            let name = extract_const_name(trimmed);
-            let (end, ends_semi) = find_arrow_end(lines, i);
-            let body_refs = collect_refs(lines, i, end);
-            let parent = func_parent;
-            let sid = push_scope(&mut scopes, &mut next_id, Kind::ArrowFunction, &name, trimmed, i, end, parent, pending_doc.take(), &body_refs, ends_semi);
-            // Don't push to func_stack since arrow functions don't typically contain named functions
-            let _ = sid;
-            i += 1; continue;
-        }
-
-        // export default arrow: `export default (x, y) => {`
-        if (trimmed.starts_with("export default (") || trimmed.starts_with("export default async ("))
-            && trimmed.contains("=>")
-        {
-            let name = "default".to_string();
-            let (end, ends_semi) = find_arrow_end(lines, i);
-            let body_refs = collect_refs(lines, i, end);
-            let sid = push_scope(&mut scopes, &mut next_id, Kind::ArrowFunction, &name, trimmed, i, end, None, pending_doc.take(), &body_refs, ends_semi);
-            let _ = sid;
-            i += 1; continue;
-        }
-
-        // Async function
-        if is_async_func_line(trimmed) && class_stack.is_empty() {
+        // ── Async function declaration ──
+        if is_async_func_line(trimmed) {
             let name = extract_func_name(trimmed);
             let end = find_brace_end(lines, i).unwrap_or(i);
             let body_refs = collect_refs(lines, i + 1, end.saturating_sub(1));
@@ -292,8 +235,8 @@ fn extract_scopes(lines: &[&str]) -> Vec<Scope> {
             i += 1; continue;
         }
 
-        // Regular function
-        if is_func_decl_line(trimmed) && class_stack.is_empty() {
+        // ── Regular function declaration ──
+        if is_func_decl_line(trimmed) {
             let name = extract_func_name(trimmed);
             let end = find_brace_end(lines, i).unwrap_or(i);
             let body_refs = collect_refs(lines, i + 1, end.saturating_sub(1));
@@ -327,290 +270,6 @@ fn push_scope(
         ends_with_semi,
     });
     id
-}
-
-// ── Scoring & expansion ─────────────────────────────────────────────────────
-
-fn score_and_expand(scopes: &[Scope], query_tokens: &[String], threshold: f64) -> HashSet<usize> {
-    let mut kept: HashSet<usize> = HashSet::new();
-
-    // Always keep imports
-    for s in scopes {
-        if s.kind == Kind::Import { kept.insert(s.id); }
-    }
-    if query_tokens.is_empty() { return kept; }
-
-    // Phase 1: semantic scoring
-    let mut semantic: HashSet<usize> = HashSet::new();
-    for s in scopes {
-        if jaccard(&s.tokens, query_tokens) >= threshold {
-            semantic.insert(s.id);
-        }
-    }
-
-    // Phase 2: zero-match → skeleton
-    if semantic.is_empty() {
-        for s in scopes { kept.insert(s.id); }
-        return kept;
-    }
-
-    // Phase 3: add semantic matches
-    for &id in &semantic { kept.insert(id); }
-
-    // Phase 4: enclosing classes
-    add_ancestors(scopes, &mut kept);
-
-    // Phase 5: multi-hop dependency closure
-    let name_to_ids: HashMap<&str, Vec<usize>> = {
-        let mut m: HashMap<&str, Vec<usize>> = HashMap::new();
-        for s in scopes {
-            if !matches!(s.kind, Kind::Import) {
-                m.entry(s.name.as_str()).or_default().push(s.id);
-            }
-        }
-        m
-    };
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let snap: Vec<usize> = kept.iter().copied().collect();
-        for &kid in &snap {
-            let Some(scope) = scopes.iter().find(|s| s.id == kid) else { continue };
-            for refname in &scope.body_refs {
-                if let Some(ids) = name_to_ids.get(refname.as_str()) {
-                    for &rid in ids {
-                        if !kept.contains(&rid) {
-                            kept.insert(rid);
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Phase 6: getter/setter companion pairing
-    let mut companions: Vec<usize> = Vec::new();
-    for s in scopes {
-        if !kept.contains(&s.id) { continue; }
-        if !matches!(s.kind, Kind::Getter | Kind::Setter | Kind::Method) { continue; }
-        let prop = accessor_property(&s.name, s.kind);
-        let Some(prop) = prop else { continue };
-        for other in scopes {
-            if other.id == s.id || other.parent_id != s.parent_id { continue; }
-            if !matches!(other.kind, Kind::Getter | Kind::Setter | Kind::Method) { continue; }
-            if accessor_property(&other.name, other.kind).as_deref() == Some(&prop) {
-                companions.push(other.id);
-            }
-        }
-    }
-    for id in companions { kept.insert(id); }
-
-    // Re-add ancestors
-    add_ancestors(scopes, &mut kept);
-
-    kept
-}
-
-fn add_ancestors(scopes: &[Scope], kept: &mut HashSet<usize>) {
-    let mut to_add: Vec<usize> = Vec::new();
-    for s in scopes {
-        if !kept.contains(&s.id) { continue; }
-        let mut cur = s.parent_id;
-        while let Some(pid) = cur {
-            to_add.push(pid);
-            cur = scopes.iter().find(|x| x.id == pid).and_then(|x| x.parent_id);
-        }
-    }
-    for id in to_add { kept.insert(id); }
-}
-
-fn accessor_property(name: &str, kind: Kind) -> Option<String> {
-    if kind == Kind::Getter || kind == Kind::Setter {
-        return Some(name.to_lowercase());
-    }
-    let lc = name.to_lowercase();
-    if lc.starts_with("get") && lc.len() > 3 { return Some(lc[3..].to_string()); }
-    if lc.starts_with("set") && lc.len() > 3 { return Some(lc[3..].to_string()); }
-    if lc.starts_with("is") && lc.len() > 2 { return Some(lc[2..].to_string()); }
-    None
-}
-
-fn jaccard(scope_tokens: &[String], query_tokens: &[String]) -> f64 {
-    if scope_tokens.is_empty() || query_tokens.is_empty() { return 0.0; }
-    let hits = query_tokens.iter()
-        .filter(|qt| scope_tokens.iter().any(|t| t == *qt || t.contains(qt.as_str()) || qt.contains(t.as_str())))
-        .count();
-    hits as f64 / query_tokens.len().max(1) as f64
-}
-
-// ── Reconstruction ──────────────────────────────────────────────────────────
-
-fn reconstruct(lines: &[&str], scopes: &[Scope], kept: &HashSet<usize>, query_tokens: &[String]) -> String {
-    let mut out = String::new();
-    let mut used = vec![false; lines.len()];
-    let scope_map: HashMap<usize, &Scope> = scopes.iter().map(|s| (s.id, s)).collect();
-
-    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
-    for s in scopes {
-        if let Some(pid) = s.parent_id {
-            children.entry(pid).or_default().push(s.id);
-        }
-    }
-
-    // Skeleton mode: all callable scopes in kept = zero-match
-    let callable_count = scopes.iter()
-        .filter(|s| matches!(s.kind, Kind::Function | Kind::AsyncFunction | Kind::ArrowFunction
-            | Kind::Method | Kind::AsyncMethod | Kind::Getter | Kind::Setter | Kind::Constructor))
-        .count();
-    let is_skeleton = !query_tokens.is_empty()
-        && callable_count > 0
-        && scopes.iter()
-            .filter(|s| matches!(s.kind, Kind::Function | Kind::AsyncFunction | Kind::ArrowFunction
-                | Kind::Method | Kind::AsyncMethod | Kind::Getter | Kind::Setter | Kind::Constructor))
-            .all(|s| kept.contains(&s.id));
-
-    // 1. Imports
-    for s in scopes {
-        if s.kind == Kind::Import && kept.contains(&s.id) {
-            emit_lines(&mut out, &mut used, lines, s.start_line, s.end_line);
-        }
-    }
-
-    // 2. Top-level scopes (parent_id == None, not Import)
-    let top_level: Vec<&Scope> = scopes.iter()
-        .filter(|s| s.parent_id.is_none() && s.kind != Kind::Import)
-        .collect();
-
-    for scope in &top_level {
-        match scope.kind {
-            Kind::Class => {
-                if !kept.contains(&scope.id) { continue; }
-                if is_skeleton {
-                    // Zero-match: class stub with no body
-                    let sig = scope.signature.trim();
-                    let base = if let Some(p) = sig.find('{') { sig[..p].trim_end() } else { sig };
-                    out.push_str(&format!("{} {{}}\n", base));
-                    mark_used(&mut used, scope.start_line, scope.end_line);
-                } else {
-                    emit_class(&mut out, &mut used, lines, scope, &children, &scope_map, kept, is_skeleton);
-                }
-            }
-            Kind::Function | Kind::AsyncFunction => {
-                if kept.contains(&scope.id) && !is_skeleton {
-                    emit_lines(&mut out, &mut used, lines, scope.start_line, scope.end_line);
-                } else {
-                    // Stub
-                    let stub = stub_function(scope);
-                    out.push_str(&stub);
-                    out.push('\n');
-                    mark_used(&mut used, scope.start_line, scope.end_line);
-                }
-            }
-            Kind::ArrowFunction => {
-                if kept.contains(&scope.id) && !is_skeleton {
-                    emit_lines(&mut out, &mut used, lines, scope.start_line, scope.end_line);
-                } else {
-                    let stub = stub_arrow(scope);
-                    out.push_str(&stub);
-                    out.push('\n');
-                    mark_used(&mut used, scope.start_line, scope.end_line);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let result = out.trim_end().to_string();
-    if result.is_empty() { lines.join("\n") } else { result }
-}
-
-fn emit_class(
-    out: &mut String, used: &mut [bool], lines: &[&str],
-    cls: &Scope, children: &HashMap<usize, Vec<usize>>,
-    scope_map: &HashMap<usize, &Scope>, kept: &HashSet<usize>, is_skeleton: bool,
-) {
-    // Class header
-    emit_lines(out, used, lines, cls.start_line, cls.start_line);
-
-    if let Some(child_ids) = children.get(&cls.id) {
-        let mut sorted: Vec<&Scope> = child_ids.iter()
-            .filter_map(|id| scope_map.get(id).copied())
-            .collect();
-        sorted.sort_by_key(|s| s.start_line);
-
-        for member in &sorted {
-            if kept.contains(&member.id) && !is_skeleton {
-                // Check if this member should be kept full or stubbed
-                // Constructor is always stubbed unless semantically matched
-                emit_lines(out, used, lines, member.start_line, member.end_line);
-            } else {
-                // Stub
-                let stub = stub_method(member);
-                out.push_str("    ");
-                out.push_str(&stub);
-                out.push('\n');
-                mark_used(used, member.start_line, member.end_line);
-            }
-        }
-    }
-
-    // Closing brace
-    if cls.end_line < lines.len() {
-        emit_lines(out, used, lines, cls.end_line, cls.end_line);
-    }
-}
-
-fn stub_function(s: &Scope) -> String {
-    let sig = s.signature.trim();
-    let base = if let Some(p) = sig.find('{') { sig[..p].trim_end() } else { sig };
-    format!("{} {{}}", base)
-}
-
-fn stub_arrow(s: &Scope) -> String {
-    let sig = s.signature.trim();
-    if let Some(arrow_pos) = sig.find("=>") {
-        let before_arrow = &sig[..arrow_pos + 2];
-        let has_semi = sig.ends_with(';') || s.ends_with_semi;
-        if has_semi {
-            format!("{} {{}};", before_arrow.trim_end())
-        } else {
-            format!("{} {{}}", before_arrow.trim_end())
-        }
-    } else if let Some(p) = sig.find('{') {
-        let base = sig[..p].trim_end();
-        format!("{} {{}}", base)
-    } else {
-        format!("{} {{}}", sig)
-    }
-}
-
-fn stub_method(s: &Scope) -> String {
-    let sig = s.signature.trim();
-    let base = if let Some(p) = sig.find('{') {
-        sig[..p].trim_end()
-    } else if let Some(p) = sig.find("=>") {
-        &sig[..p + 2]
-    } else {
-        sig
-    };
-    format!("{} {{}}", base)
-}
-
-fn emit_lines(out: &mut String, used: &mut [bool], lines: &[&str], start: usize, end: usize) {
-    let end = end.min(lines.len().saturating_sub(1));
-    for i in start..=end {
-        if !used[i] {
-            out.push_str(lines[i]);
-            out.push('\n');
-            used[i] = true;
-        }
-    }
-}
-
-fn mark_used(used: &mut [bool], start: usize, end: usize) {
-    for i in start..=end.min(used.len().saturating_sub(1)) { used[i] = true; }
 }
 
 // ── Line classifiers ────────────────────────────────────────────────────────
@@ -751,26 +410,21 @@ fn find_brace_end(lines: &[&str], start: usize) -> Option<usize> {
 /// Find the end of an arrow function. Returns (end_line, ends_with_semicolon)
 fn find_arrow_end(lines: &[&str], start: usize) -> (usize, bool) {
     let line = lines[start];
-    // Block body: contains => {
     if line.contains("=> {") || (line.contains("=>") && line.trim_end().ends_with('{')) {
         let end = find_brace_end(lines, start).unwrap_or(start);
-        // Check if line after closing brace has ;
         let ends_semi = if end < lines.len() {
             let end_line = lines[end].trim();
             end_line.ends_with("};") || end_line == "};"
         } else {
             false
         };
-        // Also check if the actual end_line (the }) is followed by ; on same line
         let same_line_semi = lines[end].trim().ends_with("};");
         return (end, ends_semi || same_line_semi);
     }
-    // Concise body on one line
     let ends_semi = line.trim_end().ends_with(';');
     (start, ends_semi)
 }
 
-/// Collect identifiers in body for dependency closure
 fn collect_refs(lines: &[&str], start: usize, end: usize) -> Vec<String> {
     let mut refs = HashSet::new();
     if start >= lines.len() { return Vec::new(); }
@@ -843,15 +497,5 @@ fn extract_calls(line: &str, caller: &str, line_number: usize, calls: &mut Vec<E
         } else {
             i += 1;
         }
-    }
-}
-
-fn empty_result(start: std::time::Instant) -> PruneResult {
-    PruneResult {
-        pruned_code: String::new(),
-        original_tokens: 0, pruned_tokens: 0,
-        savings_pct: 0.0, total_lines: 0, kept_lines: 0,
-        latency_ms: start.elapsed().as_secs_f64() * 1000.0,
-        has_syntax_error: false,
     }
 }

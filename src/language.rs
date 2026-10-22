@@ -39,37 +39,6 @@ impl Language {
             .and_then(Self::from_extension)
     }
 
-    /// Get the comment-style placeholder for empty blocks
-    pub fn empty_block_placeholder(&self) -> &'static str {
-        match self {
-            Language::Python => "pass",
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust => "/* empty */",
-            Language::HTML => "<!-- empty -->",
-            Language::JSON => "{}",
-            Language::TOML => "",
-        }
-    }
-
-    /// Get typical block start character
-    pub fn block_start(&self) -> Option<char> {
-        match self {
-            Language::Python => None, // Python uses indentation
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust | Language::JSON => Some('{'),
-            Language::HTML => Some('<'),
-            Language::TOML => Some('['),
-        }
-    }
-
-    /// Get typical block end character
-    pub fn block_end(&self) -> Option<char> {
-        match self {
-            Language::Python => None,
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust | Language::JSON => Some('}'),
-            Language::HTML => Some('>'),
-            Language::TOML => Some(']'),
-        }
-    }
-
     /// Get the tree-sitter language instance
     pub fn tree_sitter_language(&self) -> tree_sitter::Language {
         match self {
@@ -83,24 +52,6 @@ impl Language {
             Language::JSON => panic!("JSON uses native serde_json parser instead of Tree-sitter"),
             Language::TOML => panic!("TOML uses native toml parser instead of Tree-sitter"),
         }
-    }
-
-    /// Check if this language uses braces for blocks
-    pub fn uses_braces(&self) -> bool {
-        matches!(
-            self,
-            Language::Java | Language::JavaScript | Language::TypeScript | Language::CSS | Language::Rust | Language::JSON
-        )
-    }
-
-    /// Check if this language uses indentation for blocks
-    pub fn uses_indentation(&self) -> bool {
-        matches!(self, Language::Python)
-    }
-
-    /// Check if this language uses tags (HTML/XML style)
-    pub fn uses_tags(&self) -> bool {
-        matches!(self, Language::HTML)
     }
 
     /// Get language name as string

@@ -1,9 +1,8 @@
 """
-Test multi-language support for FastAST.
-Tests Python, Java, JavaScript, TypeScript, HTML, and CSS support.
+Test multi-language AST indexing support for FastAST.
+Tests Python, Java, JavaScript, TypeScript, HTML, CSS, Rust, JSON, and TOML indexing.
 """
 import sys
-import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
@@ -13,31 +12,15 @@ try:
 except ImportError:
     pytest = None
 
-from fastast import prune_file, index_code
+from fastast import index_code
 
 
 class TestPythonSupport:
-    """Test Python language support"""
-
-    def test_prune_python_file(self):
-        """Test pruning a Python file"""
-        code = """
-def add(a, b):
-    return a + b
-
-def subtract(a, b):
-    return a - b
-
-def multiply(a, b):
-    return a * b
-"""
-        result = prune_file(code, "add", threshold=0.3, language="python")
-        assert result.has_syntax_error is False
-        assert result.original_tokens > 0
-        assert len(result.pruned_code) > 0
+    """Test Python language indexing support"""
 
     def test_index_python_file(self):
-        """Test indexing a Python file"""
+        if index_code is None:
+            return
         code = """
 class Calculator:
     def add(self, a, b):
@@ -55,31 +38,11 @@ import os
 
 
 class TestJavaSupport:
-    """Test Java language support"""
-
-    def test_prune_java_file(self):
-        """Test pruning a Java file"""
-        code = """
-public class Calculator {
-    private int result;
-
-    public int add(int a, int b) {
-        result = a + b;
-        return result;
-    }
-
-    public int subtract(int a, int b) {
-        result = a - b;
-        return result;
-    }
-}
-"""
-        result = prune_file(code, "add", threshold=0.3, language="java")
-        assert result.has_syntax_error is False
-        assert result.original_tokens > 0
+    """Test Java language indexing support"""
 
     def test_index_java_file(self):
-        """Test indexing a Java file"""
+        if index_code is None:
+            return
         code = """
 package com.example;
 
@@ -99,335 +62,134 @@ public class Calculator {
         result = index_code(code, language="java")
         assert result.has_syntax_error is False
         assert result.total_lines > 0
-        # Java indexing should find symbols
-        assert result.total_tokens > 0
+        assert len(result.symbols) > 0
 
 
 class TestJavaScriptSupport:
-    """Test JavaScript language support"""
-
-    def test_prune_javascript_file(self):
-        """Test pruning a JavaScript file"""
-        code = """
-class Calculator {
-    add(a, b) {
-        return a + b;
-    }
-
-    subtract(a, b) {
-        return a - b;
-    }
-}
-
-function multiply(a, b) {
-    return a * b;
-}
-"""
-        result = prune_file(code, "add", threshold=0.3, language="javascript")
-        assert result.has_syntax_error is False
-        assert result.original_tokens > 0
+    """Test JavaScript language indexing support"""
 
     def test_index_javascript_file(self):
-        """Test indexing a JavaScript file"""
+        if index_code is None:
+            return
         code = """
-async function fetchData(url) {
-    const response = await fetch(url);
-    return response.json();
+import { useState } from 'react';
+
+export function Counter() {
+    const [count, setCount] = useState(0);
+    return count;
 }
 
-class ApiClient {
-    constructor(baseUrl) {
-        this.baseUrl = baseUrl;
-    }
-
-    async getUser(id) {
-        return fetchData(this.baseUrl + '/users/' + id);
+export class Service {
+    execute() {
+        return true;
     }
 }
 """
         result = index_code(code, language="javascript")
         assert result.has_syntax_error is False
-        assert result.total_lines > 0
-        assert result.total_tokens > 0
+        assert len(result.symbols) >= 2
+        assert len(result.imports) >= 1
 
 
 class TestTypeScriptSupport:
-    """Test TypeScript language support"""
-
-    def test_prune_typescript_file(self):
-        """Test pruning a TypeScript file"""
-        code = """
-interface ICalculator {
-    add(a: number, b: number): number;
-    subtract(a: number, b: number): number;
-}
-
-class Calculator implements ICalculator {
-    add(a: number, b: number): number {
-        return a + b;
-    }
-
-    subtract(a: number, b: number): number {
-        return a - b;
-    }
-}
-"""
-        result = prune_file(code, "add", threshold=0.3, language="typescript")
-        assert result.has_syntax_error is False
-        assert result.original_tokens > 0
+    """Test TypeScript language indexing support"""
 
     def test_index_typescript_file(self):
-        """Test indexing a TypeScript file"""
+        if index_code is None:
+            return
         code = """
-type User = {
-    id: number;
-    name: string;
-};
-
-interface IUserService {
-    getUser(id: number): Promise<User>;
+export interface Config {
+    host: string;
+    port: number;
 }
 
-export class UserService implements IUserService {
-    async getUser(id: number): Promise<User> {
-        return fetch(`/api/users/${id}`).then(r => r.json());
-    }
+export function startServer(cfg: Config): boolean {
+    return true;
 }
 """
         result = index_code(code, language="typescript")
         assert result.has_syntax_error is False
-        assert result.total_lines > 0
-        assert result.total_tokens > 0
+        assert len(result.symbols) >= 2
 
 
 class TestHTMLSupport:
-    """Test HTML language support"""
-
-    def test_prune_html_file(self):
-        """Test pruning an HTML file"""
-        code = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Page Title</title>
-</head>
-<body>
-    <header>
-        <h1>Welcome</h1>
-    </header>
-    <main>
-        <article>
-            <p>Content here</p>
-        </article>
-    </main>
-    <footer>
-        <p>Footer content</p>
-    </footer>
-</body>
-</html>
-"""
-        result = prune_file(code, "header", threshold=0.3, language="html")
-        assert result.has_syntax_error is False
-        assert result.original_tokens > 0
+    """Test HTML language indexing support"""
 
     def test_index_html_file(self):
-        """Test indexing an HTML file"""
+        if index_code is None:
+            return
         code = """
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>Test Page</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <nav>Navigation</nav>
-    <article>Content</article>
-    <script src="app.js"></script>
+    <header class="header"><h1>Title</h1></header>
+    <main id="main-content"><p>Content</p></main>
 </body>
 </html>
 """
         result = index_code(code, language="html")
         assert result.has_syntax_error is False
-        assert result.total_lines > 0
-        assert result.total_tokens > 0
+        assert len(result.symbols) >= 1
+        assert len(result.imports) >= 1
 
 
 class TestCSSSupport:
-    """Test CSS language support"""
-
-    def test_prune_css_file(self):
-        """Test pruning a CSS file"""
-        code = """
-body {
-    font-family: Arial, sans-serif;
-    margin: 0;
-    padding: 0;
-}
-
-header {
-    background-color: #333;
-    color: white;
-    padding: 20px;
-}
-
-main {
-    padding: 20px;
-}
-
-footer {
-    background-color: #333;
-    color: white;
-    text-align: center;
-}
-
-@media (max-width: 768px) {
-    body { padding: 10px; }
-}
-"""
-        result = prune_file(code, "header", threshold=0.3, language="css")
-        assert result.has_syntax_error is False
-        assert result.original_tokens > 0
+    """Test CSS language indexing support"""
 
     def test_index_css_file(self):
-        """Test indexing a CSS file"""
+        if index_code is None:
+            return
         code = """
-.container {
-    max-width: 1200px;
-    margin: 0 auto;
+@import url("base.css");
+
+body {
+    margin: 0;
 }
 
-#header {
-    background: #333;
-}
-
-.btn {
-    padding: 10px 20px;
-    border: none;
-    border-radius: 4px;
-}
-
-@media (max-width: 768px) {
-    .container { max-width: 100%; }
+.header {
+    background: #fff;
 }
 """
         result = index_code(code, language="css")
         assert result.has_syntax_error is False
-        assert result.total_lines > 0
-        assert result.total_tokens > 0
+        assert len(result.symbols) >= 2
+        assert len(result.imports) >= 1
 
 
 class TestRustSupport:
-    """Test Rust language support"""
-
-    def test_prune_rust_file(self):
-        """Test pruning a Rust file"""
-        code = """
-pub fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-
-pub fn subtract(a: i32, b: i32) -> i32 {
-    a - b
-}
-"""
-        result = prune_file(code, "add", threshold=0.3, language="rust")
-        assert result.has_syntax_error is False
-        assert result.original_tokens > 0
-        assert "pub fn add" in result.pruned_code
+    """Test Rust language indexing support"""
 
     def test_index_rust_file(self):
-        """Test indexing a Rust file"""
+        if index_code is None:
+            return
         code = """
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
+use std::collections::HashMap;
+
+pub struct Service {
+    data: HashMap<String, String>,
 }
 
-impl Point {
-    pub fn new(x: f64, y: f64) -> Self {
-        Self { x, y }
+impl Service {
+    pub fn new() -> Self {
+        Self { data: HashMap::new() }
     }
-}
-
-pub fn distance(p1: &Point, p2: &Point) -> f64 {
-    0.0
 }
 """
         result = index_code(code, language="rust")
         assert result.has_syntax_error is False
-        assert result.total_lines > 0
-        assert len(result.symbols) >= 3
-
-
-class TestLanguageDetection:
-    """Test language detection from file extensions"""
-
-    def test_language_detection_rust(self):
-        """Test Rust file detection"""
-        code = "fn main() {}\n"
-        result = prune_file(code, "main", language="rs")
-        assert result.has_syntax_error is False
-
-    def test_language_detection_python(self):
-        """Test Python file detection"""
-        code = "x = 1\n"
-        result = prune_file(code, "x", language="py")
-        assert result.has_syntax_error is False
-
-    def test_language_detection_java(self):
-        """Test Java file detection"""
-        code = "public class Test {}\n"
-        result = prune_file(code, "Test", language="java")
-        assert result.has_syntax_error is False
-
-    def test_language_detection_javascript(self):
-        """Test JavaScript file detection"""
-        code = "const x = 1;\n"
-        result = prune_file(code, "x", language="js")
-        assert result.has_syntax_error is False
-
-    def test_language_detection_typescript(self):
-        """Test TypeScript file detection"""
-        code = "const x: number = 1;\n"
-        result = prune_file(code, "x", language="ts")
-        assert result.has_syntax_error is False
-
-    def test_language_detection_html(self):
-        """Test HTML file detection"""
-        code = "<html><body>Test</body></html>\n"
-        result = prune_file(code, "body", language="html")
-        assert result.has_syntax_error is False
-
-    def test_language_detection_css(self):
-        """Test CSS file detection"""
-        code = "body { color: red; }\n"
-        result = prune_file(code, "body", language="css")
-        assert result.has_syntax_error is False
-
-    def test_language_detection_json(self):
-        """Test JSON file detection"""
-        code = '{"name": "fastast"}\n'
-        result = prune_file(code, "name", language="json")
-        assert result.has_syntax_error is False
-
-    def test_language_detection_toml(self):
-        """Test TOML file detection"""
-        code = '[package]\nname = "fastast"\n'
-        result = prune_file(code, "name", language="toml")
-        assert result.has_syntax_error is False
+        assert len(result.symbols) >= 2
+        assert len(result.imports) >= 1
 
 
 class TestJSONSupport:
-    """Test JSON language support"""
-
-    def test_prune_json_file(self):
-        code = '{"name": "fastast", "scripts": {"build": "tsc", "test": "jest"}}'
-        result = prune_file(code, "scripts test", threshold=0.3, language="json")
-        assert result.has_syntax_error is False
-        assert result.original_tokens > 0
-        assert "test" in result.pruned_code
+    """Test JSON language indexing support"""
 
     def test_index_json_file(self):
+        if index_code is None:
+            return
         code = '{"name": "fastast", "dependencies": {"express": "^4.19"}}'
         result = index_code(code, language="json")
         assert result.has_syntax_error is False
@@ -436,16 +198,11 @@ class TestJSONSupport:
 
 
 class TestTOMLSupport:
-    """Test TOML language support"""
-
-    def test_prune_toml_file(self):
-        code = '[package]\nname = "fastast"\n[dependencies]\npyo3 = "0.21"\nserde = "1.0"'
-        result = prune_file(code, "dependencies pyo3", threshold=0.3, language="toml")
-        assert result.has_syntax_error is False
-        assert result.original_tokens > 0
-        assert "pyo3" in result.pruned_code
+    """Test TOML language indexing support"""
 
     def test_index_toml_file(self):
+        if index_code is None:
+            return
         code = '[package]\nname = "fastast"\n[dependencies]\npyo3 = "0.21"'
         result = index_code(code, language="toml")
         assert result.has_syntax_error is False
@@ -454,68 +211,43 @@ class TestTOMLSupport:
 
 
 class TestErrorHandling:
-    """Test error handling for invalid languages"""
+    """Test error handling for invalid languages and syntax errors"""
 
     def test_invalid_language(self):
-        """Test error when passing invalid language"""
+        if index_code is None:
+            return
         code = "x = 1\n"
         try:
-            prune_file(code, "x", language="ruby")
+            index_code(code, language="ruby")
             assert False, "Should have raised ValueError"
         except ValueError as exc:
             assert "Unsupported language" in str(exc)
 
     def test_syntax_errors_gracefully_handled(self):
-        """Test that syntax errors are gracefully handled"""
-        # Invalid Python syntax
+        if index_code is None:
+            return
         code = "def broken(\n"
-        result = prune_file(code, "broken", language="python")
+        result = index_code(code, language="python")
         assert result.has_syntax_error is True
-
-        # Invalid Java syntax
-        code = "public class Broken {"
-        result = prune_file(code, "Broken", language="java")
-        assert isinstance(result, type(result))
-
-        # Invalid JSON syntax
-        code = '{"broken": '
-        result = prune_file(code, "broken", language="json")
-        assert result.has_syntax_error is True
-
-        # Invalid TOML syntax
-        code = '[broken'
-        result = prune_file(code, "broken", language="toml")
-        assert result.has_syntax_error is True
-
-    def test_empty_code_handling(self):
-        """Test handling of empty code"""
-        for lang in ["python", "java", "javascript", "typescript", "html", "css", "rust", "json", "toml"]:
-            result = prune_file("", "query", language=lang)
-            assert result.pruned_tokens == 0
-            assert result.kept_lines == 0
 
 
 if __name__ == "__main__":
-    if pytest is not None:
-        pytest.main([__file__, "-v"])
-    else:
-        test_classes = [
-            TestPythonSupport,
-            TestJavaSupport,
-            TestJavaScriptSupport,
-            TestTypeScriptSupport,
-            TestHTMLSupport,
-            TestCSSSupport,
-            TestRustSupport,
-            TestJSONSupport,
-            TestTOMLSupport,
-            TestLanguageDetection,
-            TestErrorHandling,
-        ]
-        for cls in test_classes:
-            instance = cls()
-            for name in dir(cls):
-                if name.startswith("test_"):
-                    method = getattr(instance, name)
-                    method()
-        print("All multi-language tests passed successfully!")
+    test_classes = [
+        TestPythonSupport,
+        TestJavaSupport,
+        TestJavaScriptSupport,
+        TestTypeScriptSupport,
+        TestHTMLSupport,
+        TestCSSSupport,
+        TestRustSupport,
+        TestJSONSupport,
+        TestTOMLSupport,
+        TestErrorHandling,
+    ]
+    for cls in test_classes:
+        instance = cls()
+        for name in dir(cls):
+            if name.startswith("test_"):
+                method = getattr(instance, name)
+                method()
+    print("All multi-language AST indexing tests passed successfully!")

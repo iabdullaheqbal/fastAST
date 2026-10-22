@@ -115,21 +115,6 @@
       font-size: 0.9rem;
       margin-bottom: 0.5rem;
     }
-    details {
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.75rem 1rem;
-      margin-bottom: 1rem;
-    }
-    summary {
-      cursor: pointer;
-      font-weight: 600;
-      color: var(--heading);
-    }
-    details[open] summary {
-      margin-bottom: 0.75rem;
-    }
     ul {
       margin-left: 1.5rem;
       margin-bottom: 1rem;
@@ -152,7 +137,7 @@
   <div class="container">
     <header>
       <h1>FastAST — Application Map & Architectural Tour</h1>
-      <p>High-performance, syntax-guaranteed context pruning MCP server for AI coding agents</p>
+      <p>High-performance AST repository indexer & SQLite graph database for AI coding agents</p>
       <span class="badge">&#10003; Verified Proof of Concept Ready</span>
     </header>
 
@@ -160,10 +145,14 @@
     <section class="card">
       <h2>1. Plain-Language Overview</h2>
       <p>
-        <strong>FastAST</strong> solves the context explosion and syntax degradation problems AI coding agents encounter when exploring large repositories. When an agent queries a large Python module (1,500–3,000+ lines), passing the full file wastes tokens and context budget. Naive line-stripping breaks indentation and triggers fatal <code>SyntaxError</code> crashes.
+        <strong>FastAST</strong> is an ultra-fast, AST-based repository indexer designed for AI coding agents and developers.
+        Instead of reading whole repositories blindly or relying on fuzzy regex grep, FastAST parses code into syntax trees
+        across 9 languages using native <strong>Tree-Sitter</strong> and indexes all files, symbols, imports, and function calls
+        into a persistent <strong>SQLite</strong> database.
       </p>
       <p>
-        FastAST parses the file in native Rust using <strong>Tree-Sitter</strong>, applies a dual rubric (Rubric A for lexical relevance, Rubric B for syntactic anchor preservation), synthesizes indented <code>pass</code> placeholders for unkept bodies, counts real OpenAI BPE tokens with <code>tiktoken-rs</code>, and delivers guaranteed-valid Python back to the agent in under <strong>15ms</strong>.
+        AI coding agents connect via the standard <strong>Model Context Protocol (MCP)</strong> to query symbol definitions,
+        find references, and explore call graphs instantly without exhausting token context budgets.
       </p>
     </section>
 
@@ -172,27 +161,25 @@
       <h2>2. Core Execution Journey</h2>
       <div class="diagram-container">
         <svg viewBox="0 0 760 220" width="100%" height="220" xmlns="http://www.w3.org/2000/svg">
-          <!-- Flow boxes -->
           <rect x="20" y="30" width="180" height="70" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
-          <text x="110" y="60" fill="#f0f6fc" font-size="14" font-weight="600" text-anchor="middle">Agent Query & Input</text>
-          <text x="110" y="80" fill="#8b949e" font-size="11" text-anchor="middle">CLI or MCP Stdio</text>
+          <text x="110" y="60" fill="#f0f6fc" font-size="14" font-weight="600" text-anchor="middle">Repository Walk</text>
+          <text x="110" y="80" fill="#8b949e" font-size="11" text-anchor="middle">Recursive file discovery</text>
 
           <path d="M 200 65 L 260 65" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)"/>
 
           <rect x="260" y="20" width="240" height="90" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="2"/>
-          <text x="380" y="45" fill="#f0f6fc" font-size="14" font-weight="600" text-anchor="middle">Native Rust Core</text>
-          <text x="380" y="65" fill="#8b949e" font-size="11" text-anchor="middle">1. Tree-Sitter AST Scope Walker</text>
-          <text x="380" y="82" fill="#8b949e" font-size="11" text-anchor="middle">2. Dual Rubric Relevance Scorer</text>
-          <text x="380" y="99" fill="#8b949e" font-size="11" text-anchor="middle">3. Deterministic Indented `pass`</text>
+          <text x="380" y="45" fill="#f0f6fc" font-size="14" font-weight="600" text-anchor="middle">Native Tree-Sitter AST</text>
+          <text x="380" y="65" fill="#8b949e" font-size="11" text-anchor="middle">1. 9-Language Syntax Parsing</text>
+          <text x="380" y="82" fill="#8b949e" font-size="11" text-anchor="middle">2. Symbol & Import Extraction</text>
+          <text x="380" y="99" fill="#8b949e" font-size="11" text-anchor="middle">3. Call Target Resolution</text>
 
           <path d="M 500 65 L 560 65" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)"/>
 
           <rect x="560" y="30" width="180" height="70" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="2"/>
-          <text x="650" y="55" fill="#f0f6fc" font-size="14" font-weight="600" text-anchor="middle">Validated Context</text>
-          <text x="650" y="73" fill="#3fb950" font-size="11" font-weight="600" text-anchor="middle">ast.parse() VALID</text>
-          <text x="650" y="88" fill="#8b949e" font-size="11" text-anchor="middle">&gt;90% Token Reduction</text>
+          <text x="650" y="55" fill="#f0f6fc" font-size="14" font-weight="600" text-anchor="middle">SQLite Code Graph</text>
+          <text x="650" y="73" fill="#3fb950" font-size="11" font-weight="600" text-anchor="middle">fastast.db Index</text>
+          <text x="650" y="88" fill="#8b949e" font-size="11" text-anchor="middle">MCP Tools & CLI Queries</text>
 
-          <!-- Defs -->
           <defs>
             <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
               <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
@@ -207,26 +194,28 @@
       <h2>3. The 3-Stop Architecture Route</h2>
 
       <div class="route-stop">
-        <div class="route-stop-title">Stop 1: Protocol & CLI Entrypoints</div>
+        <div class="route-stop-title">Stop 1: Native Tree-Sitter AST Engine</div>
+        <div class="route-stop-file">src/lib.rs & src/&lt;language&gt;/mod.rs</div>
+        <p>
+          Parses source files into Tree-Sitter AST nodes across 9 languages (Python, Java, JavaScript, TypeScript, Rust, HTML, CSS, JSON, TOML).
+          Extracts classes, methods, functions, module imports, and invocation calls into structured <code>FileIndexResult</code> structs.
+        </p>
+      </div>
+
+      <div class="route-stop">
+        <div class="route-stop-title">Stop 2: SQLite Relational Index Store</div>
+        <div class="route-stop-file">python/fastast/indexer.py</div>
+        <p>
+          Walks the repository honoring ignore rules (<code>.git</code>, <code>node_modules</code>, <code>target</code>, <code>.venv</code>).
+          Populates indexed tables (<code>files</code>, <code>symbols</code>, <code>imports</code>, <code>calls</code>) and provides high-speed query methods (<code>find_symbol</code>, <code>get_calls_from_symbol</code>).
+        </p>
+      </div>
+
+      <div class="route-stop">
+        <div class="route-stop-title">Stop 3: MCP Server & CLI Runner</div>
         <div class="route-stop-file">python/fastast/server.py & python/fastast/cli.py</div>
         <p>
-          Handles the external boundary. In <code>server.py</code>, the <code>prune_context</code> tool connects via JSON-RPC stdio to Cursor and Claude Code. In <code>cli.py</code>, developers run instant terminal benchmarks with latency and token reduction metrics. Validates the final code string using standard library <code>ast.parse()</code>.
-        </p>
-      </div>
-
-      <div class="route-stop">
-        <div class="route-stop-title">Stop 2: Native Tree-Sitter AST Scope Walker & Scorer</div>
-        <div class="route-stop-file">src/parser.rs & src/scorer.rs</div>
-        <p>
-          Parses Python source into syntax nodes in &lt;10ms. Gathers all module imports, functions, classes, decorators, and docstring ranges. Rubric A calculates Jaccard keyword overlap against the agent's query; Rubric B guarantees 100% unconditional retention of imports and enclosing scope parent headers.
-        </p>
-      </div>
-
-      <div class="route-stop">
-        <div class="route-stop-title">Stop 3: Deterministic Structural Repair Engine</div>
-        <div class="route-stop-file">src/repair.rs & src/lib.rs</div>
-        <p>
-          Reconstructs the pruned code file line by line. When a function body is discarded, it synthesizes an indented <code>pass</code> keyword at the exact indentation depth required by Python syntax rules. Retains stacked multi-line decorators and returns telemetry metrics with verified zero syntax errors.
+          Connects coding agents and developers to the index. Exposes <code>index_repository</code>, <code>query_symbols</code>, and <code>get_call_graph</code> over stdio JSON-RPC for Claude Code and Cursor, plus terminal CLI commands (<code>index</code>, <code>symbols</code>, <code>calls</code>).
         </p>
       </div>
     </section>
@@ -235,43 +224,32 @@
     <section class="card">
       <h2>4. To Change This, Start Here</h2>
       <ul>
-        <li><strong>To adjust scoring sensitivity:</strong> Modify the default <code>threshold: float = 0.5</code> parameter in <code>python/fastast/server.py</code> and <code>python/fastast/cli.py</code>.</li>
-        <li><strong>To customize docstring retention:</strong> Inspect <code>src/parser.rs</code> around <code>handle_function</code> and <code>src/repair.rs</code> where <code>docstring_rows</code> are emitted.</li>
-        <li><strong>To add new MCP tool capabilities:</strong> Add a new <code>@mcp.tool()</code> decorated function in <code>python/fastast/server.py</code>.</li>
-        <li><strong>To tune release compilation speed:</strong> Adjust <code>[profile.release]</code> settings in <code>Cargo.toml</code>.</li>
+        <li><strong>To add a new language:</strong> Add Tree-Sitter grammar to <code>Cargo.toml</code> and implement <code>index_code</code> in <code>src/&lt;lang&gt;/mod.rs</code>.</li>
+        <li><strong>To customize indexed fields or tables:</strong> Modify the SQL schema in <code>RepositoryIndexer.init_db()</code> in <code>python/fastast/indexer.py</code>.</li>
+        <li><strong>To add new agent tools:</strong> Define new <code>@mcp.tool()</code> endpoints in <code>python/fastast/server.py</code>.</li>
+        <li><strong>To customize ignore patterns:</strong> Update <code>DEFAULT_IGNORES</code> in <code>python/fastast/indexer.py</code>.</li>
       </ul>
-    </section>
-
-    <!-- Reusable Practice -->
-    <section class="card">
-      <h2>5. A Practice to Reuse</h2>
-      <p>
-        <strong>Risk-First Compiled Proving:</strong> In this project, the native bridge (Rust + PyO3 + Tree-Sitter + Maturin) was identified as the highest-risk layer in <code>spec.md</code> and sequenced into Slice 1. Rather than building speculative Python abstractions first, we verified native compilation and C-extension loading on step 1.
-      </p>
-      <p>
-        <em>Key takeaway:</em> When combining high-performance native libraries with high-level agent frameworks, write end-to-end mechanical verification tests against the compiled boundary immediately. Catching ABI or grammar issues early prevents expensive refactors later.
-      </p>
     </section>
 
     <!-- How to Run -->
     <section class="card">
-      <h2>6. How to Run & Verify Again</h2>
-      <pre><code># 1. Run the benchmark CLI on the 1,500+ line SWE-bench fixture:
-uv run fastast prune tests/fixtures/sample_large.py --query "process_request"
+      <h2>5. How to Run & Verify</h2>
+      <pre><code># 1. Index a repository:
+fastast index . --db fastast.db
 
-# 2. Run the full automated test suite:
-.venv/bin/python tests/test_pruner.py
-.venv/bin/python tests/test_server.py
+# 2. Query symbols:
+fastast symbols fastast.db --query "index"
 
-# 3. Start the FastMCP JSON-RPC stdio server:
-uv run fastast-mcp</code></pre>
+# 3. Trace call graph:
+fastast calls fastast.db --symbol "main"
+
+# 4. Start the MCP server:
+fastast-mcp --db fastast.db</code></pre>
     </section>
 
     <footer>
-      <span>Snapshot from commit: <code>f6457ea</code></span>
-      <span>FastAST — Devpost Learning Hackathon</span>
+      <span>FastAST — AST-Based Repository Indexer</span>
     </footer>
   </div>
 </body>
 </html>
-

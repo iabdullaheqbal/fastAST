@@ -14,164 +14,30 @@ except ImportError:
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
-def test_cli_prune_json_output():
-    """Test CLI prune command with JSON output."""
-    fixture = FIXTURES_DIR / "sample_simple.py"
-    
+def test_cli_version():
+    """Test CLI --version flag."""
     result = subprocess.run(
-        [
-            sys.executable, "-m", "fastast.cli",
-            "prune",
-            str(fixture),
-            "--query", "compute_sum",
-            "--json"
-        ],
+        [sys.executable, "-m", "fastast.cli", "--version"],
         capture_output=True,
         text=True,
-        cwd=Path(__file__).parent.parent
+        env={"PYTHONPATH": "python"},
+        cwd=Path(__file__).parent.parent,
     )
-    
-    assert result.returncode == 0, f"CLI failed: {result.stderr}"
-    
-    output = json.loads(result.stdout)
-    assert "pruned_code" in output
-    assert "original_tokens" in output
-    assert "pruned_tokens" in output
-    assert "savings_pct" in output
-    assert "syntax_valid" in output
-    assert output["syntax_valid"] is True
-    assert output["savings_pct"] > 0
+    assert result.returncode == 0
+    assert "fastast 0.1.0" in result.stdout
 
 
-def test_cli_prune_human_readable():
-    """Test CLI prune command with human-readable output."""
-    fixture = FIXTURES_DIR / "sample_simple.py"
-    
+def test_cli_help():
+    """Test CLI --help flag."""
     result = subprocess.run(
-        [
-            sys.executable, "-m", "fastast.cli",
-            "prune",
-            str(fixture),
-            "--query", "compute_product",
-            "--threshold", "0.3"
-        ],
+        [sys.executable, "-m", "fastast.cli", "--help"],
         capture_output=True,
         text=True,
-        cwd=Path(__file__).parent.parent
+        env={"PYTHONPATH": "python"},
+        cwd=Path(__file__).parent.parent,
     )
-    
-    assert result.returncode == 0, f"CLI failed: {result.stderr}"
-    assert "FastAST Pruning Complete" in result.stdout
-    assert "Tokens:" in result.stdout
-    assert "Lines:" in result.stdout
-
-
-def test_cli_index_command():
-    """Test CLI index command."""
-    fixture = FIXTURES_DIR / "sample_simple.py"
-    
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "fastast.cli",
-            "index",
-            str(fixture),
-            "--json"
-        ],
-        capture_output=True,
-        text=True,
-        cwd=Path(__file__).parent.parent
-    )
-    
-    assert result.returncode == 0, f"CLI failed: {result.stderr}"
-    
-    output = json.loads(result.stdout)
-    # Index command returns repository statistics, not individual symbols
-    assert "total_symbols" in output or "symbols" in output
-    assert "total_files" in output
-
-
-def test_cli_symbols_command():
-    """Test CLI symbols command (alias for index)."""
-    fixture = FIXTURES_DIR / "sample_simple.py"
-    
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "fastast.cli",
-            "symbols",
-            str(fixture),
-            "--json"
-        ],
-        capture_output=True,
-        text=True,
-        cwd=Path(__file__).parent.parent
-    )
-    
-    assert result.returncode == 0, f"CLI failed: {result.stderr}"
-    
-    output = json.loads(result.stdout)
-    assert "symbols" in output
-
-
-def test_cli_calls_command():
-    """Test CLI calls command."""
-    fixture = FIXTURES_DIR / "sample_complex.py"
-    
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "fastast.cli",
-            "calls",
-            str(fixture),
-            "--json"
-        ],
-        capture_output=True,
-        text=True,
-        cwd=Path(__file__).parent.parent
-    )
-    
-    assert result.returncode == 0, f"CLI failed: {result.stderr}"
-    
-    output = json.loads(result.stdout)
-    assert "call_graph" in output
-
-
-def test_cli_show_code_flag():
-    """Test CLI with --show-code flag."""
-    fixture = FIXTURES_DIR / "sample_simple.py"
-    
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "fastast.cli",
-            "prune",
-            str(fixture),
-            "--query", "compute_sum",
-            "--show-code"
-        ],
-        capture_output=True,
-        text=True,
-        cwd=Path(__file__).parent.parent
-    )
-    
-    assert result.returncode == 0, f"CLI failed: {result.stderr}"
-    assert "PRUNED CODE:" in result.stdout
-    assert "def compute_sum" in result.stdout
-
-
-def test_cli_nonexistent_file():
-    """Test CLI with non-existent file."""
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "fastast.cli",
-            "prune",
-            "/nonexistent/file.py",
-            "--query", "test"
-        ],
-        capture_output=True,
-        text=True,
-        cwd=Path(__file__).parent.parent
-    )
-    
-    assert result.returncode == 1
-    assert "File not found" in result.stderr
+    assert result.returncode == 0
+    assert "AST-based repository indexer" in result.stdout
 
 
 def test_server_imports():
@@ -181,6 +47,9 @@ def test_server_imports():
         assert hasattr(server, 'create_server')
         assert hasattr(server, 'main')
         assert hasattr(server, 'MCP_AVAILABLE')
+        assert hasattr(server, 'index_repository')
+        assert hasattr(server, 'query_symbols')
+        assert hasattr(server, 'get_call_graph')
         
         # Only test server creation if MCP is available
         if server.MCP_AVAILABLE:
@@ -197,20 +66,17 @@ def test_cli_imports():
     """Test that CLI module imports without errors."""
     from fastast import cli
     assert hasattr(cli, 'main')
-    assert hasattr(cli, 'cmd_prune')
     assert hasattr(cli, 'cmd_index')
     assert hasattr(cli, 'cmd_symbols')
     assert hasattr(cli, 'cmd_calls')
+    assert hasattr(cli, 'run_index')
+    assert hasattr(cli, 'run_symbols')
+    assert hasattr(cli, 'run_calls')
 
 
 if __name__ == "__main__":
-    test_cli_prune_json_output()
-    test_cli_prune_human_readable()
-    test_cli_index_command()
-    test_cli_symbols_command()
-    test_cli_calls_command()
-    test_cli_show_code_flag()
-    test_cli_nonexistent_file()
+    test_cli_version()
+    test_cli_help()
     test_server_imports()
     test_cli_imports()
     print("All Python layer tests passed successfully!")

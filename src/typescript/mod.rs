@@ -1,130 +1,14 @@
-//! TypeScript + TSX pruning and indexing engine
+//! TypeScript + TSX indexing engine
 //!
-//! Uses Tree-Sitter TypeScript and TSX grammars to parse, score, and reconstruct
-//! syntactically valid TypeScript and TSX code.
+//! Uses Tree-Sitter TypeScript and TSX grammars to parse and extract
+//! symbols, imports, and calls from TypeScript and TSX code.
 
 pub mod parser;
-pub mod repair;
-pub mod scorer;
 
 use crate::{
-    count_tokens, ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult, PruneResult,
+    count_tokens, ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult,
 };
 use pyo3::PyResult;
-
-#[derive(Debug, Clone)]
-pub struct TsPruneResult {
-    pub pruned_code: String,
-    pub original_tokens: usize,
-    pub pruned_tokens: usize,
-    pub savings_pct: f64,
-    pub total_lines: usize,
-    pub kept_lines: usize,
-    pub latency_ms: f64,
-    pub has_syntax_error: bool,
-}
-
-pub fn prune_ts(
-    code_text: &str,
-    focus_query: &str,
-    threshold: f64,
-) -> TsPruneResult {
-    let start = std::time::Instant::now();
-
-    if code_text.trim().is_empty() {
-        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        return TsPruneResult {
-            pruned_code: String::new(),
-            original_tokens: 0,
-            pruned_tokens: 0,
-            savings_pct: 0.0,
-            total_lines: 0,
-            kept_lines: 0,
-            latency_ms: elapsed,
-            has_syntax_error: false,
-        };
-    }
-
-    let total_lines = code_text.lines().count();
-    let original_tokens = count_tokens(code_text);
-    let prune_start = std::time::Instant::now();
-
-    let tree = match parser::parse_ast(code_text) {
-        Ok(t) => t,
-        Err(_) => {
-            let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-            return TsPruneResult {
-                pruned_code: code_text.to_string(),
-                original_tokens,
-                pruned_tokens: original_tokens,
-                savings_pct: 0.0,
-                total_lines,
-                kept_lines: total_lines,
-                latency_ms: elapsed,
-                has_syntax_error: true,
-            };
-        }
-    };
-
-    if tree.root_node().has_error() {
-        let elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-        return TsPruneResult {
-            pruned_code: code_text.to_string(),
-            original_tokens,
-            pruned_tokens: original_tokens,
-            savings_pct: 0.0,
-            total_lines,
-            kept_lines: total_lines,
-            latency_ms: elapsed,
-            has_syntax_error: true,
-        };
-    }
-
-    let source_bytes = code_text.as_bytes();
-    let lines: Vec<&str> = code_text.lines().collect();
-
-    let scopes = parser::collect_scopes(&tree, source_bytes, &lines);
-    let score_res = scorer::evaluate_scopes(&scopes, focus_query, threshold);
-    let pruned_code = repair::reconstruct_code(code_text, &scopes, &score_res.decisions);
-    let prune_elapsed = prune_start.elapsed().as_secs_f64() * 1000.0;
-
-    let pruned_tokens = count_tokens(&pruned_code);
-    let kept_lines = pruned_code.lines().count();
-    let savings_pct = if original_tokens > 0 {
-        ((original_tokens.saturating_sub(pruned_tokens)) as f64 / original_tokens as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    TsPruneResult {
-        pruned_code,
-        original_tokens,
-        pruned_tokens,
-        savings_pct,
-        total_lines,
-        kept_lines,
-        latency_ms: prune_elapsed,
-        has_syntax_error: false,
-    }
-}
-
-pub fn prune_file(
-    code_text: &str,
-    focus_query: &str,
-    threshold: f64,
-) -> PyResult<PruneResult> {
-    let res = prune_ts(code_text, focus_query, threshold);
-    Ok(PruneResult {
-        pruned_code: res.pruned_code,
-        original_tokens: res.original_tokens,
-        pruned_tokens: res.pruned_tokens,
-        savings_pct: res.savings_pct,
-        total_lines: res.total_lines,
-        kept_lines: res.kept_lines,
-        latency_ms: res.latency_ms,
-        has_syntax_error: res.has_syntax_error,
-    })
-}
 
 pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
     let total_tokens = count_tokens(code_text);
@@ -407,7 +291,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ts_pruning_interface_and_function() {
+    fn test_ts_indexing_interface_and_function() {
         let code = r#"
 export interface User<T> {
     id: string;
@@ -418,15 +302,15 @@ export function processUser<T>(user: User<T>): boolean {
     return user.id.length > 0;
 }
 
-export function unusedHelper(): void {
-    console.log("unused");
+export function helper(): void {
+    console.log("helper");
 }
 "#;
-        let res = prune_ts(code, "processUser", 0.5);
+        let res = index_code(code).unwrap();
         assert!(!res.has_syntax_error);
-        assert!(res.pruned_code.contains("export interface User<T>"));
-        assert!(res.pruned_code.contains("processUser<T>(user: User<T>): boolean {"));
-        assert!(res.pruned_code.contains("unusedHelper(): void {}"));
-        assert!(res.savings_pct > 0.0);
+        let sym_names: Vec<&str> = res.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(sym_names.contains(&"User"));
+        assert!(sym_names.contains(&"processUser"));
+        assert!(sym_names.contains(&"helper"));
     }
 }

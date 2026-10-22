@@ -7,19 +7,18 @@ status: approved
 
 ## How This Works, In Plain Language
 
-FastAST is a high-performance repository context engine and syntax-guaranteed context pruning system. Coding agents face two major obstacles in real codebases:
-1. **Finding relevant code:** Locating where symbols are declared, imported, and called across hundreds of files without grepping entire directory trees.
-2. **Context window limits:** Reading entire modules wastes thousands of tokens, while naive line stripping breaks Python indentation and imports.
+FastAST is a high-performance repository indexing engine and symbol graph service for AI coding agents. Coding agents need deep, accurate architectural awareness: locating where symbols are declared, imported, and called across hundreds of files without grepping entire directory trees or waiting for heavy language servers.
 
-FastAST solves both:
-- **Repository Indexing:** Walks the codebase, parses every Python file with Tree-Sitter, extracts an AST symbol graph (functions, classes, methods, imports, and caller-to-callee invocations), and stores it in an indexed local SQLite database (`.fastast.db`).
-- **Context Pruning:** For matched files, FastAST selectively prunes irrelevant function bodies and replaces them with indented `pass` placeholders in native Rust, guaranteeing 100% syntactically valid Python in <15ms.
-- **Agent Integration:** Exposes `index_repository`, `query_symbols`, `get_call_graph`, and `prune_context` via the Model Context Protocol (MCP) over JSON-RPC stdio.
+FastAST solves this with:
+- **Repository Indexing:** Walks the codebase, parses source files with native Tree-Sitter grammars across 8+ languages (Python, Java, JavaScript, TypeScript, Rust, HTML, CSS, JSON, TOML), extracts an AST symbol graph (functions, classes, methods, interfaces, types, imports, and caller-to-callee invocations), and stores it in an indexed local SQLite database (`.fastast.db`).
+- **Incremental Caching:** Computes SHA-256 hashes and modification timestamps to skip unchanged files instantly.
+- **Agent Integration:** Exposes `index_repository`, `query_symbols`, and `get_call_graph` via the Model Context Protocol (MCP) over JSON-RPC stdio.
+- **CLI Utilities:** Offers `fastast index`, `fastast symbols`, and `fastast calls` for developer terminal use.
 
 ## Architecture
 
 ```
-[Agent: Claude Code / Cursor]
+[Agent: Claude Code / Cursor / Windsurf]
        │
        ▼ (1) MCP JSON-RPC Stdio
 [FastMCP Server: python/fastast/server.py]
@@ -30,29 +29,32 @@ FastAST solves both:
        │                                 └──► [SQLite DB: .fastast.db via python/fastast/db.py]
        │
        ├──► query_symbols()    ──► [SQLite DB Query]
-       ├──► get_call_graph()   ──► [SQLite DB Graph Query]
        │
-       └──► prune_context()    ──► [Rust Core: src/lib.rs] (Tree-Sitter Dual-Rubric Pruning)
+       └──► get_call_graph()   ──► [SQLite DB Graph Query]
 ```
 
 ## Stack
 
 - **Rust (2021 Edition):**
-  - `tree-sitter` (v0.22) & `tree-sitter-python` (v0.21): In-memory AST parsing, symbol extraction, and call relationship detection.
-  - `tiktoken-rs` (v0.5): `cl100k_base` BPE tokenizer.
+  - `tree-sitter` (v0.22) & grammars (`tree-sitter-python`, `tree-sitter-java`, `tree-sitter-javascript`, `tree-sitter-typescript`, `tree-sitter-rust`, `tree-sitter-html`, `tree-sitter-css`): In-memory AST parsing, symbol extraction, and call relationship detection.
+  - `serde_json` (v1.0) & `toml` (v1.1): Native configuration format parsers.
+  - `tiktoken-rs` (v0.5): `cl100k_base` BPE tokenizer for token counting.
   - `pyo3` (v0.21): High-performance C-API bridge.
 - **Python (>=3.10):**
-  - `sqlite3`: Standard library embedded database with WAL mode and indexed lookup tables.
+  - `sqlite3`: Standard library embedded database with WAL mode, foreign keys, and indexed lookup tables.
   - `mcp`: Official Model Context Protocol SDK.
-  - `ast`: Standard library Python syntax verification.
 - **Storage:** Embedded SQLite database (`.fastast.db`).
 
 ## SQLite Database Schema (`.fastast.db`)
 
 ```sql
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT UNIQUE NOT NULL,
+    language TEXT NOT NULL DEFAULT 'python',
     hash TEXT NOT NULL,
     mtime REAL NOT NULL,
     total_lines INTEGER NOT NULL,
@@ -64,7 +66,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id INTEGER NOT NULL,
     name TEXT NOT NULL,
-    kind TEXT NOT NULL, -- 'function', 'async_function', 'class', 'method'
+    kind TEXT NOT NULL,
     signature TEXT NOT NULL,
     start_line INTEGER NOT NULL,
     end_line INTEGER NOT NULL,
@@ -93,47 +95,18 @@ CREATE TABLE IF NOT EXISTS calls (
     FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE,
     FOREIGN KEY(caller_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
-CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
-CREATE INDEX IF NOT EXISTS idx_imports_module ON imports(module);
-CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_name);
-CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_symbol_id);
 ```
 
-## Components
+## MCP Tools Interface
 
-### 1. Native AST Symbol & Call Extractor (`src/lib.rs` & `src/parser.rs`)
-- Extends the Rust core with `extract_file_symbols(code_text: &str) -> PyResult<ExtractedFileData>`.
-- Identifies:
-  - Functions, async functions, classes, and nested methods.
-  - Signatures, line spans, and docstrings.
-  - Import statements (`import ...`, `from ... import ...`).
-  - Function call invocations (`call_expression`) and attributes, mapped to their enclosing caller function.
+1. **`index_repository`**
+   - Inputs: `directory_path` (str, default: '.'), `force` (bool, default: False)
+   - Outputs: JSON summary with scanned files, indexed count, skipped count, symbols, imports, calls, elapsed time.
 
-### 2. SQLite Database Manager (`python/fastast/db.py`)
-- Initializes SQLite database with WAL journal mode.
-- Provides transactional batch APIs:
-  - `store_file_data(path, hash, mtime, lines, tokens, symbols, imports, calls)`
-  - `search_symbols(query, kind)`
-  - `get_call_graph(symbol_name)`
-  - `get_file_symbols(file_path)`
+2. **`query_symbols`**
+   - Inputs: `query` (str), `kind` (optional str), `directory_path` (str), `limit` (int, default: 50), `language` (optional str)
+   - Outputs: JSON list of matched symbols with names, signatures, file paths, line ranges, and docstrings.
 
-### 3. Repository Walker & Indexer (`python/fastast/indexer.py`)
-- Recursively discovers `.py` files, ignoring `.git`, `.venv`, `__pycache__`, `node_modules`, and `.egg-info`.
-- Computes SHA256 hashes to skip unchanged files on re-indexing.
-- Runs native Rust Tree-Sitter extraction and commits records into SQLite.
-
-### 4. FastMCP Server (`python/fastast/server.py`)
-- Exposes MCP tools:
-  - `index_repository(directory_path: str = ".") -> str (JSON)`
-  - `query_symbols(query: str, kind: Optional[str] = None) -> str (JSON)`
-  - `get_call_graph(symbol_name: str) -> str (JSON)`
-  - `prune_context(code_text: str, focus_query: str, threshold: float = 0.5) -> str (JSON)`
-
-### 5. CLI Runner (`python/fastast/cli.py`)
-- Subcommands:
-  - `fastast index [directory]`
-  - `fastast symbols <query>`
-  - `fastast calls <symbol>`
-  - `fastast prune <file> --query <query>`
+3. **`get_call_graph`**
+   - Inputs: `symbol_name` (str), `directory_path` (str)
+   - Outputs: JSON call hierarchy with incoming callers and outgoing callees.
