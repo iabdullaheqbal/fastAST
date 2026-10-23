@@ -70,8 +70,8 @@ class RepositoryLock:
         try:
             with open(self.lock_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
-            return None
+        except Exception as exc:
+            logger.debug(f"Unable to read lock file {self.lock_path}: {exc}")
 
     def _try_break_stale_lock(self, info: Optional[Dict[str, Any]]) -> bool:
         """Attempt to remove lock if the owner process is confirmed dead or expired."""
@@ -151,27 +151,29 @@ class RepositoryLock:
                 self._lock_token = token
                 return True
 
-            except FileExistsError:
-                # Lock exists: inspect status
-                info = self._read_lock_info()
-                if self._try_break_stale_lock(info):
-                    # Stale lock was removed, retry immediately
-                    continue
+            except FileExistsError as exc:
+                logger.debug(f"Lock contention encountered at {self.lock_path}: {exc}")
 
-                if not blocking:
-                    return False
+            # Lock exists: inspect status
+            info = self._read_lock_info()
+            if self._try_break_stale_lock(info):
+                # Stale lock was removed, retry immediately
+                continue
 
-                elapsed = time.perf_counter() - start_time
-                if elapsed >= self.timeout:
-                    owner_pid = info.get("pid") if info else "unknown"
-                    raise RepositoryLockedError(
-                        f"Repository '{self.repo_root}' is currently locked by PID {owner_pid} "
-                        f"(active for {elapsed:.1f}s). Could not acquire lock within {self.timeout}s.",
-                        pid=info.get("pid") if info else None,
-                        lock_path=self.lock_path,
-                    )
+            if not blocking:
+                return False
 
-                time.sleep(self.poll_interval)
+            elapsed = time.perf_counter() - start_time
+            if elapsed >= self.timeout:
+                owner_pid = info.get("pid") if info else "unknown"
+                raise RepositoryLockedError(
+                    f"Repository '{self.repo_root}' is currently locked by PID {owner_pid} "
+                    f"(active for {elapsed:.1f}s). Could not acquire lock within {self.timeout}s.",
+                    pid=info.get("pid") if info else None,
+                    lock_path=self.lock_path,
+                )
+
+            time.sleep(self.poll_interval)
 
         # Exceeded max attempts
         info = self._read_lock_info()

@@ -12,6 +12,7 @@ try:
 except ImportError:
     pytest = None
 
+import textwrap
 from fastast import index_code
 
 
@@ -21,16 +22,16 @@ class TestPythonSupport:
     def test_index_python_file(self):
         if index_code is None:
             return
-        code = """
-class Calculator:
-    def add(self, a, b):
-        return a + b
+        code = textwrap.dedent("""\
+            class Calculator:
+                def add(self, a, b):
+                    return a + b
 
-def helper_function():
-    pass
+            def helper_function():
+                pass
 
-import os
-"""
+            import os
+        """)
         result = index_code(code, language="python")
         assert result.has_syntax_error is False
         assert result.total_lines > 0
@@ -43,22 +44,22 @@ class TestJavaSupport:
     def test_index_java_file(self):
         if index_code is None:
             return
-        code = """
-package com.example;
+        code = textwrap.dedent("""\
+            package com.example;
 
-import java.util.ArrayList;
+            import java.util.ArrayList;
 
-public class Calculator {
-    public int add(int a, int b) {
-        return a + b;
-    }
+            public class Calculator {
+                public int add(int a, int b) {
+                    return a + b;
+                }
 
-    public static void main(String[] args) {
-        Calculator c = new Calculator();
-        System.out.println(c.add(5, 3));
-    }
-}
-"""
+                public static void main(String[] args) {
+                    Calculator c = new Calculator();
+                    System.out.println(c.add(5, 3));
+                }
+            }
+        """)
         result = index_code(code, language="java")
         assert result.has_syntax_error is False
         assert result.total_lines > 0
@@ -71,20 +72,20 @@ class TestJavaScriptSupport:
     def test_index_javascript_file(self):
         if index_code is None:
             return
-        code = """
-import { useState } from 'react';
+        code = textwrap.dedent("""\
+            import { useState } from 'react';
 
-export function renderCounter() {
-    const [count, setCount] = useState(0);
-    return count;
-}
+            export function renderCounter() {
+                const [count, setCount] = useState(0);
+                return count;
+            }
 
-export class Service {
-    execute() {
-        return true;
-    }
-}
-"""
+            export class Service {
+                execute() {
+                    return true;
+                }
+            }
+        """)
         result = index_code(code, language="javascript")
         assert result.has_syntax_error is False
         assert len(result.symbols) >= 2
@@ -97,16 +98,16 @@ class TestTypeScriptSupport:
     def test_index_typescript_file(self):
         if index_code is None:
             return
-        code = """
-export interface Config {
-    host: string;
-    port: number;
-}
+        code = textwrap.dedent("""\
+            export interface Config {
+                host: string;
+                port: number;
+            }
 
-export function startServer(cfg: Config): boolean {
-    return true;
-}
-"""
+            export function startServer(cfg: Config): boolean {
+                return true;
+            }
+        """)
         result = index_code(code, language="typescript")
         assert result.has_syntax_error is False
         assert len(result.symbols) >= 2
@@ -118,18 +119,18 @@ class TestHTMLSupport:
     def test_index_html_file(self):
         if index_code is None:
             return
-        code = """
-<!DOCTYPE html>
-<html>
-<head>
-    <link rel="stylesheet" href="style.css">
-</head>
-<body>
-    <header class="header"><h1>Title</h1></header>
-    <main id="main-content"><p>Content</p></main>
-</body>
-</html>
-"""
+        code = textwrap.dedent("""\
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <link rel="stylesheet" href="style.css">
+            </head>
+            <body>
+                <header class="header"><h1>Title</h1></header>
+                <main id="main-content"><p>Content</p></main>
+            </body>
+            </html>
+        """)
         result = index_code(code, language="html")
         assert result.has_syntax_error is False
         assert len(result.symbols) >= 1
@@ -142,17 +143,17 @@ class TestCSSSupport:
     def test_index_css_file(self):
         if index_code is None:
             return
-        code = """
-@import url("base.css");
+        code = textwrap.dedent("""\
+            @import url("base.css");
 
-body {
-    margin: 0;
-}
+            body {
+                margin: 0;
+            }
 
-.header {
-    background: #fff;
-}
-"""
+            .header {
+                background: #fff;
+            }
+        """)
         result = index_code(code, language="css")
         assert result.has_syntax_error is False
         assert len(result.symbols) >= 2
@@ -165,19 +166,19 @@ class TestRustSupport:
     def test_index_rust_file(self):
         if index_code is None:
             return
-        code = """
-use std::collections::HashMap;
+        code = textwrap.dedent("""\
+            use std::collections::HashMap;
 
-pub struct Service {
-    data: HashMap<String, String>,
-}
+            pub struct Service {
+                data: HashMap<String, String>,
+            }
 
-impl Service {
-    pub fn new() -> Self {
-        Self { data: HashMap::new() }
-    }
-}
-"""
+            impl Service {
+                pub fn new() -> Self {
+                    Self { data: HashMap::new() }
+                }
+            }
+        """)
         result = index_code(code, language="rust")
         assert result.has_syntax_error is False
         assert len(result.symbols) >= 2

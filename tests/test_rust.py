@@ -1,5 +1,6 @@
 """Tests for Rust AST parsing and indexing in FastAST."""
 
+import textwrap
 from pathlib import Path
 from fastast import index_code
 
@@ -44,26 +45,26 @@ def test_rust_docstring_indexing():
     """Test extracting doc comments (/// and /** */) into ExtractedSymbol.docstring."""
     if index_code is None:
         return
-    code = """
-/// Service managing user sessions.
-pub struct SessionService {
-    timeout: u32,
-}
+    code = textwrap.dedent("""\
+        /// Service managing user sessions.
+        pub struct SessionService {
+            timeout: u32,
+        }
 
-impl SessionService {
-    /// Validates whether the given session token is active.
-    pub fn is_valid(&self, token: &str) -> bool {
-        !token.is_empty()
-    }
+        impl SessionService {
+            /// Validates whether the given session token is active.
+            pub fn is_valid(&self, token: &str) -> bool {
+                !token.is_empty()
+            }
 
-    /**
-     * Terminate the given session.
-     */
-    pub fn terminate(&mut self, token: &str) {
-        // no-op
-    }
-}
-"""
+            /**
+             * Terminate the given session.
+             */
+            pub fn terminate(&mut self, token: &str) {
+                // no-op
+            }
+        }
+    """)
     index_res = index_code(code, language="rust")
     assert not index_res.has_syntax_error
 
@@ -83,14 +84,14 @@ def test_rust_call_graph_extraction():
     """Test call graph extraction for scoped calls, method calls, free functions, and macros."""
     if index_code is None:
         return
-    code = """
-fn execute_flow() {
-    let mut builder = QueryBuilder::new();
-    builder.with_limit(10);
-    run_query();
-    println!("Query complete");
-}
-"""
+    code = textwrap.dedent("""\
+        fn execute_flow() {
+            let mut builder = QueryBuilder::new();
+            builder.with_limit(10);
+            run_query();
+            println!("Query complete");
+        }
+    """)
     index_res = index_code(code, language="rust")
     assert not index_res.has_syntax_error
 

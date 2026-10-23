@@ -11,13 +11,14 @@ def retry(attempts: int = 3, backoff: float = 0.5):
     def decorator(fn: Callable) -> Callable:
         @wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            last_exc = None
             for i in range(attempts):
                 try:
                     return await fn(*args, **kwargs)
                 except Exception as exc:
-                    if i == attempts - 1:
-                        raise RuntimeError(f"Retry attempts exhausted: {exc}") from exc
+                    last_exc = exc
                     await asyncio.sleep(backoff)
+            raise RuntimeError(f"Retry attempts exhausted: {last_exc}") from last_exc
         return wrapper
     return decorator
 

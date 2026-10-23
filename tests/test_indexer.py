@@ -2,6 +2,7 @@
 
 import sqlite3
 import tempfile
+import textwrap
 from pathlib import Path
 from fastast import index_code
 from fastast.db import (
@@ -18,26 +19,26 @@ from fastast.indexer import find_python_files, index_repository
 def test_native_symbol_and_call_extraction():
     if index_code is None:
         return
-    code = """
-import sys
-from os import path as ospath
+    code = textwrap.dedent("""\
+        import sys
+        from os import path as ospath
 
-class TaskManager:
-    \"\"\"Manages background jobs.\"\"\"
-    def __init__(self, capacity: int = 10):
-        self.capacity = capacity
+        class TaskManager:
+            \"\"\"Manages background jobs.\"\"\"
+            def __init__(self, capacity: int = 10):
+                self.capacity = capacity
 
-    async def execute_job(self, job_id: str) -> bool:
-        res = self.validate(job_id)
-        return res
+            async def execute_job(self, job_id: str) -> bool:
+                res = self.validate(job_id)
+                return res
 
-    def validate(self, job_id: str) -> bool:
-        return len(job_id) > 0
+            def validate(self, job_id: str) -> bool:
+                return len(job_id) > 0
 
-def run_pipeline(name: str):
-    mgr = TaskManager()
-    mgr.validate(name)
-"""
+        def run_pipeline(name: str):
+            mgr = TaskManager()
+            mgr.validate(name)
+    """)
     res = index_code(code)
 
     assert res.has_syntax_error is False
@@ -90,18 +91,18 @@ def test_sqlite_schema_and_queries():
         conn = get_connection(db_path)
         init_db(conn)
 
-        code = """
-class Worker:
-    def process(self, x):
-        return self.compute(x)
+        code = textwrap.dedent("""\
+            class Worker:
+                def process(self, x):
+                    return self.compute(x)
 
-    def compute(self, x):
-        return x * 2
+                def compute(self, x):
+                    return x * 2
 
-def entry():
-    w = Worker()
-    w.process(10)
-"""
+                def entry():
+                    w = Worker()
+                    w.process(10)
+        """)
         res = index_code(code)
         file_id = store_file_data(conn, "app/worker.py", "hash123", 1000.0, res)
         assert file_id > 0

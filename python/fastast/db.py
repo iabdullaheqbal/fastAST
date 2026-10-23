@@ -820,8 +820,8 @@ def get_symbol_embedding_metadata(
         if not row:
             return None
         return dict(row)
-    except Exception:
-        return None
+    except Exception as exc:
+        logger.debug(f"Failed to fetch symbol embedding metadata: {exc}")
 
 
 def store_file_embedding(
@@ -880,8 +880,8 @@ def get_file_embedding(
         if not row:
             return None
         return decode_embedding(row[0])
-    except Exception:
-        return None
+    except Exception as exc:
+        logger.debug(f"Failed to fetch file embedding: {exc}")
 
 
 def invalidate_stale_embeddings(
@@ -931,8 +931,8 @@ def get_symbol_embedding(
         if not row:
             return None
         return decode_embedding(row[0])
-    except Exception:
-        return None
+    except Exception as exc:
+        logger.debug(f"Failed to fetch file embedding: {exc}")
 
 
 def delete_symbol_embedding(
@@ -1202,8 +1202,8 @@ def get_symbol_community(
             "modularity": modularity,
             "peers": peers,
         }
-    except Exception:
-        return None
+    except Exception as exc:
+        logger.debug(f"Failed to get symbol community: {exc}")
 
 
 def list_communities(

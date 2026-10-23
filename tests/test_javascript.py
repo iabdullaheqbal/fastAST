@@ -1,5 +1,6 @@
 """Tests for JavaScript and JSX AST parsing and indexing in FastAST."""
 
+import textwrap
 from pathlib import Path
 from fastast import index_code
 
@@ -44,21 +45,21 @@ def test_jsdoc_and_call_extraction():
     """Test JSDoc comment extraction and ExtractedCall extraction for call graphs."""
     if index_code is None:
         return
-    code = """
-/**
- * Calculates discount price.
- * @param {number} price
- * @returns {number}
- */
-export function calculateDiscount(price, rate) {
-    validatePrice(price);
-    return price * (1 - rate);
-}
+    code = textwrap.dedent("""\
+        /**
+         * Calculates discount price.
+         * @param {number} price
+         * @returns {number}
+         */
+        export function calculateDiscount(price, rate) {
+            validatePrice(price);
+            return price * (1 - rate);
+        }
 
-function validatePrice(p) {
-    if (p < 0) throw new Error("Negative price");
-}
-"""
+        function validatePrice(p) {
+            if (p < 0) throw new Error("Negative price");
+        }
+    """)
     res = index_code(code, language="javascript")
     assert not res.has_syntax_error
 
