@@ -261,6 +261,51 @@ FastAST pairs a native Rust PyO3 extension (`fastast._core`) with an embedded SQ
 
 ---
 
+## FastAST Lens — Interactive Web UI & 3D Globe Graph
+
+FastAST includes **FastAST Lens**, a dark-theme developer workbench and 3D Codebase Planet visualization built with React, TypeScript, and Three.js based on the Google Stitch Obsidian Kinetic design system.
+
+### Key Screens
+
+1. **Galaxy / Globe Graph (`/globe`):**
+   - **3D Spherical Topology:** AST nodes distributed on an interactive planetary sphere with dark glass core and atmospheric glow.
+   - **Full Orbit & Zoom:** Drag to rotate the globe from any angle; mouse wheel to zoom into clusters.
+   - **Great-Circle Relational Arcs:** Curved arcs represent `CALLS`, `IMPORTS`, `DEFINES`, `INHERITS`, and `SIMILAR_TO` relations.
+   - **Interactive Node Selection:** Clicking any node highlights relational neighbors, projects a target beacon halo, and opens telemetry metrics in the right inspector.
+   - **Louvain Modularity Sectors:** Color-coded clustering grouping symbols by architectural subsystems.
+2. **Explore (`/explore`):** Tri-panel file navigator, bounded code snippets with syntax highlighting, omission indicators, and focus symbol inspection.
+3. **Architecture (`/architecture`):** Visual technical blueprint of the 7-layer engine pipeline.
+4. **Evidence Retrieval (`/evidence`):** Token-budgeted semantic search with instant JSON evidence bundle export for AI coding agents.
+5. **Index Coverage (`/coverage`):** Multi-language breakdown across all 9 supported languages.
+6. **Louvain Clusters (`/communities`):** Architectural modularity inspection ($Q=0.82$) and subsystem peer symbol drill-down.
+7. **System & Engine (`/system`):** SQLite WAL integrity, lock manager, and diagnostic report (`fastast doctor`).
+
+### Running the FastAST UI & Backend
+
+#### 1. Start the FastAST API Server
+```bash
+# Start local REST API bridge (port 4200) with CORS enabled
+fastast serve
+# or with uv
+uv run fastast serve --port 4200
+```
+
+#### 2. Start the Frontend Dev Server
+```bash
+cd ui
+npm install
+npm run dev
+```
+Open [http://localhost:5173](http://localhost:5173) in your browser. API requests to `/api/*` are automatically proxied to `http://127.0.0.1:4200`.
+
+#### 3. Convenient Root Command
+```bash
+# Launch UI from root directory
+npm run ui
+```
+
+---
+
 ## Development & Testing
 
 ```bash

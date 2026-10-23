@@ -1722,6 +1722,21 @@ def main() -> None:
     watch_parser.add_argument("--debounce", type=int, default=None, help="Debounce quiet period in milliseconds (default: 300)")
     watch_parser.add_argument("--force", action="store_true", help="Force immediate initial index before watching")
 
+    # `serve` subcommand (FastAST REST API Server for UI)
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start FastAST REST API server for the web UI",
+        description="Launch local HTTP API bridge on port 4200 (or specified port) with CORS enabled.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast serve\n"
+            "  fastast serve --port 4200 --host 127.0.0.1"
+        ),
+    )
+    serve_parser.add_argument("-p", "--port", type=int, default=4200, help="Port to listen on (default: 4200)")
+    serve_parser.add_argument("-H", "--host", default="127.0.0.1", help="Host address to bind (default: 127.0.0.1)")
+
     args = parser.parse_args()
 
     if args.command in ("query", "evidence"):
@@ -1866,6 +1881,10 @@ def main() -> None:
                 force=getattr(args, "force", False),
             )
         )
+    elif args.command == "serve":
+        from fastast.api_server import run_api_server
+        run_api_server(port=args.port, host=args.host)
+        sys.exit(0)
     else:
         parser.print_help()
         sys.exit(1)
