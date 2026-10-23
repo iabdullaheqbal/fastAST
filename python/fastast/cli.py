@@ -96,15 +96,33 @@ def run_scan(
     root = Path(dir_path).resolve()
     if not root.exists():
         if json_output:
-            print(json.dumps({"error": f"Directory not found: {dir_path}", "files": []}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "error": f"Directory not found: {dir_path}",
+                        "files": [],
+                        "results": [],
+                        "meta": {},
+                    },
+                    indent=2,
+                )
+            )
         else:
             sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
         return 1
 
     from fastast.discovery import discover_files
 
-    langs = {language} if language else None
-    cats = {category} if category else None
+    langs = (
+        {s.strip().lower() for s in language.split(",") if s.strip()}
+        if language
+        else None
+    )
+    cats = (
+        {s.strip().lower() for s in category.split(",") if s.strip()}
+        if category
+        else None
+    )
 
     records = discover_files(
         root,
@@ -167,6 +185,8 @@ def run_index(
                         "error": f"Directory not found: {dir_path}",
                         "repo_path": dir_path,
                         "indexed_files": 0,
+                        "results": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -188,6 +208,8 @@ def run_index(
                         "error": f"Indexing failed: {exc}",
                         "repo_path": str(root),
                         "indexed_files": 0,
+                        "results": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -260,6 +282,8 @@ def run_symbols(
                         "query": query,
                         "language": language,
                         "symbols": [],
+                        "results": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -351,6 +375,8 @@ def run_calls(
                         "error": f"Directory not found: {dir_path}",
                         "symbol": symbol_name,
                         "call_graph": {},
+                        "results": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -465,6 +491,8 @@ def run_graph(
                         "total_edges": 0,
                         "nodes": [],
                         "edges": [],
+                        "results": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -483,6 +511,8 @@ def run_graph(
                         "total_edges": 0,
                         "nodes": [],
                         "edges": [],
+                        "results": [],
+                        "meta": {},
                     },
                     indent=2,
                 )
@@ -1219,11 +1249,15 @@ def main() -> None:
             "  fastast index .\n"
             "  fastast index /path/to/repo --force\n"
             "  fastast query 'handle_request' --limit 3\n"
-            "  fastast query 'AuthService' --json\n"
+            "  fastast evidence 'authentication flow' --max-tokens 1024\n"
+            "  fastast outline python/fastast/indexer.py\n"
+            "  fastast snippet 'index_repository'\n"
             "  fastast symbols 'Config' -L python\n"
             "  fastast calls 'execute_query'\n"
             "  fastast graph 'handle_request' --depth 2\n"
-            "  fastast graph 'UserService' --direction out --json"
+            "  fastast similar 'handle_request' --min-sim 0.5\n"
+            "  fastast communities\n"
+            "  fastast doctor ."
         ),
     )
     parser.add_argument(
@@ -1240,12 +1274,26 @@ def main() -> None:
         "index",
         help="Index a repository into a local SQLite symbol graph (.fastast.db)",
         description="Recursively scan and extract functions, classes, methods, imports, and calls into SQLite.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast index .\n"
+            "  fastast index /path/to/repo --force\n"
+            "  fastast index . --json"
+        ),
     )
     index_parser.add_argument(
         "dir",
         nargs="?",
-        default=".",
+        default=None,
         help="Root directory of the repository (default: current directory)",
+    )
+    index_parser.add_argument(
+        "-d",
+        "--dir",
+        dest="dir_opt",
+        default=None,
+        help="Root directory of the repository (optional flag alias)",
     )
     index_parser.add_argument(
         "--force",
@@ -1271,6 +1319,13 @@ def main() -> None:
         "symbols",
         help="Search for symbols in the indexed repository",
         description="Search symbols by name or substring. Automatically creates index if not present.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast symbols 'handle_request'\n"
+            "  fastast symbols 'Config' -L python --kind class\n"
+            "  fastast symbols 'execute' --json"
+        ),
     )
     symbols_parser.add_argument(
         "query",
@@ -1319,6 +1374,12 @@ def main() -> None:
         "calls",
         help="Display call graph (callers and callees) for a symbol",
         description="Inspect invocation hierarchy: callers (who calls this) and callees (what this calls).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast calls 'index_repository'\n"
+            "  fastast calls 'retrieve_bundle' --json"
+        ),
     )
     calls_parser.add_argument(
         "symbol",
@@ -1349,12 +1410,26 @@ def main() -> None:
         "scan",
         help="Scan and admit repository files applying multi-layer ignore rules",
         description="Discover admitted files, calculate content hashes (xxHash3/BLAKE2b), and classify by category.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast scan .\n"
+            "  fastast scan . -L python,rust\n"
+            "  fastast scan . -C source --json"
+        ),
     )
     scan_parser.add_argument(
         "dir",
         nargs="?",
-        default=".",
+        default=None,
         help="Repository root directory to scan (default: current directory)",
+    )
+    scan_parser.add_argument(
+        "-d",
+        "--dir",
+        dest="dir_opt",
+        default=None,
+        help="Repository root directory (optional flag alias)",
     )
     scan_parser.add_argument(
         "-L",
@@ -1378,6 +1453,12 @@ def main() -> None:
         "graph",
         help="Bounded graph traversal and neighborhood expansion for a symbol",
         description="Inspect multi-hop symbol neighborhood, callers, callees, definitions, and imports.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast graph 'RetrievalEngine' --depth 2\n"
+            "  fastast graph 'index_repository' --direction out --json"
+        ),
     )
     graph_parser.add_argument(
         "symbol",
@@ -1412,6 +1493,13 @@ def main() -> None:
         "query",
         help="Query codebase memory for ranked symbols, evidence snippets, and bounded graph context",
         description="Retrieve token-conscious evidence bundles for AI coding agents.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast query 'handle_request'\n"
+            "  fastast query 'user authentication' --ranking semantic --limit 3\n"
+            "  fastast query 'RetrievalEngine' --max-tokens 1024 --json"
+        ),
     )
     query_parser.add_argument(
         "query",
@@ -1469,6 +1557,12 @@ def main() -> None:
         "evidence",
         help="Retrieve compact, token-bounded evidence bundle for a query",
         description="Extract ranked symbols, bounded code snippets, and key graph relationships.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast evidence 'index_repository'\n"
+            "  fastast evidence 'database connection' --max-tokens 1024 --json"
+        ),
     )
     evidence_parser.add_argument("query", help="Query symbol name, path, or text")
     evidence_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
@@ -1490,6 +1584,12 @@ def main() -> None:
         "outline",
         help="Display structural outline of a file without raw source dumps",
         description="Show classes, methods, top-level functions, line spans, and signatures.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast outline python/fastast/indexer.py\n"
+            "  fastast outline python/fastast/retrieval.py --json"
+        ),
     )
     outline_parser.add_argument("file", help="Target source file path")
     outline_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
@@ -1500,6 +1600,12 @@ def main() -> None:
         "snippet",
         help="Extract a minimal bounded source snippet for a symbol or line range",
         description="Slice bounded code window without dumping full files.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast snippet 'index_repository'\n"
+            "  fastast snippet -f python/fastast/db.py --start 1 --end 40 --json"
+        ),
     )
     snippet_parser.add_argument("symbol", nargs="?", default=None, help="Symbol name or integer ID")
     snippet_parser.add_argument("-f", "--file", dest="file_path", help="Direct target file path")
@@ -1515,6 +1621,12 @@ def main() -> None:
         "similar",
         help="Find near-duplicate or structurally similar symbols using MinHash + LSH",
         description="Detect code clones, duplicate implementations, and similar symbols.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast similar 'handle_request'\n"
+            "  fastast similar 'index_repository' --min-sim 0.4 --json"
+        ),
     )
     similar_parser.add_argument("symbol", help="Target symbol name or integer ID")
     similar_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
@@ -1527,8 +1639,16 @@ def main() -> None:
         "communities",
         help="List detected architectural communities using Louvain modularity clustering",
         description="Cluster the codebase graph into cohesive functional modules and domains.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast communities\n"
+            "  fastast communities --recompute\n"
+            "  fastast communities --json"
+        ),
     )
-    communities_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    communities_parser.add_argument("dir_pos", nargs="?", default=None, help="Repository root directory (default: current directory)")
+    communities_parser.add_argument("-d", "--dir", default=None, help="Repository root directory")
     communities_parser.add_argument("-n", "--limit", type=int, default=20, help="Maximum communities to list")
     communities_parser.add_argument("--recompute", action="store_true", help="Force recomputation of community clusters")
     communities_parser.add_argument("--json", action="store_true", help="Output communities as JSON")
@@ -1538,6 +1658,12 @@ def main() -> None:
         "community",
         help="Inspect community membership and peer symbols for a target symbol",
         description="View architectural community assignment, central hub, and peers.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast community 'RetrievalEngine'\n"
+            "  fastast community 'index_repository' --json"
+        ),
     )
     community_parser.add_argument("symbol", help="Target symbol name or integer ID")
     community_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
@@ -1548,8 +1674,15 @@ def main() -> None:
         "stats",
         help="Display repository index metrics and artifact statistics",
         description="Inspect indexed file counts, total symbols, imports, calls, and graph edges.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast stats .\n"
+            "  fastast stats --json"
+        ),
     )
-    stats_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    stats_parser.add_argument("dir_pos", nargs="?", default=None, help="Repository root directory (default: current directory)")
+    stats_parser.add_argument("-d", "--dir", default=None, help="Repository root directory")
     stats_parser.add_argument("--json", action="store_true", help="Output statistics as JSON")
 
     # `doctor` subcommand (Production Hardening & Diagnostics)
@@ -1557,8 +1690,16 @@ def main() -> None:
         "doctor",
         help="Diagnose repository health, database integrity, and lock status",
         description="Verify repository filesystem, lock state, SQLite integrity, and schema synchronization.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast doctor .\n"
+            "  fastast doctor . --full --clean-locks\n"
+            "  fastast doctor . --json"
+        ),
     )
-    doctor_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    doctor_parser.add_argument("dir_pos", nargs="?", default=None, help="Repository root directory (default: current directory)")
+    doctor_parser.add_argument("-d", "--dir", default=None, help="Repository root directory")
     doctor_parser.add_argument("--full", action="store_true", help="Perform full SQLite integrity check instead of quick check")
     doctor_parser.add_argument("--clean-locks", action="store_true", help="Automatically release stale or dead locks")
     doctor_parser.add_argument("--json", action="store_true", help="Output diagnostic report as JSON")
@@ -1568,8 +1709,15 @@ def main() -> None:
         "watch",
         help="Watch repository for changes and incrementally update the AST index",
         description="Background/daemon filesystem watcher with debouncing and safe locking.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast watch .\n"
+            "  fastast watch . --poll 0.5 --debounce 250"
+        ),
     )
-    watch_parser.add_argument("-d", "--dir", default=".", help="Repository root directory")
+    watch_parser.add_argument("dir_pos", nargs="?", default=None, help="Repository root directory (default: current directory)")
+    watch_parser.add_argument("-d", "--dir", default=None, help="Repository root directory")
     watch_parser.add_argument("--poll", type=float, default=0.5, help="Poll interval in seconds (default: 0.5)")
     watch_parser.add_argument("--debounce", type=int, default=None, help="Debounce quiet period in milliseconds (default: 300)")
     watch_parser.add_argument("--force", action="store_true", help="Force immediate initial index before watching")
@@ -1622,18 +1770,20 @@ def main() -> None:
             )
         )
     elif args.command == "scan":
+        target_dir = getattr(args, "dir_opt", None) or getattr(args, "dir", None) or "."
         sys.exit(
             run_scan(
-                args.dir,
+                target_dir,
                 language=getattr(args, "language", None),
                 category=getattr(args, "category", None),
                 json_output=getattr(args, "json", False),
             )
         )
     elif args.command == "index":
+        target_dir = getattr(args, "dir_opt", None) or getattr(args, "dir", None) or "."
         sys.exit(
             run_index(
-                args.dir,
+                target_dir,
                 force=args.force,
                 quiet=getattr(args, "quiet", False),
                 json_output=getattr(args, "json", False),
@@ -1671,9 +1821,10 @@ def main() -> None:
             )
         )
     elif args.command == "communities":
+        target_dir = getattr(args, "dir", None) or getattr(args, "dir_pos", None) or "."
         sys.exit(
             run_communities(
-                dir_path=args.dir,
+                dir_path=target_dir,
                 limit=args.limit,
                 recompute=getattr(args, "recompute", False),
                 json_output=getattr(args, "json", False),
@@ -1688,25 +1839,28 @@ def main() -> None:
             )
         )
     elif args.command == "stats":
+        target_dir = getattr(args, "dir", None) or getattr(args, "dir_pos", None) or "."
         sys.exit(
             run_stats(
-                dir_path=args.dir,
+                dir_path=target_dir,
                 json_output=getattr(args, "json", False),
             )
         )
     elif args.command == "doctor":
+        target_dir = getattr(args, "dir", None) or getattr(args, "dir_pos", None) or "."
         sys.exit(
             run_doctor(
-                dir_path=args.dir,
+                dir_path=target_dir,
                 full=getattr(args, "full", False),
                 clean_locks=getattr(args, "clean_locks", False),
                 json_output=getattr(args, "json", False),
             )
         )
     elif args.command == "watch":
+        target_dir = getattr(args, "dir", None) or getattr(args, "dir_pos", None) or "."
         sys.exit(
             run_watch(
-                dir_path=args.dir,
+                dir_path=target_dir,
                 poll_interval=getattr(args, "poll", 0.5),
                 debounce_ms=getattr(args, "debounce", None),
                 force=getattr(args, "force", False),

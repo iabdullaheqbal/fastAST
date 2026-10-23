@@ -25,6 +25,7 @@ enum Kind {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct Scope {
     id: usize,
     kind: Kind,

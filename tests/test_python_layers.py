@@ -24,7 +24,7 @@ def test_cli_version():
         cwd=Path(__file__).parent.parent,
     )
     assert result.returncode == 0
-    assert "fastast 0.1.0" in result.stdout
+    assert "fastast 0.2.0" in result.stdout
 
 
 def test_cli_help():

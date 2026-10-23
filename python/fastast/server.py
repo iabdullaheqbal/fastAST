@@ -1488,6 +1488,27 @@ if mcp is not None:
 
 def main() -> None:
     """Run the FastAST MCP server over stdio."""
+    import sys
+    from fastast import __version__
+
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        if arg in ("-v", "--version"):
+            print(f"fastast-mcp {__version__}")
+            return
+        if arg in ("-h", "--help"):
+            print(
+                f"fastast-mcp {__version__}: FastAST Model Context Protocol (MCP) stdio server.\n\n"
+                "Usage:\n"
+                "  fastast-mcp              Start JSON-RPC 2.0 MCP server over stdio\n"
+                "  fastast-mcp --version    Show version and exit\n"
+                "  fastast-mcp --help       Show this help message and exit\n\n"
+                "Setup:\n"
+                "  Claude Code:  claude mcp add fastast -- fastast-mcp\n"
+                "  Cursor IDE:   Add {\"mcpServers\": {\"fastast\": {\"command\": \"fastast-mcp\"}}} to .cursor/mcp.json"
+            )
+            return
+
     if mcp is None:
         raise RuntimeError("MCP server is not available. Please install mcp.")
     mcp.run(transport="stdio")
@@ -1517,3 +1538,7 @@ __all__ = [
     "create_server",
     "main",
 ]
+
+
+if __name__ == "__main__":
+    main()

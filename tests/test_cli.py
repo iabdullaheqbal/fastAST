@@ -42,7 +42,7 @@ def test_cli_subprocess_version():
         env={"PYTHONPATH": "python"},
     )
     assert res.returncode == 0
-    assert "fastast 0.1.0" in res.stdout
+    assert "fastast 0.2.0" in res.stdout
 
 
 def test_cli_subprocess_help():
