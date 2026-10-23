@@ -1,5 +1,6 @@
 """Tests for TypeScript and TSX AST parsing and indexing in FastAST."""
 
+import textwrap
 from pathlib import Path
 from fastast import index_code
 
@@ -41,28 +42,28 @@ def test_ts_call_graph_and_docstring_indexing():
     """Test docstring and call graph extraction for TypeScript."""
     if index_code is None:
         return
-    code = """
-/**
- * Service managing user authentication.
- */
-export class AuthService {
-    /**
-     * Authenticates user with credentials.
-     */
-    public async login(user: string, pass: string): Promise<boolean> {
-        const hash = this.hashPassword(pass);
-        return this.verifyUser(user, hash);
-    }
+    code = textwrap.dedent("""\
+        /**
+         * Service managing user authentication.
+         */
+        export class AuthService {
+            /**
+             * Authenticates user with credentials.
+             */
+            public async login(user: string, pass: string): Promise<boolean> {
+                const hash = this.hashPassword(pass);
+                return this.verifyUser(user, hash);
+            }
 
-    private hashPassword(p: string): string {
-        return `hash_${p}`;
-    }
+            private hashPassword(p: string): string {
+                return `hash_${p}`;
+            }
 
-    private verifyUser(u: string, h: string): boolean {
-        return u.length > 0 && h.length > 0;
-    }
-}
-"""
+            private verifyUser(u: string, h: string): boolean {
+                return u.length > 0 && h.length > 0;
+            }
+        }
+    """)
     idx = index_code(code, language="typescript")
     assert not idx.has_syntax_error
 

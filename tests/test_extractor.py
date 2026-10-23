@@ -5,6 +5,7 @@ and EdgeRecords across languages, with fault-tolerance and confidence scoring.
 """
 
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -25,23 +26,23 @@ from fastast.model import (
 
 class TestPythonFactExtractor(unittest.TestCase):
     def test_classes_and_methods(self):
-        code = '''
-class PaymentProcessor:
-    """Processes customer payments."""
+        code = textwrap.dedent('''\
+            class PaymentProcessor:
+                """Processes customer payments."""
 
-    def __init__(self, api_key: str):
-        self.api_key = api_key
+                def __init__(self, api_key: str):
+                    self.api_key = api_key
 
-    def charge(self, amount: int) -> bool:
-        """Charges a card."""
-        return self.verify(amount)
+                def charge(self, amount: int) -> bool:
+                    """Charges a card."""
+                    return self.verify(amount)
 
-    async def verify(self, amount: int) -> bool:
-        return amount > 0
+                async def verify(self, amount: int) -> bool:
+                    return amount > 0
 
-def create_processor() -> PaymentProcessor:
-    return PaymentProcessor("key_123")
-'''
+            def create_processor() -> PaymentProcessor:
+                return PaymentProcessor("key_123")
+        ''')
         facts = extract_file_facts(code, "billing/processor.py", "python")
         self.assertEqual(facts.file_path, "billing/processor.py")
         self.assertFalse(facts.has_syntax_error)
@@ -84,18 +85,18 @@ def create_processor() -> PaymentProcessor:
             self.assertEqual(e.confidence, 1.0)
 
     def test_imports_and_calls(self):
-        code = '''
-import os
-from sys import path as sys_path
-from typing import List, Optional
+        code = textwrap.dedent('''\
+            import os
+            from sys import path as sys_path
+            from typing import List, Optional
 
-def dispatch(event: str):
-    log_event(event)
-    return True
+            def dispatch(event: str):
+                log_event(event)
+                return True
 
-def log_event(event: str):
-    pass
-'''
+            def log_event(event: str):
+                pass
+        ''')
         facts = extract_file_facts(code, "events.py", "python")
 
         # Imports
@@ -112,13 +113,13 @@ def log_event(event: str):
         self.assertEqual(call_edge.confidence, 1.0)
 
     def test_fault_tolerant_syntax_error(self):
-        code = '''
-def valid_start():
-    return 42
+        code = textwrap.dedent('''\
+            def valid_start():
+                return 42
 
-def broken_syntax(
-    x =
-'''
+            def broken_syntax(
+                x =
+        ''')
         facts = extract_file_facts(code, "broken.py", "python")
         self.assertTrue(facts.has_syntax_error)
         # Should still recover valid_start definition
@@ -140,19 +141,19 @@ class TestOtherLanguageFactExtractor(unittest.TestCase):
         self.assertIn("scripts", sym_names)
 
     def test_rust_structural_facts(self):
-        rs_code = '''
-use std::collections::HashMap;
+        rs_code = textwrap.dedent('''\
+            use std::collections::HashMap;
 
-pub struct TaskQueue {
-    tasks: HashMap<String, u32>,
-}
+            pub struct TaskQueue {
+                tasks: HashMap<String, u32>,
+            }
 
-impl TaskQueue {
-    pub fn new() -> Self {
-        Self { tasks: HashMap::new() }
-    }
-}
-'''
+            impl TaskQueue {
+                pub fn new() -> Self {
+                    Self { tasks: HashMap::new() }
+                }
+            }
+        ''')
         facts = extract_file_facts(rs_code, "src/queue.rs", "rust")
         self.assertFalse(facts.has_syntax_error)
         sym_names = [s.name for s in facts.symbols]
@@ -162,18 +163,18 @@ impl TaskQueue {
         self.assertTrue(any("HashMap" in imp or "collections" in imp for imp in imports))
 
     def test_typescript_structural_facts(self):
-        ts_code = '''
-import { Request, Response } from "express";
+        ts_code = textwrap.dedent('''\
+            import { Request, Response } from "express";
 
-export interface UserSession {
-    id: string;
-    email: string;
-}
+            export interface UserSession {
+                id: string;
+                email: string;
+            }
 
-export function handleLogin(req: Request, res: Response): void {
-    validate(req.body);
-}
-'''
+            export function handleLogin(req: Request, res: Response): void {
+                validate(req.body);
+            }
+        ''')
         facts = extract_file_facts(ts_code, "src/auth.ts", "typescript")
         self.assertFalse(facts.has_syntax_error)
         sym_names = [s.name for s in facts.symbols]

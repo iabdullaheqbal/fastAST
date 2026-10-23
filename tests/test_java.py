@@ -1,6 +1,7 @@
 """Tests for Java AST parsing and indexing in FastAST."""
 
 from pathlib import Path
+import textwrap
 import fastast
 from fastast import index_code
 
@@ -38,15 +39,16 @@ def test_java_interface_and_generics():
     """Test Java Repository contract and generics indexing."""
     if index_code is None:
         return
-    code = """package com.example;
+    code = textwrap.dedent("""\
+        package com.example;
 
-import java.util.List;
+        import java.util.List;
 
-public interface Repository<T> {
-    T findById(String id);
-    List<T> findAll();
-}
-"""
+        public interface Repository<T> {
+            T findById(String id);
+            List<T> findAll();
+        }
+    """)
     res = index_code(code, language="java")
     assert not res.has_syntax_error
     sym_names = [s.name for s in res.symbols]
@@ -59,14 +61,15 @@ def test_java_enum_and_record():
     """Test Java enum and record indexing."""
     if index_code is None:
         return
-    code = """package com.example;
+    code = textwrap.dedent("""\
+        package com.example;
 
-public enum Status {
-    ACTIVE, INACTIVE, PENDING;
-}
+        public enum Status {
+            ACTIVE, INACTIVE, PENDING;
+        }
 
-public record UserDto(String name, int age) {}
-"""
+        public record UserDto(String name, int age) {}
+    """)
     res = index_code(code, language="java")
     assert not res.has_syntax_error
     sym_names = [s.name for s in res.symbols]
