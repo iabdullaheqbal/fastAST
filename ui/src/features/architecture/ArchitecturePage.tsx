@@ -1,107 +1,239 @@
-import { Layers, Database, Cpu, Search, Sparkles, Terminal } from 'lucide-react';
+import React from 'react';
 
 export const ArchitecturePage: React.FC = () => {
   const layers = [
     {
-      id: 'ast',
-      title: '1. Multi-Language Tree-Sitter AST Extraction',
-      badge: 'Rust Core (sub-5ms)',
-      color: 'border-cyan-500/30 bg-cyan-500/5 text-cyan-400',
-      icon: <Cpu className="w-5 h-5 text-cyan-400" />,
-      desc: 'Zero-copy Tree-Sitter parsing across 9 supported languages (Python, JS, TS, Java, Rust, HTML, CSS, JSON, TOML). Extracts declarations, parameters, signatures, docstrings, imports, and invocations.',
-      metrics: ['9 Languages', 'Tree-Sitter Grammars', 'Incremental Hashing'],
+      num: '01',
+      title: 'Multi-Language AST Ingestion',
+      tech: 'Rust Core + Tree-sitter (9 Languages)',
+      color: '#38bdf8',
+      desc: 'Blazing-fast parsing using tree-sitter grammars (Python, TypeScript, JavaScript, Rust, Java, HTML, CSS, JSON, TOML). Incrementally admits files with SHA-256 caching and skips unchanged files.',
+      features: ['Tree-sitter native bindings', 'Deterministic hash caching', '142 files in 3.6s'],
     },
     {
-      id: 'graph',
-      title: '2. Persistent Code Graph & SQLite WAL Store',
-      badge: 'Local SQLite WAL',
-      color: 'border-indigo-500/30 bg-indigo-500/5 text-indigo-400',
-      icon: <Database className="w-5 h-5 text-indigo-400" />,
-      desc: 'Stores normalized entities (`files`, `symbols`, `imports`, `calls`, `edges`) with recursive trigger cascades, indexed B-trees, and concurrency-safe WAL journal mode in `.fastast.db`.',
-      metrics: ['126 Files', '1,267 Symbols', '13,346 Edges'],
+      num: '02',
+      title: 'Canonical Normalizer & Model',
+      tech: 'SymbolRecord, FileRecord, EdgeRecord',
+      color: '#818cf8',
+      desc: 'Extracts classes, methods, functions, invocations, imports, and definitions into unified AST records with exact line/byte offsets and cyclomatic complexity metrics.',
+      features: ['Zero raw-file dumping', 'Uniform cross-language schema', 'Deterministic IDs'],
     },
     {
-      id: 'cluster',
-      title: '3. Louvain Modularity & MinHash Structural Similarity',
-      badge: 'Graph Topology',
-      color: 'border-purple-500/30 bg-purple-500/5 text-purple-400',
-      icon: <Sparkles className="w-5 h-5 text-purple-400" />,
-      desc: 'Detects cohesive architectural modules with Louvain modularity optimization ($Q=0.84$). Employs 64-permutation MinHash signatures with 16-band Locality-Sensitive Hashing (LSH) for clone detection.',
-      metrics: ['Louvain Q=0.84', '20 Communities', 'MinHash + LSH'],
+      num: '03',
+      title: 'Persistent Graph & FTS5 Storage',
+      tech: 'SQLite 3 with WAL Mode & FTS5 (.fastast.db)',
+      color: '#34d399',
+      desc: 'High-concurrency SQLite storage with Write-Ahead Logging (WAL) and Full-Text Search 5. Stores 13,500+ edges and 1,330 symbols with sub-millisecond query latency.',
+      features: ['WAL Mode Concurrency', 'FTS5 token indexing', 'Multi-process reader locks'],
     },
     {
-      id: 'retrieval',
-      title: '4. Hybrid Dense + BM25 FTS5 Token-Conscious Retrieval',
-      badge: 'RRF Ranker',
-      color: 'border-amber-500/30 bg-amber-500/5 text-amber-400',
-      icon: <Search className="w-5 h-5 text-amber-400" />,
-      desc: 'Blends dense semantic embeddings with SQLite FTS5 BM25 lexical ranking and graph degree centrality using Reciprocal Rank Fusion (RRF). Eliminates context saturation through layered pruning.',
-      metrics: ['FTS5 BM25', 'Dense Projections', 'Token Budgets'],
+      num: '04',
+      title: 'Louvain Modularity Communities',
+      tech: 'Graph Partitioning (Modularity Q=0.82)',
+      color: '#c084fc',
+      desc: 'Detects architectural clusters and functional subsystems automatically via Louvain modularity optimization on the call and import dependency graph.',
+      features: ['20 cohesive communities', 'Hub symbol identification', 'Centroid ranking'],
     },
     {
-      id: 'agent',
-      title: '5. Agent-Native Model Context Protocol (MCP) Bridge',
-      badge: 'JSON-RPC 2.0 stdio',
-      color: 'border-emerald-500/30 bg-emerald-500/5 text-emerald-400',
-      icon: <Terminal className="w-5 h-5 text-emerald-400" />,
-      desc: 'Standardized tool suite exposed over stdio JSON-RPC 2.0 for Claude Code, Cursor, Windsurf, and SWE-bench harnesses. Complete CLI parity between `fastast` and `fastast-mcp`.',
-      metrics: ['13 Tools', 'Claude Code Ready', 'Cursor IDE Ready'],
+      num: '05',
+      title: 'Near-Duplicate Clone Detection',
+      tech: 'MinHash + Locality Sensitive Hashing (LSH)',
+      color: '#fbbf24',
+      desc: 'Indexes symbol token n-grams into MinHash signatures and LSH buckets to detect copy-pasted implementations and structurally similar code across modules.',
+      features: ['Jaccard similarity threshold', 'O(1) clone lookups', 'Refactoring candidates'],
+    },
+    {
+      num: '06',
+      title: 'Token-Bounded Hybrid Retrieval',
+      tech: 'Dense Vector + BM25 + Graph Neighborhood',
+      color: '#38bdf8',
+      desc: 'Synthesizes hybrid reciprocal rank fusion (RRF) with bounded context expansion. Extracts minimal definition windows within strict token budgets for coding agents.',
+      features: ['Strict token budget enforcement', 'Omission indicators', '1-Hop neighbor expansion'],
+    },
+    {
+      num: '07',
+      title: 'Agent Protocol Bridges',
+      tech: 'MCP Protocol (Stdio JSON-RPC 2.0) & REST API (:4200)',
+      color: '#f43f5e',
+      desc: 'Seamless interoperability with Claude Code, Cursor, Windsurf, and custom autonomous agents via standardized Model Context Protocol tools and fast HTTP endpoints.',
+      features: ['Standard MCP 2.0 tools', 'CORS-enabled REST API', 'Interactive Web Lens UI'],
     },
   ];
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 bg-[#0c0e14] space-y-8 select-none">
-      {/* Header */}
-      <div className="max-w-5xl mx-auto space-y-2">
-        <div className="flex items-center space-x-2 text-xs font-mono text-cyan-400">
-          <Layers className="w-4 h-4" />
-          <span>CODEBASE MEMORY BLUEPRINT</span>
-        </div>
-        <h1 className="text-2xl font-bold text-white tracking-tight">
-          FastAST System Architecture
-        </h1>
-        <p className="text-xs text-[#94a3b8] max-w-2xl leading-relaxed">
-          High-performance pipeline decoupling large codebases into compact, token-bounded evidence windows
-          via Tree-Sitter syntax extraction, SQLite graph relational memory, and hybrid RRF retrieval.
-        </p>
-      </div>
-
-      {/* Layered Pipeline Cards */}
-      <div className="max-w-5xl mx-auto space-y-4">
-        {layers.map((layer, idx) => (
-          <div
-            key={layer.id}
-            className="p-5 rounded-xl bg-[#11141d] border border-[#1e293b] hover:border-[#28334a] transition space-y-3"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <div className="p-2 rounded-lg bg-[#161b26] border border-[#232b3e]">
-                  {layer.icon}
-                </div>
-                <h2 className="text-sm font-bold text-white">{layer.title}</h2>
-              </div>
-              <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${layer.color}`}>
-                {layer.badge}
-              </span>
-            </div>
-
-            <p className="text-xs text-[#cbd5e1] leading-relaxed pl-11">
-              {layer.desc}
+    <div className="arch-page">
+      <div className="arch-header">
+        <div className="arch-header-left">
+          <span className="material-symbols-outlined text-primary text-2xl">layers</span>
+          <div>
+            <h1 className="arch-title">FastAST Engine Architecture</h1>
+            <p className="arch-subtitle">
+              End-to-end pipeline: Tree-sitter AST &rarr; Graph Graphing &rarr; SQLite Memory &rarr; Hybrid Retrieval
             </p>
-
-            <div className="flex items-center space-x-2 pl-11 pt-1">
-              {layer.metrics.map((m) => (
-                <span
-                  key={m}
-                  className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#161b26] text-[#94a3b8] border border-[#232b3e]"
-                >
-                  {m}
-                </span>
-              ))}
-            </div>
           </div>
-        ))}
+        </div>
+        <div className="arch-metrics">
+          <div className="metric-chip">
+            <span className="text-outline text-xs">Modularity:</span>
+            <span className="text-tertiary font-code font-bold">Q = 0.82</span>
+          </div>
+          <div className="metric-chip">
+            <span className="text-outline text-xs">Total Graph Edges:</span>
+            <span className="text-primary font-code font-bold">13,503</span>
+          </div>
+        </div>
       </div>
+
+      <div className="arch-content-scroll">
+        <div className="layers-grid">
+          {layers.map((layer) => (
+            <div key={layer.num} className="layer-card">
+              <div className="layer-top">
+                <span className="layer-num font-code" style={{ color: layer.color }}>
+                  {layer.num}
+                </span>
+                <span className="layer-tech font-code">{layer.tech}</span>
+              </div>
+              <h3 className="layer-title">{layer.title}</h3>
+              <p className="layer-desc">{layer.desc}</p>
+              <div className="layer-features">
+                {layer.features.map((f, i) => (
+                  <span key={i} className="feature-pill">
+                    <span className="dot" style={{ backgroundColor: layer.color }} />
+                    {f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <style>{`
+        .arch-page {
+          width: 100%;
+          height: calc(100vh - 56px);
+          display: flex;
+          flex-direction: column;
+          background: var(--surface-lowest);
+          overflow: hidden;
+        }
+        .arch-header {
+          padding: 16px 24px;
+          background: var(--surface);
+          border-bottom: 1px solid var(--hairline);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .arch-header-left {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .arch-title {
+          font-size: 16px;
+          font-weight: 700;
+          color: var(--on-surface);
+          margin: 0;
+        }
+        .arch-subtitle {
+          font-size: 12px;
+          color: var(--outline);
+          margin: 0;
+          padding-top: 2px;
+        }
+        .arch-metrics {
+          display: flex;
+          gap: 12px;
+        }
+        .metric-chip {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          background: var(--surface-low);
+          padding: 6px 12px;
+          border-radius: 4px;
+          border: 1px solid var(--hairline);
+        }
+        .arch-content-scroll {
+          flex: 1;
+          overflow-y: auto;
+          padding: 24px;
+        }
+        .layers-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+          gap: 16px;
+          max-width: 1400px;
+          margin: 0 auto;
+        }
+        .layer-card {
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 8px;
+          padding: 16px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          transition: border-color 0.2s, transform 0.2s;
+        }
+        .layer-card:hover {
+          border-color: var(--primary);
+          transform: translateY(-2px);
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+        }
+        .layer-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .layer-num {
+          font-size: 18px;
+          font-weight: 700;
+        }
+        .layer-tech {
+          font-size: 10px;
+          color: var(--outline);
+          background: var(--surface-low);
+          padding: 2px 6px;
+          border-radius: 3px;
+        }
+        .layer-title {
+          margin: 0;
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--on-surface);
+        }
+        .layer-desc {
+          margin: 0;
+          font-size: 12px;
+          color: var(--on-surface-variant);
+          line-height: 1.5;
+        }
+        .layer-features {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-top: auto;
+          padding-top: 8px;
+        }
+        .feature-pill {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11px;
+          color: var(--outline);
+          background: var(--surface-container);
+          padding: 3px 8px;
+          border-radius: 3px;
+        }
+        .dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+        }
+      `}</style>
     </div>
   );
 };
