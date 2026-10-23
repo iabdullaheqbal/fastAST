@@ -1,8 +1,4 @@
-//! TypeScript + TSX indexing engine
-//!
-//! Uses Tree-Sitter TypeScript and TSX grammars to parse and extract
-//! symbols, imports, and calls from TypeScript and TSX code.
-
+//! TypeScript + TSX indexing engine using Tree-Sitter grammars.
 pub mod parser;
 
 use crate::{

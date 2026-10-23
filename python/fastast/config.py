@@ -99,25 +99,25 @@ def load_config(repo_root: Optional[Union[str, Path]] = None) -> FastASTConfig:
     if "FASTAST_MAX_TOKENS" in os.environ:
         try:
             config.max_tokens = int(os.environ["FASTAST_MAX_TOKENS"])
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.warning(f"Invalid FASTAST_MAX_TOKENS value: {exc}")
     if "FASTAST_LOG_LEVEL" in os.environ:
         config.log_level = os.environ["FASTAST_LOG_LEVEL"].upper()
     if "FASTAST_LOCK_TIMEOUT" in os.environ:
         try:
             config.lock_timeout_seconds = float(os.environ["FASTAST_LOCK_TIMEOUT"])
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.warning(f"Invalid FASTAST_LOCK_TIMEOUT value: {exc}")
     if "FASTAST_WATCH_DEBOUNCE_MS" in os.environ:
         try:
             config.watch_debounce_ms = int(os.environ["FASTAST_WATCH_DEBOUNCE_MS"])
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.warning(f"Invalid FASTAST_WATCH_DEBOUNCE_MS value: {exc}")
     if "FASTAST_MAX_FILE_SIZE" in os.environ:
         try:
             config.max_file_size_bytes = int(os.environ["FASTAST_MAX_FILE_SIZE"])
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.warning(f"Invalid FASTAST_MAX_FILE_SIZE value: {exc}")
     if "FASTAST_DEFAULT_RANKING" in os.environ:
         config.default_ranking_method = os.environ["FASTAST_DEFAULT_RANKING"]
     if "FASTAST_ALLOW_OUTSIDE_ROOT" in os.environ:

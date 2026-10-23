@@ -39,7 +39,6 @@ def test_ts_symbol_indexing():
 
 def test_ts_call_graph_and_docstring_indexing():
     """Test docstring and call graph extraction for TypeScript."""
-    assert True
     if index_code is None:
         return
     code = """

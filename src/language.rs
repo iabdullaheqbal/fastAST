@@ -15,20 +15,25 @@ pub enum Language {
 }
 
 impl Language {
-    /// Detect language from file extension
-    pub fn from_extension(ext: &str) -> Option<Language> {
-        match ext.to_lowercase().as_str() {
-            "py" | "pyw" | "pyi" => Some(Language::Python),
+    /// Detect language from name or file extension
+    pub fn from_name_or_extension(s: &str) -> Option<Language> {
+        match s.to_lowercase().as_str() {
+            "python" | "py" | "pyw" | "pyi" => Some(Language::Python),
             "java" => Some(Language::Java),
-            "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
-            "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
+            "javascript" | "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
+            "typescript" | "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
             "html" | "htm" => Some(Language::HTML),
             "css" => Some(Language::CSS),
-            "rs" => Some(Language::Rust),
+            "rust" | "rs" => Some(Language::Rust),
             "json" => Some(Language::JSON),
             "toml" => Some(Language::TOML),
             _ => None,
         }
+    }
+
+    /// Detect language from file extension
+    pub fn from_extension(ext: &str) -> Option<Language> {
+        Self::from_name_or_extension(ext)
     }
 
     /// Detect language from file path
