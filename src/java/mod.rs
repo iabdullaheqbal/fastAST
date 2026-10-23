@@ -4,7 +4,7 @@ pub mod parser;
 
 use crate::{
     count_tokens,
-    indexer::{ExtractedCall, ExtractedImport, ExtractedSymbol, FileIndexResult},
+    indexer::{ExtractedImport, ExtractedSymbol, FileIndexResult},
 };
 
 pub fn index_code(code_text: &str) -> FileIndexResult {
