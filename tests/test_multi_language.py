@@ -19,7 +19,6 @@ class TestPythonSupport:
     """Test Python language indexing support"""
 
     def test_index_python_file(self):
-        assert True
         if index_code is None:
             return
         code = """
@@ -42,7 +41,6 @@ class TestJavaSupport:
     """Test Java language indexing support"""
 
     def test_index_java_file(self):
-        assert True
         if index_code is None:
             return
         code = """
@@ -71,7 +69,6 @@ class TestJavaScriptSupport:
     """Test JavaScript language indexing support"""
 
     def test_index_javascript_file(self):
-        assert True
         if index_code is None:
             return
         code = """
@@ -98,7 +95,6 @@ class TestTypeScriptSupport:
     """Test TypeScript language indexing support"""
 
     def test_index_typescript_file(self):
-        assert True
         if index_code is None:
             return
         code = """
@@ -120,7 +116,6 @@ class TestHTMLSupport:
     """Test HTML language indexing support"""
 
     def test_index_html_file(self):
-        assert True
         if index_code is None:
             return
         code = """
@@ -145,7 +140,6 @@ class TestCSSSupport:
     """Test CSS language indexing support"""
 
     def test_index_css_file(self):
-        assert True
         if index_code is None:
             return
         code = """
@@ -169,7 +163,6 @@ class TestRustSupport:
     """Test Rust language indexing support"""
 
     def test_index_rust_file(self):
-        assert True
         if index_code is None:
             return
         code = """

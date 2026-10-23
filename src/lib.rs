@@ -42,21 +42,12 @@ pub fn count_tokens(text: &str) -> usize {
 pub fn index_code(code_text: &str, language: Option<String>) -> PyResult<FileIndexResult> {
     // Detect or validate language
     let detected_lang = if let Some(lang_str) = language {
-        match lang_str.to_lowercase().as_str() {
-            "python" | "py" => Language::Python,
-            "java" => Language::Java,
-            "javascript" | "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
-            "typescript" | "ts" | "tsx" | "mts" | "cts" => Language::TypeScript,
-            "html" | "htm" => Language::HTML,
-            "css" => Language::CSS,
-            "rust" | "rs" => Language::Rust,
-            "json" => Language::JSON,
-            "toml" => Language::TOML,
-            _ => {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("Unsupported language: {}. Supported: python, java, javascript, jsx, typescript, tsx, html, css, rust, json, toml", lang_str)
-                ));
-            }
+        if let Some(l) = Language::from_name_or_extension(&lang_str) {
+            l
+        } else {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Unsupported language: {}. Supported: python, java, javascript, jsx, typescript, tsx, html, css, rust, json, toml", lang_str)
+            ));
         }
     } else {
         Language::Python  // Default to Python for backward compatibility

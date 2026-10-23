@@ -44,19 +44,7 @@ def diagnose_repository(
     db_name: str = ".fastast.db",
     full_integrity: bool = False,
 ) -> Dict[str, Any]:
-    """Perform comprehensive system diagnostics and health evaluation of a FastAST repository.
-
-    Examines:
-    1. Repository accessibility, filesystem containment, and configuration validity
-    2. Inter-process lock status, owner PID liveness, and stale lock detection
-    3. SQLite database integrity, WAL state, and schema version consistency
-    4. Index coverage, stale file rows, unindexed files, and entity statistics
-    5. FTS5 full-text, dense embeddings, and community graph synchronization
-
-    Returns:
-        Structured dictionary with diagnostic details, overall status ('healthy', 'warning', 'error'),
-        and prioritized actionable remediation recommendations.
-    """
+    """Perform comprehensive system diagnostics and health evaluation of a FastAST repository."""
     root = Path(repo_path).resolve()
     config = load_config(root)
     db_path = (root / db_name).resolve()

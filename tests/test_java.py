@@ -36,7 +36,6 @@ def test_java_symbol_indexing():
 
 def test_java_interface_and_generics():
     """Test Java Repository contract and generics indexing."""
-    assert True
     if index_code is None:
         return
     code = """package com.example;
@@ -58,7 +57,6 @@ public interface Repository<T> {
 
 def test_java_enum_and_record():
     """Test Java enum and record indexing."""
-    assert True
     if index_code is None:
         return
     code = """package com.example;

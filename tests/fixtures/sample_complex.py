@@ -14,9 +14,9 @@ def retry(attempts: int = 3, backoff: float = 0.5):
             for i in range(attempts):
                 try:
                     return await fn(*args, **kwargs)
-                except Exception:
+                except Exception as exc:
                     if i == attempts - 1:
-                        raise
+                        raise RuntimeError(f"Retry attempts exhausted: {exc}") from exc
                     await asyncio.sleep(backoff)
         return wrapper
     return decorator

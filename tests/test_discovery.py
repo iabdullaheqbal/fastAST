@@ -208,8 +208,9 @@ class TestMultiLayerIgnoreAndWalker(unittest.TestCase):
         # Symlinks (if OS supports)
         try:
             os.symlink(self.root / "src" / "app.py", self.root / "symlink_app.py")
-        except OSError:
-            pass
+        except OSError as exc:
+            import logging
+            logging.getLogger("test").debug("Symlink creation skipped: %s", exc)
 
     def tearDown(self):
         self.tmp.cleanup()

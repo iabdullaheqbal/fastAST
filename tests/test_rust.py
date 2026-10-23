@@ -42,7 +42,6 @@ def test_rust_symbol_indexing():
 
 def test_rust_docstring_indexing():
     """Test extracting doc comments (/// and /** */) into ExtractedSymbol.docstring."""
-    assert True
     if index_code is None:
         return
     code = """
@@ -82,7 +81,6 @@ impl SessionService {
 
 def test_rust_call_graph_extraction():
     """Test call graph extraction for scoped calls, method calls, free functions, and macros."""
-    assert True
     if index_code is None:
         return
     code = """

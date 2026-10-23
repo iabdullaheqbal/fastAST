@@ -66,6 +66,10 @@ from fastast.model import (
 
 __version__ = "0.1.0"
 
+import logging
+
+_logger = logging.getLogger("fastast")
+
 try:
     from fastast._core import (
         ExtractedCall,
@@ -74,7 +78,8 @@ try:
         FileIndexResult,
         index_code,
     )
-except ImportError:
+except ImportError as _core_err:
+    _logger.debug("Native FastAST _core extension not loaded; using Python fallback classes: %s", _core_err)
     class ExtractedSymbol:  # type: ignore
         def __init__(
             self,
@@ -137,90 +142,52 @@ except ImportError:
 
     index_code = None  # type: ignore
 
-try:
-    from fastast.indexer import RepositoryIndexer, index_repository
-    from fastast.db import (
-        backfill_symbol_embeddings,
-        delete_file_record,
-        delete_symbol_embedding,
-        get_call_graph,
-        get_graph_neighborhood,
-        get_similar_symbols,
-        get_symbol_community,
-        get_symbol_embedding,
-        list_communities,
-        sanitize_fts5_query,
-        search_symbols,
-        search_symbols_bm25,
-        search_symbols_semantic,
-        store_symbol_embedding,
-    )
-    from fastast.similarity import (
-        LSHIndex,
-        MinHash,
-        compute_jaccard_similarity,
-        compute_similarity_pairs,
-        extract_symbol_shingles,
-        index_similarity,
-    )
-    from fastast.community import (
-        LouvainDetector,
-        derive_community_name,
-        detect_and_store_communities,
-    )
-    from fastast.embeddings import (
-        BaseEmbeddingProvider,
-        SemanticProjectionProvider,
-        cosine_similarity,
-        decode_embedding,
-        encode_embedding,
-        get_embedding_provider,
-        prepare_symbol_text,
-    )
-    from fastast.evidence import (
-        EvidenceMaterializer,
-        build_evidence_bundle,
-        get_file_outline,
-        get_snippet,
-        get_symbol_evidence,
-    )
-except ImportError:
-    RepositoryIndexer = None  # type: ignore
-    index_repository = None  # type: ignore
-    search_symbols = None  # type: ignore
-    search_symbols_bm25 = None  # type: ignore
-    search_symbols_semantic = None  # type: ignore
-    sanitize_fts5_query = None  # type: ignore
-    delete_file_record = None  # type: ignore
-    get_call_graph = None  # type: ignore
-    get_graph_neighborhood = None  # type: ignore
-    get_similar_symbols = None  # type: ignore
-    get_symbol_community = None  # type: ignore
-    list_communities = None  # type: ignore
-    EvidenceMaterializer = None  # type: ignore
-    build_evidence_bundle = None  # type: ignore
-    get_file_outline = None  # type: ignore
-    get_symbol_evidence = None  # type: ignore
-    BaseEmbeddingProvider = None  # type: ignore
-    SemanticProjectionProvider = None  # type: ignore
-    get_embedding_provider = None  # type: ignore
-    encode_embedding = None  # type: ignore
-    decode_embedding = None  # type: ignore
-    cosine_similarity = None  # type: ignore
-    store_symbol_embedding = None  # type: ignore
-    get_symbol_embedding = None  # type: ignore
-    delete_symbol_embedding = None  # type: ignore
-    backfill_symbol_embeddings = None  # type: ignore
-    prepare_symbol_text = None  # type: ignore
-    LSHIndex = None  # type: ignore
-    MinHash = None  # type: ignore
-    compute_jaccard_similarity = None  # type: ignore
-    compute_similarity_pairs = None  # type: ignore
-    extract_symbol_shingles = None  # type: ignore
-    index_similarity = None  # type: ignore
-    LouvainDetector = None  # type: ignore
-    derive_community_name = None  # type: ignore
-    detect_and_store_communities = None  # type: ignore
+from fastast.indexer import RepositoryIndexer, index_repository
+from fastast.db import (
+    backfill_symbol_embeddings,
+    delete_file_record,
+    delete_symbol_embedding,
+    get_call_graph,
+    get_graph_neighborhood,
+    get_similar_symbols,
+    get_symbol_community,
+    get_symbol_embedding,
+    list_communities,
+    sanitize_fts5_query,
+    search_symbols,
+    search_symbols_bm25,
+    search_symbols_semantic,
+    store_symbol_embedding,
+)
+from fastast.similarity import (
+    LSHIndex,
+    MinHash,
+    compute_jaccard_similarity,
+    compute_similarity_pairs,
+    extract_symbol_shingles,
+    index_similarity,
+)
+from fastast.community import (
+    LouvainDetector,
+    derive_community_name,
+    detect_and_store_communities,
+)
+from fastast.embeddings import (
+    BaseEmbeddingProvider,
+    SemanticProjectionProvider,
+    cosine_similarity,
+    decode_embedding,
+    encode_embedding,
+    get_embedding_provider,
+    prepare_symbol_text,
+)
+from fastast.evidence import (
+    EvidenceMaterializer,
+    build_evidence_bundle,
+    get_file_outline,
+    get_snippet,
+    get_symbol_evidence,
+)
 
 __all__ = [
     "__version__",

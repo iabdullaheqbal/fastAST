@@ -42,7 +42,6 @@ def test_js_symbol_indexing():
 
 def test_jsdoc_and_call_extraction():
     """Test JSDoc comment extraction and ExtractedCall extraction for call graphs."""
-    assert True
     if index_code is None:
         return
     code = """

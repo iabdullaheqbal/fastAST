@@ -293,8 +293,6 @@ class TestHardeningResilience(unittest.TestCase):
         self.assertTrue(data["database"]["integrity_ok"])
         self.assertIn("results", data)
         self.assertIn("meta", data)
-
-
 if __name__ == "__main__":
     unittest.main()
 

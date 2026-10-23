@@ -160,7 +160,7 @@ class RepositoryWatcher:
                 logger.error(f"Error during watcher index cycle: {exc}")
                 if self.on_error:
                     self.on_error(exc)
-                raise
+                return None
 
     def start(self) -> None:
         """Start background monitoring thread."""
