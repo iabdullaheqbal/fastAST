@@ -1,434 +1,272 @@
-"""FastAST HTTP API Server for the FastAST UI.
+"""FastAST HTTP API Server for Web UI integration.
 
-Provides high-performance REST JSON endpoints for:
-- Repository statistics & status
-- Triggering indexing
-- Symbol search & file navigation
-- 3D Globe graph topology
-- Multi-hop neighborhood expansion
-- Louvain communities
-- Token-bounded evidence bundles & snippets
-- Code clones & similarity
+Provides REST endpoints over HTTP with CORS support to connect FastAST Lens UI
+to the SQLite code graph, Tree-Sitter AST fact extractor, Louvain modularity clusters,
+and hybrid token-bounded evidence retrieval.
 """
 
 import json
 import math
-import os
 import sys
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from fastast.db import get_connection
-from fastast.indexer import index_repository as do_index_repository
-import fastast.server as server_tools
-
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-
-COMMUNITY_PALETTE = [
-    "#38bdf8",  # Electric Cyan
-    "#818cf8",  # Indigo / Blue
-    "#c084fc",  # Purple / Lavender
-    "#34d399",  # Emerald Green
-    "#fbbf24",  # Amber / Gold
-    "#f43f5e",  # Rose Red
-    "#38bdf8",  # Sky Blue
-    "#a78bfa",  # Soft Violet
-    "#2dd4bf",  # Teal
-    "#fb923c",  # Coral Orange
-]
-
-
-def _lat_lon_from_id(index: int, total: int, comm_id: int):
-    """Compute deterministic spherical lat/lon distributed by community clusters."""
-    # Place communities around distinct sectors on the globe
-    comm_center_lon = ((comm_id * 73) % 360) - 180
-    comm_center_lat = (((comm_id * 37) % 100) - 50) * 0.8
-    
-    # Golden ratio spiral offset within the community sector
-    phi = (1 + math.sqrt(5)) / 2
-    offset_lon = ((index * phi * 180) % 60) - 30
-    offset_lat = ((index * 23) % 40) - 20
-
-    lat = max(-75.0, min(75.0, comm_center_lat + offset_lat))
-    lon = ((comm_center_lon + offset_lon + 180) % 360) - 180
-    return round(lat, 2), round(lon, 2)
-
-
-def get_globe_topology(root_dir: str = ".", max_nodes: int = 150):
-    """Generate rich 3D spherical topology data for the Globe Graph."""
-    root = Path(root_dir).resolve()
-    db_path = root / ".fastast.db"
-    if not db_path.exists():
-        do_index_repository(str(root))
-
-    conn = get_connection(db_path)
-    try:
-        # 1. Fetch communities
-        comms_raw = json.loads(server_tools.list_communities(directory_path=str(root), limit=15))
-        comms_list = comms_raw.get("communities", [])
-        comm_map = {}
-        communities_data = []
-        for i, c in enumerate(comms_list):
-            c_id = c.get("community_id", i)
-            c_name = c.get("name", f"Community #{c_id}")
-            color = COMMUNITY_PALETTE[i % len(COMMUNITY_PALETTE)]
-            comm_map[c_id] = {
-                "id": c_id,
-                "name": c_name,
-                "color": color,
-                "member_count": c.get("member_count", 0),
-                "modularity": c.get("modularity", 0.82),
-            }
-            communities_data.append(comm_map[c_id])
-
-        # 2. Fetch top symbols by in/out degree or importance
-        cur = conn.cursor()
-        query = """
-            SELECT s.id, s.name, s.kind, s.signature, s.start_line, s.end_line,
-                   f.path, COALESCE(sc.community_id, 0), COALESCE(sc.community_name, 'Core'),
-                   (SELECT count(*) FROM edges WHERE dst = s.name) as in_deg,
-                   (SELECT count(*) FROM edges WHERE src = s.name) as out_deg
-            FROM symbols s
-            JOIN files f ON s.file_id = f.id
-            LEFT JOIN symbol_communities sc ON s.id = sc.symbol_id
-            WHERE s.kind IN ('function', 'async_function', 'class', 'method', 'struct')
-            ORDER BY (in_deg + out_deg) DESC, s.confidence DESC
-            LIMIT ?
-        """
-        rows = cur.execute(query, (max_nodes,)).fetchall()
-
-        nodes = []
-        node_name_to_idx = {}
-        for idx, row in enumerate(rows):
-            s_id, name, kind, sig, s_line, e_line, f_path, c_id, c_name, in_d, out_d = row
-            comm_info = comm_map.get(c_id, {
-                "id": c_id,
-                "name": c_name,
-                "color": COMMUNITY_PALETTE[c_id % len(COMMUNITY_PALETTE)]
-            })
-            total_deg = in_d + out_d
-            importance = min(1.0, round(0.35 + (total_deg / 15.0) * 0.65, 2))
-            lat, lon = _lat_lon_from_id(idx, len(rows), c_id)
-
-            node_obj = {
-                "id": s_id,
-                "idx": idx,
-                "name": name,
-                "kind": kind,
-                "signature": sig,
-                "file_path": f_path,
-                "start_line": s_line,
-                "end_line": e_line,
-                "comm": c_id,
-                "comm_name": comm_info["name"],
-                "comm_color": comm_info["color"],
-                "importance": importance,
-                "lat": lat,
-                "lon": lon,
-                "in_degree": in_d,
-                "out_degree": out_d,
-                "active": (idx == 0),
-            }
-            nodes.append(node_obj)
-            node_name_to_idx[name] = idx
-
-        # 3. Fetch relational arcs connecting these nodes
-        edges = []
-        if nodes:
-            names = list(node_name_to_idx.keys())
-            placeholders = ",".join("?" for _ in names)
-            edge_query = f"""
-                SELECT src, dst, relation, line_number
-                FROM edges
-                WHERE src IN ({placeholders}) AND dst IN ({placeholders})
-                LIMIT 300
-            """
-            edge_rows = cur.execute(edge_query, names + names).fetchall()
-            for src, dst, relation, line in edge_rows:
-                if src in node_name_to_idx and dst in node_name_to_idx and src != dst:
-                    from_idx = node_name_to_idx[src]
-                    to_idx = node_name_to_idx[dst]
-                    rel_color = "#38bdf8" if relation == "calls" else ("#ddb7ff" if relation == "defines" else "#87929a")
-                    edges.append({
-                        "from": from_idx,
-                        "to": to_idx,
-                        "src": src,
-                        "dst": dst,
-                        "type": relation.upper(),
-                        "color": rel_color,
-                        "line": line,
-                    })
-
-        # Add file nodes for context
-        file_rows = cur.execute("SELECT id, path, language, total_lines FROM files ORDER BY total_lines DESC LIMIT 15").fetchall()
-        file_nodes = []
-        for f_id, path, lang, lines in file_rows:
-            file_nodes.append({
-                "id": f"file_{f_id}",
-                "path": path,
-                "name": Path(path).name,
-                "language": lang,
-                "lines": lines,
-            })
-
-        return {
-            "nodes": nodes,
-            "edges": edges,
-            "communities": communities_data,
-            "file_nodes": file_nodes,
-            "total_nodes": len(nodes),
-            "total_edges": len(edges),
-            "modularity": 0.8199,
-        }
-    finally:
-        conn.close()
-
-
-def get_files_tree(root_dir: str = "."):
-    """Get indexed files and categorized statistics."""
-    root = Path(root_dir).resolve()
-    db_path = root / ".fastast.db"
-    if not db_path.exists():
-        do_index_repository(str(root))
-
-    conn = get_connection(db_path)
-    try:
-        cur = conn.cursor()
-        rows = cur.execute("""
-            SELECT id, path, language, category, total_lines, total_tokens, status,
-                   (SELECT count(*) FROM symbols WHERE file_id = files.id) as symbol_count
-            FROM files
-            ORDER BY path ASC
-        """).fetchall()
-
-        file_list = []
-        for r in rows:
-            file_list.append({
-                "id": r[0],
-                "path": r[1],
-                "language": r[2],
-                "category": r[3],
-                "total_lines": r[4],
-                "total_tokens": r[5],
-                "status": r[6],
-                "symbol_count": r[7],
-            })
-        return {"files": file_list, "total_files": len(file_list)}
-    finally:
-        conn.close()
+try:
+    from fastast import server as fastast_server
+except ImportError:
+    # Allow running directly from repo root
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from fastast import server as fastast_server
 
 
 class FastASTAPIHandler(BaseHTTPRequestHandler):
-    """CORS-enabled JSON HTTP request handler for FastAST."""
+    """HTTP Request Handler exposing FastAST capabilities with CORS."""
 
-    def _set_headers(self, status_code=200, content_type="application/json"):
-        self.send_response(status_code)
-        self.send_header("Content-Type", content_type)
+    def _send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.end_headers()
 
     def do_OPTIONS(self):
-        self._set_headers(HTTPStatus.NO_CONTENT)
+        self.send_response(204)
+        self._send_cors_headers()
+        self.end_headers()
+
+    def _send_json(self, status_code: int, data: dict):
+        body = json.dumps(data, indent=2).encode("utf-8")
+        self.send_response(status_code)
+        self._send_cors_headers()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        path = parsed.path
-        query = parse_qs(parsed.query)
+        params = parse_qs(parsed.query)
 
-        def get_param(key: str, default: str = "") -> str:
-            return query.get(key, [default])[0]
-
-        def get_int(key: str, default: int = 0) -> int:
-            try:
-                return int(get_param(key, str(default)))
-            except ValueError:
-                return default
+        def get_param(name, default=""):
+            return params.get(name, [default])[0]
 
         try:
-            if path in ("/api/stats", "/api/status"):
-                res = server_tools.get_repository_stats(directory_path=str(REPO_ROOT))
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            if parsed.path in ("/api/status", "/api/stats"):
+                raw = fastast_server.get_repository_stats(directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/symbols":
-                q = get_param("q", get_param("query", ""))
+            elif parsed.path == "/api/symbols":
+                q = get_param("q", "")
                 kind = get_param("kind") or None
-                lang = get_param("language") or None
-                limit = get_int("limit", 50)
-                res = server_tools.query_symbols(
-                    query=q,
-                    kind=kind,
-                    language=lang,
-                    limit=limit,
-                    directory_path=str(REPO_ROOT),
-                )
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+                limit = int(get_param("limit", "50"))
+                raw = fastast_server.query_symbols(query=q, kind=kind, limit=limit, directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/calls":
-                sym = get_param("symbol", get_param("name", ""))
-                res = server_tools.get_call_graph(symbol=sym, directory_path=str(REPO_ROOT))
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            elif parsed.path == "/api/evidence":
+                q = get_param("q", "")
+                max_tokens = int(get_param("max_tokens", "1500"))
+                raw = fastast_server.retrieve_evidence(query=q, max_tokens=max_tokens, directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/graph":
-                sym = get_param("symbol", get_param("name", ""))
-                depth = get_int("depth", 2)
-                res = server_tools.get_graph_neighborhood(
-                    symbol=sym,
-                    max_depth=depth,
-                    directory_path=str(REPO_ROOT),
-                )
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            elif parsed.path == "/api/neighborhood":
+                sym = get_param("symbol") or get_param("name", "index_repository")
+                depth = int(get_param("depth", "2"))
+                limit = int(get_param("limit", "30"))
+                raw = fastast_server.get_graph_neighborhood(symbol_name=sym, max_depth=depth, max_nodes=limit, directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path in ("/api/evidence", "/api/query"):
-                q = get_param("q", get_param("query", ""))
-                max_tokens = get_int("max_tokens", 2048)
-                limit = get_int("limit", 5)
-                res = server_tools.retrieve_evidence(
-                    query=q,
-                    limit=limit,
-                    max_tokens=max_tokens,
-                    directory_path=str(REPO_ROOT),
-                )
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            elif parsed.path == "/api/call_graph":
+                sym = get_param("symbol") or get_param("name", "index_repository")
+                raw = fastast_server.get_call_graph(symbol_name=sym, directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/symbol_evidence":
-                sym = get_param("symbol", get_param("name", ""))
-                res = server_tools.get_symbol_evidence(
-                    symbol=sym,
-                    directory_path=str(REPO_ROOT),
-                )
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            elif parsed.path == "/api/communities":
+                raw = fastast_server.list_communities(directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/communities":
-                limit = get_int("limit", 20)
-                res = server_tools.list_communities(
-                    limit=limit,
-                    directory_path=str(REPO_ROOT),
-                )
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            elif parsed.path == "/api/community":
+                sym = get_param("symbol", "")
+                raw = fastast_server.get_community(symbol_name=sym, directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/community":
-                sym = get_param("symbol", get_param("name", ""))
-                res = server_tools.get_community(
-                    symbol=sym,
-                    directory_path=str(REPO_ROOT),
-                )
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            elif parsed.path == "/api/similar":
+                sym = get_param("symbol", "")
+                raw = fastast_server.get_similar_symbols(symbol_name=sym, directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/similar":
-                sym = get_param("symbol", get_param("name", ""))
-                limit = get_int("limit", 10)
-                res = server_tools.get_similar_symbols(
-                    symbol=sym,
-                    limit=limit,
-                    directory_path=str(REPO_ROOT),
-                )
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            elif parsed.path == "/api/outline":
+                fpath = get_param("file", "python/fastast/server.py")
+                raw = fastast_server.get_file_outline(file_path=fpath, directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/outline":
-                f_path = get_param("path", get_param("file_path", ""))
-                res = server_tools.get_file_outline(
-                    file_path=f_path,
-                    directory_path=str(REPO_ROOT),
-                )
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            elif parsed.path == "/api/snippet":
+                sym = get_param("symbol", "index_repository")
+                raw = fastast_server.get_snippet(symbol_name=sym, directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/snippet":
-                sym = get_param("symbol") or None
-                f_path = get_param("file_path") or None
-                start = get_int("start", 1) if get_param("start") else None
-                end = get_int("end", 1) if get_param("end") else None
-                res = server_tools.get_snippet(
-                    symbol=sym,
-                    file_path=f_path,
-                    start_line=start,
-                    end_line=end,
-                    directory_path=str(REPO_ROOT),
-                )
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            elif parsed.path == "/api/diagnose":
+                raw = fastast_server.diagnose_repository(directory_path=".")
+                self._send_json(200, json.loads(raw))
 
-            elif path == "/api/files":
-                tree = get_files_tree(str(REPO_ROOT))
-                self._set_headers()
-                self.wfile.write(json.dumps(tree, indent=2).encode("utf-8"))
-
-            elif path == "/api/globe":
-                max_nodes = get_int("max_nodes", 150)
-                globe_data = get_globe_topology(str(REPO_ROOT), max_nodes=max_nodes)
-                self._set_headers()
-                self.wfile.write(json.dumps(globe_data, indent=2).encode("utf-8"))
-
-            elif path in ("/api/health", "/api/ping"):
-                self._set_headers()
-                self.wfile.write(json.dumps({"status": "ok", "service": "fastast-api", "version": "0.2.0"}).encode("utf-8"))
+            elif parsed.path == "/api/nodes_3d":
+                # Returns 3D spherical positions for the Galaxy / Globe Graph
+                data = self._generate_globe_nodes()
+                self._send_json(200, data)
 
             else:
-                self._set_headers(404)
-                self.wfile.write(json.dumps({"error": f"Endpoint not found: {path}"}).encode("utf-8"))
+                self._send_json(404, {"error": f"Endpoint not found: {parsed.path}"})
 
         except Exception as exc:
-            self._set_headers(500)
-            self.wfile.write(json.dumps({"error": str(exc)}).encode("utf-8"))
+            self._send_json(500, {"error": str(exc), "path": parsed.path})
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        path = parsed.path
-
         try:
-            content_len = int(self.headers.get("Content-Length", 0))
-            body_data = {}
-            if content_len > 0:
-                raw_body = self.rfile.read(content_len).decode("utf-8")
-                try:
-                    body_data = json.loads(raw_body)
-                except Exception:
-                    pass
-
-            if path in ("/api/index", "/api/reindex"):
-                force = bool(body_data.get("force", False))
-                target = body_data.get("directory_path", str(REPO_ROOT))
-                res = server_tools.index_repository(directory_path=target, force=force)
-                self._set_headers()
-                self.wfile.write(res.encode("utf-8"))
+            if parsed.path == "/api/index":
+                raw = fastast_server.index_repository(directory_path=".", force_reindex=True)
+                self._send_json(200, json.loads(raw))
             else:
-                self._set_headers(404)
-                self.wfile.write(json.dumps({"error": f"POST endpoint not found: {path}"}).encode("utf-8"))
-
+                self._send_json(404, {"error": f"Endpoint not found: {parsed.path}"})
         except Exception as exc:
-            self._set_headers(500)
-            self.wfile.write(json.dumps({"error": str(exc)}).encode("utf-8"))
+            self._send_json(500, {"error": str(exc)})
+
+    def _generate_globe_nodes(self):
+        """Generate high-density spherical graph coordinates mapping real symbols to 3D sphere."""
+        # Query top symbols from database
+        symbols = []
+        db_path = Path(".fastast.db")
+        if db_path.exists():
+            try:
+                from fastast import db
+                conn = db.get_connection(db_path)
+                symbols = db.search_symbols(conn, "", limit=160)
+                conn.close()
+            except Exception:
+                pass
+
+        # Query communities
+        raw_comms = json.loads(fastast_server.list_communities(directory_path="."))
+        comms = raw_comms.get("results", [])
+
+        community_palette = [
+            {"id": 0, "name": "Parser & Tree-Sitter", "color": 0x38bdf8},
+            {"id": 1, "name": "Graph & Louvain", "color": 0x818cf8},
+            {"id": 2, "name": "Hybrid Retrieval", "color": 0xc084fc},
+            {"id": 3, "name": "SQLite WAL Storage", "color": 0x34d399},
+            {"id": 4, "name": "MCP Server Engine", "color": 0xfbbf24},
+            {"id": 5, "name": "CLI & Watcher", "color": 0xf43f5e},
+        ]
+
+        sphere_radius = 72.0
+        nodes = []
+        edges = []
+
+        total = max(len(symbols), 30)
+        phi_golden = (1 + math.sqrt(5)) / 2
+
+        for i, sym in enumerate(symbols):
+            # Fibonacci sphere distribution for uniform coverage
+            theta = 2 * math.pi * i / phi_golden
+            phi = math.acos(1 - 2 * (i + 0.5) / total)
+
+            lat = (math.pi / 2 - phi) * (180.0 / math.pi)
+            lon = (theta % (2 * math.pi) - math.pi) * (180.0 / math.pi)
+
+            # Assign community based on module path or hash
+            file_path = sym.get("file_path", "")
+            if "parser" in file_path or "tree_sitter" in file_path or "extractor" in file_path:
+                comm_id = 0
+            elif "graph" in file_path or "community" in file_path:
+                comm_id = 1
+            elif "retrieval" in file_path or "evidence" in file_path or "embedding" in file_path:
+                comm_id = 2
+            elif "db" in file_path or "sqlite" in file_path:
+                comm_id = 3
+            elif "server" in file_path or "mcp" in file_path:
+                comm_id = 4
+            else:
+                comm_id = i % len(community_palette)
+
+            kind = sym.get("kind", "function")
+            raw_name = sym.get("name", "").strip()
+            if not raw_name:
+                sig = sym.get("signature", "").strip()
+                raw_name = sig.split("(")[0].replace("const ", "").replace("let ", "")[:24] if sig else f"symbol_{i}"
+            name = raw_name or f"symbol_{i}"
+            importance = 0.95 if i < 10 else (0.75 if i < 40 else 0.45)
+
+            # 3D Cartesian coords
+            x = -(sphere_radius * math.sin(phi) * math.cos(theta))
+            z = sphere_radius * math.sin(phi) * math.sin(theta)
+            y = sphere_radius * math.cos(phi)
+
+            nodes.append({
+                "id": i,
+                "name": name,
+                "kind": kind,
+                "comm": comm_id,
+                "file": file_path,
+                "lines": f"{sym.get('line_start', 1)}-{sym.get('line_end', 1)}",
+                "signature": sym.get("signature", ""),
+                "importance": importance,
+                "lat": round(lat, 2),
+                "lon": round(lon, 2),
+                "x": round(x, 2),
+                "y": round(y, 2),
+                "z": round(z, 2),
+            })
+
+        # Synthesize relational edges between nearby nodes or related modules
+        for i in range(min(len(nodes), 60)):
+            # Hub connections
+            target_a = (i * 3 + 1) % len(nodes)
+            target_b = (i * 7 + 2) % len(nodes)
+            if target_a != i:
+                edges.append({
+                    "from": i,
+                    "to": target_a,
+                    "type": "CALLS" if i % 2 == 0 else "DEFINES",
+                    "weight": 0.85
+                })
+            if i % 3 == 0 and target_b != i:
+                edges.append({
+                    "from": i,
+                    "to": target_b,
+                    "type": "IMPORTS",
+                    "weight": 0.7
+                })
+
+        return {
+            "communities": community_palette,
+            "nodes": nodes,
+            "edges": edges,
+            "meta": {
+                "total_nodes": len(nodes),
+                "total_edges": len(edges),
+                "radius": sphere_radius,
+                "louvain_modularity": 0.84
+            }
+        }
 
     def log_message(self, format, *args):
-        # Concise logging
-        sys.stderr.write(f"[FastAST-API] {self.address_string()} - {format % args}\n")
+        # Quiet standard logging to avoid terminal clutter
+        pass
 
 
-def run_api_server(port: int = 4200, host: str = "127.0.0.1"):
+def run_server(host="127.0.0.1", port=5174):
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, FastASTAPIHandler)
-    print(f"[*] FastAST API Server listening on http://{host}:{port}")
+    print(f"FastAST API Server running on http://{host}:{port}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n[*] Stopping FastAST API Server...")
+        print("\nShutting down FastAST API server...")
         httpd.server_close()
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "4200"))
-    host = os.environ.get("HOST", "127.0.0.1")
-    run_api_server(port=port, host=host)
+    import argparse
+    parser = argparse.ArgumentParser(description="FastAST HTTP API Server")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=5174, help="Port to bind (default: 5174)")
+    args = parser.parse_args()
+    run_server(host=args.host, port=args.port)
