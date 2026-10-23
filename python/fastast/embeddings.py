@@ -288,6 +288,13 @@ class SemanticProjectionProvider(BaseEmbeddingProvider):
 
 # ── Pluggable External Providers ─────────────────────────────────────────────
 
+def _raise_missing_dependency(package_name: str, cause: Exception) -> None:
+    raise ImportError(
+        f"{package_name} is not installed. Install via `pip install {package_name}` "
+        "or use the default SemanticProjectionProvider."
+    ) from cause
+
+
 class FastembedProvider(BaseEmbeddingProvider):
     """Wrapper for fastembed (https://github.com/qdrant/fastembed) if installed."""
 
@@ -298,10 +305,7 @@ class FastembedProvider(BaseEmbeddingProvider):
             self._model_name = model_name
             self._dimension = 384
         except ImportError as exc:
-            raise ImportError(
-                "fastembed is not installed. Install via `pip install fastembed` "
-                "or use the default SemanticProjectionProvider."
-            ) from exc
+            _raise_missing_dependency("fastembed", exc)
 
     @property
     def model_name(self) -> str:
@@ -330,10 +334,7 @@ class SentenceTransformersProvider(BaseEmbeddingProvider):
             self._model_name = model_name
             self._dimension = self._model.get_sentence_embedding_dimension()
         except ImportError as exc:
-            raise ImportError(
-                "sentence-transformers is not installed. Install via "
-                "`pip install sentence-transformers` or use the default SemanticProjectionProvider."
-            ) from exc
+            _raise_missing_dependency("sentence-transformers", exc)
 
     @property
     def model_name(self) -> str:

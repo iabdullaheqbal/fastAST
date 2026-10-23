@@ -132,6 +132,12 @@ def load_config(repo_root: Optional[Union[str, Path]] = None) -> FastASTConfig:
     return config
 
 
+def _fail_traversal(target_path: Any, root: Any, exc: Exception) -> None:
+    raise PathTraversalError(
+        f"Access denied: Path '{target_path}' resolves outside allowed project root '{root}'."
+    ) from exc
+
+
 def validate_safe_path(
     target_path: Union[str, Path],
     allowed_root: Union[str, Path],
@@ -166,10 +172,8 @@ def validate_safe_path(
     # Verify root containment
     try:
         resolved.relative_to(root)
-    except ValueError:
-        raise PathTraversalError(
-            f"Access denied: Path '{target_path}' resolves outside allowed project root '{root}'."
-        )
+    except ValueError as exc:
+        _fail_traversal(target_path, root, exc)
 
     if must_exist and not resolved.exists():
         raise FileNotFoundError(f"Path does not exist within project root: '{target_path}'")
