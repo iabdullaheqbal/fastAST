@@ -1,78 +1,77 @@
-# React + TypeScript + Vite
+# FastAST Lens — Codebase Memory & 3D Graph UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**FastAST Lens** is the visual cockpit for FastAST, powered by **Vite + React 19 + TypeScript + Three.js** and designed using Google Stitch ("Obsidian Kinetic" theme).
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Features
 
-## React Compiler
+1. **Galaxy / Globe Graph (Centerpiece)**
+   - Spherical 3D Codebase Planet with nodes mapped via Fibonacci spherical projection.
+   - Interactive mouse rotation across all 360° degrees, mouse wheel zoom, and polar camera angles.
+   - Click-to-inspect raycaster highlighting connecting arcs (`CALLS`, `DEFINES`, `IMPORTS`).
+   - Hop-depth filtering (1-Hop, 2-Hops, 3-Hops, Full Sphere).
+   - Prominent community hub beacons and atmospheric outer glow.
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+2. **Explore**
+   - High-speed symbol & file search with filters by kind (function, class, struct, type) and language.
+   - Line coordinates, normalized AST signatures, docstrings, and in-degree/out-degree counts.
+   - 1-click MCP stdio query snippet copy for agent harnesses.
 
-Note: This will impact Vite dev & build performances.
-You can also try [the experimental native React Compiler support in plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md#rust-react-compiler) by using `compiler: true` in the plugin options instead of using the Babel plugin.
+3. **Architecture**
+   - 5-layer blueprint overview: Tree-Sitter AST parser, SQLite WAL storage, Louvain modularity, Hybrid RRF retrieval, and MCP stdio bridge.
 
-## Expanding the ESLint configuration
+4. **Evidence Retrieval**
+   - Token-bounded query search with interactive budget slider (500 to 4,000 tokens).
+   - Compact syntax-fact snippets without LLM context window saturation.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+5. **Index Coverage**
+   - Live percentage coverage, multi-language breakdown bars (Python, Rust, TS/JS, Markdown, etc.).
+   - Incremental xxHash3 caching status.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+6. **Louvain Clusters**
+   - Architectural community detection with modularity score ($Q=0.84$).
+   - Central hub identification and community member drilldowns.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+7. **System & Engine**
+   - SQLite WAL status, schema migration version, integrity checks, and manual re-indexer trigger.
+   - Native VS Code MCP (`.vscode/mcp.json`) integration reference.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+---
 
+## Getting Started
+
+### 1. Launch FastAST API & UI together (Recommended)
+
+From the repository root:
+
+```bash
+./start_ui.sh
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+This will automatically:
+- Start the FastAST Python HTTP API server on `http://127.0.0.1:5174`
+- Start the Vite dev server on `http://localhost:5173`
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+### 2. Run UI Independently
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd ui
+npm install
+npm run dev
+```
 
+Build for production:
+
+```bash
+npm run build
+npm run preview
+```
+
+### 3. Backend API Server
+
+To run just the Python API server:
+
+```bash
+PYTHONPATH=python python3 python/fastast/api_server.py --port 5174
 ```

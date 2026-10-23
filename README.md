@@ -38,6 +38,20 @@ fastast --version
 fastast-mcp --version
 ```
 
+### FastAST Lens (3D Globe Graph & Web UI)
+
+Launch the interactive 3D Globe Graph & Codebase Explorer:
+
+```bash
+# Start backend API (:5174) and frontend UI (:5173) together
+./start_ui.sh
+
+# Or run frontend independently
+cd ui
+npm install
+npm run dev
+```
+
 For editable local development:
 
 ```bash

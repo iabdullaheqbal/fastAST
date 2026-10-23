@@ -10,10 +10,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.2.0",
+    "three": "^0.174.0",
+    "lucide-react": "^0.477.0"
   },
   "devDependencies": {
+    "@types/three": "^0.174.0",
     "@babel/core": "^7.29.7",
     "@eslint/js": "^10.0.1",
     "@rolldown/plugin-babel": "^0.2.4",
