@@ -99,7 +99,7 @@ class MinHash:
 
         # Pre-hash shingles into 32-bit integers
         shingle_hashes = [
-            int(hashlib.md5(s.encode("utf-8")).hexdigest()[:8], 16)
+            int(hashlib.sha256(s.encode("utf-8")).hexdigest()[:8], 16)
             for s in shingles
         ]
 

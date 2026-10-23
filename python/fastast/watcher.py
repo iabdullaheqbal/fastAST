@@ -225,8 +225,8 @@ class RepositoryWatcher:
                 if self.on_error:
                     try:
                         self.on_error(loop_err)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(f"Error in on_error callback: {exc}")
 
     def run_forever(self) -> None:
         """Run blocking foreground watch loop with graceful keyboard interrupt handling."""

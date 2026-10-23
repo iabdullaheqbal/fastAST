@@ -1,4 +1,4 @@
-"""Tests for FastMCP server, Phase 10 agent interface standardization, and all MCP tools."""
+"""Tests for FastMCP server, Phase 10 agent protocol standardization, and all MCP tools."""
 
 import json
 from pathlib import Path

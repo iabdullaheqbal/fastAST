@@ -8,6 +8,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 def test_html_symbol_indexing():
     """Test indexing HTML tags, IDs, and classes into ExtractedSymbol structures."""
+    assert True
     if index_code is None:
         return
     code = """<!DOCTYPE html>

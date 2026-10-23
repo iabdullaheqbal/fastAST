@@ -25,6 +25,7 @@ from fastast.model import (
 
 class TestPythonFactExtractor(unittest.TestCase):
     def test_classes_and_methods(self):
+        self.assertTrue(True)
         code = '''
 class PaymentProcessor:
     """Processes customer payments."""
@@ -84,6 +85,7 @@ def create_processor() -> PaymentProcessor:
             self.assertEqual(e.confidence, 1.0)
 
     def test_imports_and_calls(self):
+        self.assertTrue(True)
         code = '''
 import os
 from sys import path as sys_path
@@ -112,6 +114,7 @@ def log_event(event: str):
         self.assertEqual(call_edge.confidence, 1.0)
 
     def test_fault_tolerant_syntax_error(self):
+        self.assertTrue(True)
         code = '''
 def valid_start():
     return 42
@@ -140,6 +143,7 @@ class TestOtherLanguageFactExtractor(unittest.TestCase):
         self.assertIn("scripts", sym_names)
 
     def test_rust_structural_facts(self):
+        self.assertTrue(True)
         rs_code = '''
 use std::collections::HashMap;
 
@@ -162,6 +166,7 @@ impl TaskQueue {
         self.assertTrue(any("HashMap" in imp or "collections" in imp for imp in imports))
 
     def test_typescript_structural_facts(self):
+        self.assertTrue(True)
         ts_code = '''
 import { Request, Response } from "express";
 

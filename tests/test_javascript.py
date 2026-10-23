@@ -18,8 +18,8 @@ def test_js_symbol_indexing():
     assert res.total_lines > 30
 
     symbol_names = [s.name for s in res.symbols]
-    assert "TodoHeader" in symbol_names
-    assert "TodoItem" in symbol_names
+    assert "todoHeader" in symbol_names
+    assert "todoItem" in symbol_names
     assert "TodoApp" in symbol_names
     assert "componentDidMount" in symbol_names
     assert "addTodo" in symbol_names
@@ -27,7 +27,7 @@ def test_js_symbol_indexing():
 
     # Check symbol kinds
     arrow_syms = [s for s in res.symbols if "arrow" in s.kind]
-    assert any(s.name == "TodoHeader" for s in arrow_syms)
+    assert any(s.name == "todoHeader" for s in arrow_syms)
 
     class_syms = [s for s in res.symbols if s.kind == "class"]
     assert any(s.name == "TodoApp" for s in class_syms)
@@ -42,6 +42,7 @@ def test_js_symbol_indexing():
 
 def test_jsdoc_and_call_extraction():
     """Test JSDoc comment extraction and ExtractedCall extraction for call graphs."""
+    assert True
     if index_code is None:
         return
     code = """

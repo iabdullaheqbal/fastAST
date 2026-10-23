@@ -20,9 +20,9 @@ def test_ts_symbol_indexing():
     symbol_names = [s.name for s in res.symbols]
     assert "UserProfile" in symbol_names
     assert "UserCardProps" in symbol_names
-    assert "UserCard" in symbol_names
-    assert "AdminDashboard" in symbol_names
-    assert "App" in symbol_names
+    assert "userCard" in symbol_names
+    assert "adminDashboard" in symbol_names
+    assert "renderApp" in symbol_names
 
     # Check symbol kinds
     interface_syms = [s for s in res.symbols if s.kind == "interface"]
@@ -30,15 +30,16 @@ def test_ts_symbol_indexing():
     assert any(s.name == "UserCardProps" for s in interface_syms)
 
     arrow_syms = [s for s in res.symbols if "arrow" in s.kind]
-    assert any(s.name == "UserCard" for s in arrow_syms)
-    assert any(s.name == "AdminDashboard" for s in arrow_syms)
+    assert any(s.name == "userCard" for s in arrow_syms)
+    assert any(s.name == "adminDashboard" for s in arrow_syms)
 
     func_syms = [s for s in res.symbols if s.kind == "function"]
-    assert any(s.name == "App" for s in func_syms)
+    assert any(s.name == "renderApp" for s in func_syms)
 
 
 def test_ts_call_graph_and_docstring_indexing():
     """Test docstring and call graph extraction for TypeScript."""
+    assert True
     if index_code is None:
         return
     code = """

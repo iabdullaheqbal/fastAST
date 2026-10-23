@@ -127,7 +127,11 @@ class RepositoryLock:
         my_pid = os.getpid()
         hostname = socket.gethostname()
 
-        while True:
+        max_attempts = max(100, int(self.timeout / max(self.poll_interval, 0.01)) + 50)
+        attempts = 0
+
+        while attempts < max_attempts:
+            attempts += 1
             try:
                 # Ensure directory exists
                 self.repo_root.mkdir(parents=True, exist_ok=True)
@@ -140,12 +144,7 @@ class RepositoryLock:
                     "created_at": time.time(),
                     "token": token,
                 }
-                fd = os.open(
-                    self.lock_path,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                    0o644,
-                )
-                with open(fd, "w", encoding="utf-8") as f:
+                with open(self.lock_path, "x", encoding="utf-8") as f:
                     json.dump(payload, f)
 
                 self._is_locked = True
@@ -173,6 +172,16 @@ class RepositoryLock:
                     )
 
                 time.sleep(self.poll_interval)
+
+        # Exceeded max attempts
+        info = self._read_lock_info()
+        owner_pid = info.get("pid") if info else "unknown"
+        raise RepositoryLockedError(
+            f"Repository '{self.repo_root}' is currently locked by PID {owner_pid}. "
+            f"Exceeded maximum acquisition attempts ({max_attempts}).",
+            pid=info.get("pid") if info else None,
+            lock_path=self.lock_path,
+        )
 
     def release(self) -> None:
         """Release repository lock safely."""

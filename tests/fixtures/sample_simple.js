@@ -24,8 +24,16 @@ function calculateSum(a, b) {
 }
 
 async function fetchData(url) {
-    const response = await fetch(url);
-    return response.json();
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error("Fetch failed:", error);
+        throw error;
+    }
 }
 
 // Usage

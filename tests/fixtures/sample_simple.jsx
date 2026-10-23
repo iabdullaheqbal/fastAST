@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 
-export const TodoHeader = ({ title }) => {
+export const todoHeader = ({ title }) => {
     return (
         <header className="todo-header">
             <h1>{title}</h1>
@@ -10,7 +10,7 @@ export const TodoHeader = ({ title }) => {
     );
 };
 
-export function TodoItem({ todo, onToggle, onDelete }) {
+export function todoItem({ todo, onToggle, onDelete }) {
     return (
         <li className={todo.completed ? 'completed' : ''}>
             <input
@@ -52,10 +52,10 @@ export default class TodoApp extends React.Component {
     render() {
         return (
             <div className="todo-app">
-                <TodoHeader title="FastAST Task List" />
+                <todoHeader title="FastAST Task List" />
                 <ul className="todo-list">
                     {this.state.todos.map(t => (
-                        <TodoItem
+                        <todoItem
                             key={t.id}
                             todo={t}
                             onToggle={this.toggleTodo}

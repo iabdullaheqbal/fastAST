@@ -14,18 +14,15 @@ pub fn index_code(code_text: &str) -> PyResult<FileIndexResult> {
     let total_tokens = count_tokens(code_text);
     let lines: Vec<&str> = code_text.lines().collect();
 
-    let tree = match parser::parse_ast(code_text) {
-        Ok(t) => t,
-        Err(_) => {
-            return Ok(FileIndexResult {
-                symbols: Vec::new(),
-                imports: Vec::new(),
-                calls: Vec::new(),
-                total_lines: lines.len(),
-                total_tokens,
-                has_syntax_error: true,
-            });
-        }
+    let Ok(tree) = parser::parse_ast(code_text) else {
+        return Ok(FileIndexResult {
+            symbols: Vec::new(),
+            imports: Vec::new(),
+            calls: Vec::new(),
+            total_lines: lines.len(),
+            total_tokens,
+            has_syntax_error: true,
+        });
     };
 
     if tree.root_node().has_error() {

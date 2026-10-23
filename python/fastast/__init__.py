@@ -1,6 +1,6 @@
-"""FastAST: AST-based repository indexer and codebase-memory engine for coding agents."""
+from __future__ import annotations
 
-from typing import List, Optional
+"""FastAST: AST-based repository indexer and codebase-memory engine for coding agents."""
 
 from fastast.discovery import (
     DirectoryScanner,
@@ -83,8 +83,8 @@ except ImportError:
             signature: str = "",
             start_line: int = 0,
             end_line: int = 0,
-            parent_name: Optional[str] = None,
-            docstring: Optional[str] = None,
+            parent_name: str | None = None,
+            docstring: str | None = None,
         ):
             self.name = name
             self.kind = kind
@@ -98,8 +98,8 @@ except ImportError:
         def __init__(
             self,
             module: str,
-            name: Optional[str] = None,
-            alias: Optional[str] = None,
+            name: str | None = None,
+            alias: str | None = None,
             line_number: int = 0,
         ):
             self.module = module
@@ -111,7 +111,7 @@ except ImportError:
         def __init__(
             self,
             callee_name: str,
-            caller_name: Optional[str] = None,
+            caller_name: str | None = None,
             line_number: int = 0,
         ):
             self.caller_name = caller_name
@@ -121,9 +121,9 @@ except ImportError:
     class FileIndexResult:  # type: ignore
         def __init__(
             self,
-            symbols: Optional[List[ExtractedSymbol]] = None,
-            imports: Optional[List[ExtractedImport]] = None,
-            calls: Optional[List[ExtractedCall]] = None,
+            symbols: list[ExtractedSymbol] | None = None,
+            imports: list[ExtractedImport] | None = None,
+            calls: list[ExtractedCall] | None = None,
             total_lines: int = 0,
             total_tokens: int = 0,
             has_syntax_error: bool = False,

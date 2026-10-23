@@ -1,7 +1,7 @@
 """Semantic Embeddings and Vector Search layer for FastAST.
 
 Provides a pluggable embedding architecture:
-1. BaseEmbeddingProvider: Abstract base interface for all embedding providers.
+1. BaseEmbeddingProvider: Abstract base class for all embedding providers.
 2. SemanticProjectionProvider (default): Zero-dependency, offline-first, high-speed
    semantic projection vectorizer using concept taxonomy mapping, subword n-gram hashing,
    and L2 normalization.
@@ -264,7 +264,7 @@ class SemanticProjectionProvider(BaseEmbeddingProvider):
 
         # 2. Token & Subword 3-gram Feature Hashing (_concept_dims .. _dim)
         for t in tokens:
-            h = int(hashlib.md5(t.encode("utf-8")).hexdigest()[:8], 16)
+            h = int(hashlib.sha256(t.encode("utf-8")).hexdigest()[:8], 16)
             idx = self._concept_dims + (h % self._hash_dims)
             sign = 1.0 if (h >> 5) & 1 else -1.0
             vec[idx] += sign * 1.0
@@ -273,7 +273,7 @@ class SemanticProjectionProvider(BaseEmbeddingProvider):
             if len(t) >= 3:
                 for j in range(len(t) - 2):
                     ng = t[j : j + 3]
-                    h_ng = int(hashlib.md5(ng.encode("utf-8")).hexdigest()[:8], 16)
+                    h_ng = int(hashlib.sha256(ng.encode("utf-8")).hexdigest()[:8], 16)
                     idx_ng = self._concept_dims + (h_ng % self._hash_dims)
                     sign_ng = 1.0 if (h_ng >> 5) & 1 else -1.0
                     vec[idx_ng] += sign_ng * 0.35

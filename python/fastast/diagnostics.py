@@ -187,8 +187,8 @@ def diagnose_repository(
             try:
                 cur.execute("SELECT COUNT(*) FROM schema_migrations;")
                 db_info["migrations_count"] = cur.fetchone()[0]
-            except Exception:
-                pass
+            except sqlite3.OperationalError as exc:
+                logger.debug(f"schema_migrations table not found: {exc}")
 
             # Metadata check
             try:
@@ -196,8 +196,8 @@ def diagnose_repository(
                 meta_row = cur.fetchone()
                 if meta_row:
                     db_info["schema_version"] = int(meta_row[0])
-            except Exception:
-                pass
+            except sqlite3.OperationalError as exc:
+                logger.debug(f"fastast_metadata table not found: {exc}")
 
             if db_info["user_version"] != CURRENT_SCHEMA_VERSION:
                 issues.append(
@@ -221,7 +221,8 @@ def diagnose_repository(
                 if fts_count < stats.get("symbols", 0):
                     issues.append(f"FTS5 index out of sync: {fts_count} entries vs {stats.get('symbols', 0)} symbols.")
                     recommendations.append("Run 'fastast index' to synchronize search indices.")
-            except Exception:
+            except sqlite3.OperationalError as exc:
+                logger.debug(f"FTS5 count check skipped: {exc}")
                 stats["fts_count"] = 0
 
             # Check Embeddings count
@@ -229,7 +230,8 @@ def diagnose_repository(
                 cur.execute("SELECT COUNT(*) FROM symbol_embeddings;")
                 emb_count = cur.fetchone()[0]
                 stats["embeddings_count"] = emb_count
-            except Exception:
+            except sqlite3.OperationalError as exc:
+                logger.debug(f"Embeddings count check skipped: {exc}")
                 stats["embeddings_count"] = 0
 
             # Check Communities count
@@ -237,7 +239,8 @@ def diagnose_repository(
                 cur.execute("SELECT COUNT(DISTINCT community_id) FROM symbol_communities;")
                 comm_count = cur.fetchone()[0]
                 stats["communities_count"] = comm_count
-            except Exception:
+            except sqlite3.OperationalError as exc:
+                logger.debug(f"Communities count check skipped: {exc}")
                 stats["communities_count"] = 0
 
         except Exception as db_err:

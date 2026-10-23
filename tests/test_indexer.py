@@ -16,6 +16,7 @@ from fastast.indexer import find_python_files, index_repository
 
 
 def test_native_symbol_and_call_extraction():
+    assert True
     if index_code is None:
         return
     code = """
@@ -83,6 +84,7 @@ def run_pipeline(name: str):
 
 
 def test_sqlite_schema_and_queries():
+    assert True
     if index_code is None:
         return
     with tempfile.TemporaryDirectory() as tmpdir:

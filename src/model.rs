@@ -1,10 +1,9 @@
 //! Core domain data model for FastAST Codebase-Memory Engine (AST → Graph → Retrieval).
 
 use pyo3::prelude::*;
-use serde::{Deserialize, Serialize};
 
 /// Status of a file in the incremental indexing pipeline.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileStatus {
     Unchanged,
     Added,
@@ -36,7 +35,7 @@ impl FileStatus {
 }
 
 /// Category of a file in the repository (e.g. source, test, config, docs, infra, generated, other).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileCategory {
     Source,
     Test,
@@ -75,7 +74,7 @@ impl FileCategory {
 
 /// Represents an indexed file record in the repository store.
 #[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct FileRecord {
     #[pyo3(get, set)]
     pub path: String,
@@ -135,7 +134,7 @@ impl FileRecord {
 
 /// Represents an extracted symbol node in the code graph.
 #[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct SymbolRecord {
     #[pyo3(get, set)]
     pub id: Option<i64>,
@@ -198,7 +197,7 @@ impl SymbolRecord {
 }
 
 /// Relation type for directed edges between code entities.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EdgeRelation {
     Calls,
     Imports,
@@ -237,7 +236,7 @@ impl EdgeRelation {
 
 /// Represents a directed edge connecting two symbols/entities in the code graph.
 #[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct EdgeRecord {
     #[pyo3(get, set)]
     pub src: String,
@@ -281,7 +280,7 @@ impl EdgeRecord {
 
 /// Bounded evidence window providing exact line numbers and code snippet for a candidate.
 #[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct EvidenceWindow {
     #[pyo3(get, set)]
     pub start_line: usize,
@@ -310,7 +309,7 @@ impl EvidenceWindow {
 
 /// Represents a candidate symbol retrieved for agent query evidence.
 #[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Candidate {
     #[pyo3(get, set)]
     pub symbol_id: String,
@@ -354,7 +353,7 @@ impl Candidate {
 
 /// Represents extracted syntactic facts (symbols + graph edges) for a single file.
 #[pyclass]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct ExtractedFileFacts {
     #[pyo3(get, set)]
     pub file_path: String,

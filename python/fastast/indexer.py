@@ -10,11 +10,14 @@ Production-grade, end-to-end repository indexing pipeline for FastAST:
 - Integrated CLI and MCP server support
 """
 
+import logging
 import os
 import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
+
+logger = logging.getLogger(__name__)
 
 try:
     from fastast._core import index_code
@@ -331,8 +334,8 @@ class RepositoryIndexer:
                     if progress_callback:
                         try:
                             progress_callback(rel_path, idx, total_admitted)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("Progress callback error: %s", exc)
 
                     # Incremental skip checks
                     existing = get_file_record(conn, rel_path)
@@ -413,8 +416,8 @@ class RepositoryIndexer:
                         from fastast.community import detect_and_store_communities
                         index_similarity(conn)
                         detect_and_store_communities(conn)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Post-index processing failed: %s", exc)
 
                 # 4. Fetch final repository statistics
                 stats = get_repository_stats(conn)

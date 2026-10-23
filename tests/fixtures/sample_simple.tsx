@@ -13,7 +13,7 @@ export interface UserCardProps<T extends UserProfile> {
     onDelete?: (id: string) => Promise<void>;
 }
 
-export const UserCard = <T extends UserProfile>({
+export const userCard = <T extends UserProfile>({
     user,
     onEdit,
     onDelete,
@@ -36,15 +36,24 @@ export const UserCard = <T extends UserProfile>({
     );
 };
 
-export const AdminDashboard = (): JSX.Element => {
+export const adminDashboard = (): JSX.Element => {
     const [users, setUsers] = useState<UserProfile[]>([]);
     const [loading, setLoading] = useState<boolean>(true);
 
     useEffect(() => {
         fetch('/api/users')
-            .then((res) => res.json())
+            .then((res) => {
+                if (!res.ok) {
+                    throw new Error(`HTTP error: ${res.status}`);
+                }
+                return res.json();
+            })
             .then((data: UserProfile[]) => {
                 setUsers(data);
+                setLoading(false);
+            })
+            .catch((err: Error) => {
+                console.error("Failed to load users:", err);
                 setLoading(false);
             });
     }, []);
@@ -58,14 +67,14 @@ export const AdminDashboard = (): JSX.Element => {
             <h1>User Management</h1>
             <div className="grid">
                 {users.map((u) => (
-                    <UserCard key={u.id} user={u} />
+                    <userCard key={u.id} user={u} />
                 ))}
             </div>
         </section>
     );
 };
 
-export default function App(): JSX.Element {
-    return <AdminDashboard />;
+export default function renderApp(): JSX.Element {
+    return <adminDashboard />;
 }
 

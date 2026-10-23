@@ -14,6 +14,10 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from fastast.config import get_logger
+
+logger = get_logger("fastast.community")
+
 
 class LouvainDetector:
     """Modularity-based Louvain community detection on weighted undirected graphs."""
@@ -222,8 +226,8 @@ def detect_and_store_communities(conn: sqlite3.Connection) -> Dict[str, Any]:
             u, v, sim = row[0], row[1], float(row[2])
             if u != v:
                 edges.append((u, v, sim * 0.7))
-    except Exception:
-        pass
+    except sqlite3.Error as exc:
+        logger.debug(f"Similarity edge query skipped: {exc}")
 
     # If no structural edges exist, fall back to file directory co-location edges
     if not edges and len(nodes) > 1:

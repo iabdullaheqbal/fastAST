@@ -10,7 +10,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+from fastast.config import get_logger
 from fastast.model import FileCategory, FileRecord, FileStatus
+
+logger = get_logger("fastast.discovery")
 
 # Try loading xxHash3 from xxhash package or native _core extension
 try:
@@ -396,8 +399,8 @@ class MultiLayerIgnore:
                     stripped = line.strip()
                     if stripped and not stripped.startswith("#"):
                         rules.append(GitIgnoreRule(stripped, self.root_dir))
-        except Exception:
-            pass
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.debug(f"Ignore file read skipped for {file_path}: {exc}")
 
         return rules
 

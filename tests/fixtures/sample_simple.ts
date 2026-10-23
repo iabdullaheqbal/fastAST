@@ -23,8 +23,16 @@ class Calculator implements ICalculator {
 }
 
 async function fetchUserData(userId: string): Promise<any> {
-    const response = await fetch(`/api/users/${userId}`);
-    return response.json();
+    try {
+        const response = await fetch(`/api/users/${userId}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error("Failed to fetch user data:", error);
+        throw error;
+    }
 }
 
 export { Calculator, fetchUserData };

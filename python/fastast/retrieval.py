@@ -39,7 +39,7 @@ def estimate_tokens(text: Optional[str]) -> int:
         from fastast import _core
         if hasattr(_core, "count_tokens"):
             return _core.count_tokens(text)
-    except Exception:
+    except (ImportError, AttributeError):
         pass
     # Standard code approximation: whitespace tokens * 1.3
     words = text.split()

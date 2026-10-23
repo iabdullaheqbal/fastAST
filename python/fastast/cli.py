@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """CLI runner and indexing tool for FastAST."""
 
 import argparse
@@ -5,7 +7,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 from fastast import __version__
 from fastast.db import get_call_graph, get_connection, search_symbols
@@ -78,7 +79,7 @@ def supports_color() -> bool:
     return sys.stdout.isatty()
 
 
-def detect_language_from_path(path: Path) -> Optional[str]:
+def detect_language_from_path(path: Path) -> str | None:
     """Auto-detect canonical language identifier from file extension."""
     ext = path.suffix.lower().lstrip(".")
     return SUPPORTED_EXTENSIONS.get(ext)
@@ -86,9 +87,9 @@ def detect_language_from_path(path: Path) -> Optional[str]:
 
 def run_scan(
     dir_path: str = ".",
-    language: Optional[str] = None,
-    category: Optional[str] = None,
-    extra_ignores: Optional[list] = None,
+    language: str | None = None,
+    category: str | None = None,
+    extra_ignores: list | None = None,
     json_output: bool = False,
 ) -> int:
     """Scan and admit repository files based on multi-layer ignore rules."""
@@ -241,8 +242,8 @@ def run_index(
 
 def run_symbols(
     query: str,
-    kind: Optional[str] = None,
-    language: Optional[str] = None,
+    kind: str | None = None,
+    language: str | None = None,
     limit: int = 50,
     dir_path: str = ".",
     quiet: bool = False,
@@ -535,9 +536,9 @@ def run_graph(
 def run_query(
     query: str,
     dir_path: str = ".",
-    kind: Optional[str] = None,
-    language: Optional[str] = None,
-    file_path: Optional[str] = None,
+    kind: str | None = None,
+    language: str | None = None,
+    file_path: str | None = None,
     limit: int = 5,
     max_tokens: int = 2048,
     ranking_method: str = "hybrid",
@@ -724,10 +725,10 @@ def run_outline(
 
 
 def run_snippet(
-    symbol: Optional[str] = None,
-    file_path: Optional[str] = None,
-    start_line: Optional[int] = None,
-    end_line: Optional[int] = None,
+    symbol: str | None = None,
+    file_path: str | None = None,
+    start_line: int | None = None,
+    end_line: int | None = None,
     window_lines: int = 3,
     max_lines: int = 60,
     dir_path: str = ".",
@@ -1161,7 +1162,7 @@ def run_doctor(
 def run_watch(
     dir_path: str = ".",
     poll_interval: float = 0.5,
-    debounce_ms: Optional[int] = None,
+    debounce_ms: int | None = None,
     force: bool = False,
 ) -> int:
     """Run interactive foreground filesystem watcher."""

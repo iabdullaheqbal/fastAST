@@ -1,0 +1,11 @@
+{
+  "name": "fastast",
+  "version": "0.1.0",
+  "private": true,
+  "description": "High-performance codebase-memory engine for AI coding agents",
+  "dependencies": {
+    "prop-types": "^15.8.1",
+    "react": "^18.3.1"
+  }
+}
+

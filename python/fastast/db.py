@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from fastast.config import get_logger
 from fastast.model import (
     Candidate,
     EdgeRecord,
@@ -15,6 +16,8 @@ from fastast.model import (
     FileStatus,
     SymbolRecord,
 )
+
+logger = get_logger("fastast.db")
 
 
 SCHEMA_SQL = """
@@ -259,8 +262,8 @@ def init_db(conn: sqlite3.Connection) -> None:
                 """
             )
             conn.commit()
-    except Exception:
-        pass
+    except sqlite3.Error as exc:
+        logger.debug(f"FTS5 synchronization skipped: {exc}")
 
     # Backfill symbol embeddings if table exists but is empty while symbols exist
     try:
@@ -270,8 +273,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         sym_count = cur.fetchone()[0]
         if emb_count == 0 and sym_count > 0:
             backfill_symbol_embeddings(conn)
-    except Exception:
-        pass
+    except sqlite3.Error as exc:
+        logger.debug(f"Embedding backfill skipped: {exc}")
 
     # Record migration and set PRAGMA user_version
     now_ts = time.time()
@@ -292,8 +295,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
         conn.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION};")
         conn.commit()
-    except Exception:
-        pass
+    except sqlite3.Error as exc:
+        logger.debug(f"Migration record update skipped: {exc}")
 
 
 def check_database_integrity(conn: sqlite3.Connection, quick: bool = True) -> Tuple[bool, List[str]]:
@@ -344,8 +347,8 @@ def safe_repair_or_recreate_db(db_path: Path) -> bool:
         if p.exists():
             try:
                 p.rename(Path(f"{backup_base}{ext}"))
-            except Exception:
-                pass
+            except OSError as exc:
+                logger.warning(f"Could not rename corrupted db file {p}: {exc}")
 
     new_conn = get_connection(db_path)
     try:
@@ -637,8 +640,8 @@ def store_file_data(
                     """,
                     emb_rows,
                 )
-            except Exception:
-                pass
+            except sqlite3.Error as exc:
+                logger.debug(f"Batch embedding storage skipped: {exc}")
 
     return file_id
 
