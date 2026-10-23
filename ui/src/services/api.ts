@@ -304,4 +304,13 @@ export const fastAstApi = {
       return [];
     }
   },
+
+  async getDiagnostics(): Promise<any> {
+    try {
+      return await fetchJson<any>(`${API_BASE}/diagnose`);
+    } catch (err) {
+      console.warn('Diagnostics failed:', err);
+      return null;
+    }
+  },
 };

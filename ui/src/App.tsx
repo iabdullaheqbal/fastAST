@@ -42,12 +42,20 @@ const AppContent: React.FC = () => {
     }
   };
 
-  const handleSearch = (_q: string) => {
-    navigate('/evidence');
+  const handleSearch = (q: string) => {
+    if (q) {
+      navigate(`/evidence?q=${encodeURIComponent(q)}`);
+    } else {
+      navigate('/evidence');
+    }
   };
 
-  const handleNavigateToExplore = (_symbolName?: string, _filePath?: string) => {
-    navigate('/explore');
+  const handleNavigateToExplore = (symbolName?: string, filePath?: string) => {
+    const params = new URLSearchParams();
+    if (symbolName) params.set('symbol', symbolName);
+    if (filePath) params.set('file', filePath);
+    const qs = params.toString();
+    navigate(qs ? `/explore?${qs}` : '/explore', { state: { symbolName, filePath } });
   };
 
   return (

@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { fastAstApi } from '../../services/api';
 import type { Community } from '../../types';
 
 export const CommunitiesPage: React.FC = () => {
+  const navigate = useNavigate();
   const [communities, setCommunities] = useState<Community[]>([]);
   const [selectedComm, setSelectedComm] = useState<Community | null>(null);
 
@@ -12,6 +14,18 @@ export const CommunitiesPage: React.FC = () => {
       if (data.length > 0) setSelectedComm(data[0]);
     });
   }, []);
+
+  const handleNavigateExplore = (filePath?: string, symName?: string) => {
+    const params = new URLSearchParams();
+    if (filePath) params.set('file', filePath);
+    if (symName) params.set('symbol', symName);
+    const qs = params.toString();
+    navigate(qs ? `/explore?${qs}` : '/explore', { state: { filePath, symbolName: symName } });
+  };
+
+  const handleNavigateGlobe = () => {
+    navigate('/globe');
+  };
 
   return (
     <div className="comm-page">
@@ -83,11 +97,16 @@ export const CommunitiesPage: React.FC = () => {
               </div>
 
               <div className="detail-section">
-                <span className="section-label">Sample Files in Subsystem</span>
+                <span className="section-label">Sample Files in Subsystem (Click to Explore)</span>
                 <div className="file-pills-list font-code text-xs">
                   {(selectedComm.sample_files || ['python/fastast/indexer.py', 'src/lib.rs']).map(
                     (f, idx) => (
-                      <div key={idx} className="file-pill">
+                      <div
+                        key={idx}
+                        className="file-pill cursor-pointer hover:border-primary/50 transition-colors"
+                        onClick={() => handleNavigateExplore(f)}
+                        title={`Open ${f} in Explore`}
+                      >
                         <span className="material-symbols-outlined text-xs text-primary">feed</span>
                         <span>{f}</span>
                       </div>
@@ -97,7 +116,7 @@ export const CommunitiesPage: React.FC = () => {
               </div>
 
               <div className="detail-section">
-                <span className="section-label">Core Hubs & Collaborative Symbols</span>
+                <span className="section-label">Core Hubs & Collaborative Symbols (Click to Inspect)</span>
                 <div className="symbols-pills-list font-code text-xs">
                   {(selectedComm.sample_symbols || [
                     'index_repository',
@@ -105,12 +124,41 @@ export const CommunitiesPage: React.FC = () => {
                     'get_graph_neighborhood',
                     'retrieve_evidence',
                   ]).map((s, idx) => (
-                    <div key={idx} className="symbol-pill">
+                    <div
+                      key={idx}
+                      className="symbol-pill cursor-pointer hover:border-secondary/50 transition-colors"
+                      onClick={() => handleNavigateExplore(undefined, s)}
+                      title={`Inspect ${s} in Explore`}
+                    >
                       <span className="dot dot-cyan" />
                       <span>{s}</span>
                     </div>
                   ))}
                 </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-4 flex items-center gap-3">
+                <button
+                  className="btn-action btn-action-primary flex items-center gap-2 px-4 py-2 rounded bg-primary text-surface-lowest font-medium text-xs hover:opacity-90"
+                  onClick={handleNavigateGlobe}
+                >
+                  <span className="material-symbols-outlined text-sm">public</span>
+                  <span>View Subsystem on 3D Globe</span>
+                </button>
+
+                <button
+                  className="btn-action btn-action-secondary flex items-center gap-2 px-4 py-2 rounded bg-surface-high border border-hairline text-on-surface font-medium text-xs hover:bg-surface-highest"
+                  onClick={() =>
+                    handleNavigateExplore(
+                      selectedComm.sample_files?.[0],
+                      selectedComm.sample_symbols?.[0]
+                    )
+                  }
+                >
+                  <span className="material-symbols-outlined text-sm text-outline">account_tree</span>
+                  <span>Explore Subsystem Hierarchy</span>
+                </button>
               </div>
             </div>
           ) : (

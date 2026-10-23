@@ -28,9 +28,9 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-# 1. Start FastAST HTTP API Server on port 5174
-echo "🚀 Starting FastAST API Server on http://127.0.0.1:5174..."
-PYTHONPATH=python python3 python/fastast/api_server.py --port 5174 &
+# 1. Start FastAST HTTP API Server on port 4200
+echo "🚀 Starting FastAST API Server on http://127.0.0.1:4200..."
+PYTHONPATH=python python3 python/fastast/api_server.py --port 4200 &
 API_PID=$!
 
 sleep 1

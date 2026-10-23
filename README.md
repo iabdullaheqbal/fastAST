@@ -43,7 +43,7 @@ fastast-mcp --version
 Launch the interactive 3D Globe Graph & Codebase Explorer:
 
 ```bash
-# Start backend API (:5174) and frontend UI (:5173) together
+# Start backend API (:4200) and frontend UI (:5173) together
 ./start_ui.sh
 
 # Or run frontend independently

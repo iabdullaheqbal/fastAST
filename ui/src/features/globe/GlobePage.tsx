@@ -38,6 +38,9 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
   const [glowEnabled, setGlowEnabled] = useState(true);
   const [azimuthText, setAzimuthText] = useState('Azimuth 42° • El 18°');
   const [copiedBundle, setCopiedBundle] = useState(false);
+  const [callers, setCallers] = useState<Array<{ caller: string; file_path: string; line_number: number }>>([]);
+  const [callees, setCallees] = useState<Array<{ callee: string; file_path: string; line_number: number }>>([]);
+  const [isLoadingCalls, setIsLoadingCalls] = useState(false);
 
   // References to three.js scene controls
   const controlsRef = useRef<{
@@ -45,6 +48,12 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
     focusNode: (node: GlobeNode) => void;
     viewPoles: () => void;
     toggleOrbit: () => void;
+    applyFilters: (
+      tax: typeof filterTaxonomy,
+      edg: typeof filterEdges,
+      hop: number | 'full',
+      selected: GlobeNode | null
+    ) => void;
     sceneNodes: THREE.Mesh[];
   } | null>(null);
 
@@ -63,6 +72,34 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
       isMounted = false;
     };
   }, []);
+
+  // Fetch callers & callees when selected node changes
+  useEffect(() => {
+    if (!selectedNode) {
+      setCallers([]);
+      setCallees([]);
+      return;
+    }
+    setIsLoadingCalls(true);
+    fastAstApi
+      .getCallGraph(selectedNode.name)
+      .then((cg) => {
+        setCallers(cg.callers || []);
+        setCallees(cg.callees || []);
+        setIsLoadingCalls(false);
+      })
+      .catch(() => setIsLoadingCalls(false));
+  }, [selectedNode]);
+
+  // Reactivity for taxonomy, edge filters and active hop
+  useEffect(() => {
+    controlsRef.current?.applyFilters(
+      filterTaxonomy,
+      filterEdges,
+      activeHop,
+      selectedNode
+    );
+  }, [filterTaxonomy, filterEdges, activeHop, selectedNode]);
 
   // 2. Initialize 3D Three.js Spherical Planet
   useEffect(() => {
@@ -256,6 +293,7 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
     // F. Curved Great-Circle Relational Arcs
     const edgeGroup = new THREE.Group();
     globeGroup.add(edgeGroup);
+    const edgeLines: Array<{ line: THREE.Line; edge: any }> = [];
 
     function createCurvedArc(pA: THREE.Vector3, pB: THREE.Vector3, altitude: number) {
       const points = [];
@@ -284,7 +322,10 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
         opacity: isPrimary ? 0.95 : 0.28,
         blending: isPrimary ? THREE.AdditiveBlending : THREE.NormalBlending,
       });
-      edgeGroup.add(new THREE.Line(geo, mat));
+      const line = new THREE.Line(geo, mat);
+      line.userData = { edge: rel };
+      edgeLines.push({ line, edge: rel });
+      edgeGroup.add(line);
     });
 
     // G. Lighting
@@ -399,6 +440,67 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
         localAutoOrbit = !localAutoOrbit;
         setAutoRotate(localAutoOrbit);
       },
+      applyFilters: (
+        tax: typeof filterTaxonomy,
+        edg: typeof filterEdges,
+        hop: number | 'full',
+        selected: GlobeNode | null
+      ) => {
+        const selectedName = selected?.name;
+        const neighborNames = new Set<string>();
+        if (selectedName) {
+          neighborNames.add(selectedName);
+          topology.edges.forEach((e) => {
+            if (e.src === selectedName) neighborNames.add(e.dst);
+            if (e.dst === selectedName) neighborNames.add(e.src);
+          });
+        }
+
+        nodeMeshes.forEach((mesh) => {
+          const node = mesh.userData.data as GlobeNode;
+          let visible = true;
+          const kind = (node.kind || '').toLowerCase();
+          if (kind.includes('func') || kind === 'method') {
+            visible = tax.functions;
+          } else if (kind === 'class' || kind === 'struct') {
+            visible = tax.classes;
+          } else if (kind === 'type' || kind === 'interface') {
+            visible = tax.types;
+          } else if (kind === 'file') {
+            visible = tax.files;
+          }
+
+          if (visible && hop === 1 && selectedName) {
+            visible = neighborNames.has(node.name);
+          }
+          mesh.visible = visible;
+        });
+
+        edgeLines.forEach(({ line, edge }) => {
+          let visible = true;
+          const relType = (edge.type || '').toUpperCase();
+          if (relType === 'CALLS') visible = edg.calls;
+          else if (relType === 'IMPORTS') visible = edg.imports;
+          else if (relType === 'DEFINES') visible = edg.defines;
+          else if (relType === 'INHERITS') visible = edg.inherits;
+          else if (relType === 'SIMILAR_TO' || relType === 'SIMILAR') visible = edg.similar;
+
+          const touchesSelected =
+            selectedName && (edge.src === selectedName || edge.dst === selectedName);
+
+          if (visible && hop === 1 && selectedName) {
+            visible = !!touchesSelected;
+          }
+          line.visible = visible;
+
+          const mat = line.material as THREE.LineBasicMaterial;
+          if (touchesSelected) {
+            mat.opacity = 0.95;
+          } else {
+            mat.opacity = selectedName ? 0.15 : 0.28;
+          }
+        });
+      },
       sceneNodes: nodeMeshes,
     };
 
@@ -466,6 +568,8 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
         spherical_coordinates: { lat: selectedNode.lat, lon: selectedNode.lon },
         in_degree: selectedNode.in_degree,
         out_degree: selectedNode.out_degree,
+        callers: callers,
+        callees: callees,
       },
       null,
       2
@@ -1009,49 +1113,83 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
             {/* Inbound Callers on Planet */}
             <div className="callers-section">
               <div className="callers-header">
-                <span>Spherical Inbound Callers ({selectedNode.in_degree ?? 2})</span>
-                <span className="text-outline">Arc Distance</span>
+                <span>Spherical Inbound Callers ({callers.length})</span>
+                <span className="text-outline">SQLite Edges</span>
               </div>
 
-              <div className="caller-item" onClick={() => onNavigateToExplore?.('executeGraphQuery')}>
-                <div className="caller-info">
-                  <span className="caller-name text-primary font-code">executeGraphQuery</span>
-                  <span className="caller-sub">Weight: 0.92</span>
+              {isLoadingCalls ? (
+                <div className="p-2 text-xs text-outline font-code">Loading callers...</div>
+              ) : callers.length > 0 ? (
+                callers.map((c, idx) => (
+                  <div
+                    key={idx}
+                    className="caller-item cursor-pointer hover:bg-surface-high transition-colors"
+                    onClick={() => {
+                      const found = topology?.nodes.find((n) => n.name === c.caller);
+                      if (found) {
+                        setSelectedNode(found);
+                        controlsRef.current?.focusNode(found);
+                      } else {
+                        onNavigateToExplore?.(c.caller, c.file_path);
+                      }
+                    }}
+                    title={`Focus ${c.caller} on globe or explore`}
+                  >
+                    <div className="caller-info">
+                      <span className="caller-name text-primary font-code truncate">{c.caller}</span>
+                      <span className="caller-sub">
+                        {c.file_path ? c.file_path.split('/').pop() : 'file'}:{c.line_number || 1}
+                      </span>
+                    </div>
+                    <span className="arc-deg-pill">CALLS</span>
+                  </div>
+                ))
+              ) : (
+                <div className="p-2 text-xs text-outline font-code">
+                  No inbound callers recorded in SQLite graph
                 </div>
-                <span className="arc-deg-pill">42° arc</span>
-              </div>
-
-              <div className="caller-item" onClick={() => onNavigateToExplore?.('retrieveContextSlice')}>
-                <div className="caller-info">
-                  <span className="caller-name text-primary font-code">retrieveContextSlice</span>
-                  <span className="caller-sub">Weight: 0.87</span>
-                </div>
-                <span className="arc-deg-pill">58° arc</span>
-              </div>
+              )}
             </div>
 
             {/* Outbound Callees */}
             <div className="callers-section">
               <div className="callers-header">
-                <span>Spherical Outbound Callees ({selectedNode.out_degree ?? 2})</span>
-                <span className="text-outline">Arc Distance</span>
+                <span>Spherical Outbound Callees ({callees.length})</span>
+                <span className="text-outline">SQLite Edges</span>
               </div>
 
-              <div className="caller-item" onClick={() => onNavigateToExplore?.('resolveSymbolDependencies')}>
-                <div className="caller-info">
-                  <span className="caller-name text-secondary font-code">resolveSymbolDependencies</span>
-                  <span className="caller-sub">ASTCore Module</span>
+              {isLoadingCalls ? (
+                <div className="p-2 text-xs text-outline font-code">Loading callees...</div>
+              ) : callees.length > 0 ? (
+                callees.map((c, idx) => (
+                  <div
+                    key={idx}
+                    className="caller-item cursor-pointer hover:bg-surface-high transition-colors"
+                    onClick={() => {
+                      const found = topology?.nodes.find((n) => n.name === c.callee);
+                      if (found) {
+                        setSelectedNode(found);
+                        controlsRef.current?.focusNode(found);
+                      } else {
+                        onNavigateToExplore?.(c.callee, c.file_path);
+                      }
+                    }}
+                    title={`Focus ${c.callee} on globe or explore`}
+                  >
+                    <div className="caller-info">
+                      <span className="caller-name text-secondary font-code truncate">{c.callee}</span>
+                      <span className="caller-sub">
+                        {c.file_path ? c.file_path.split('/').pop() : 'file'}:{c.line_number || 1}
+                      </span>
+                    </div>
+                    <span className="arc-deg-pill">INVOKES</span>
+                  </div>
+                ))
+              ) : (
+                <div className="p-2 text-xs text-outline font-code">
+                  No outbound invocations recorded in SQLite graph
                 </div>
-                <span className="arc-deg-pill">18° arc</span>
-              </div>
-
-              <div className="caller-item" onClick={() => onNavigateToExplore?.('applySpectralRank')}>
-                <div className="caller-info">
-                  <span className="caller-name text-secondary font-code">applySpectralRank</span>
-                  <span className="caller-sub">GraphStore Module</span>
-                </div>
-                <span className="arc-deg-pill">22° arc</span>
-              </div>
+              )}
             </div>
 
             {/* Primary Action Buttons */}

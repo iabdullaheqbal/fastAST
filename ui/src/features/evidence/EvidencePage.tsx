@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { fastAstApi } from '../../services/api';
 import type { EvidenceBundle } from '../../types';
 
 export const EvidencePage: React.FC = () => {
-  const [query, setQuery] = useState('traverse AST edges and compute degree centrality');
+  const [searchParams] = useSearchParams();
+  const qParam = searchParams.get('q');
+  const [query, setQuery] = useState(qParam || 'traverse AST edges and compute degree centrality');
   const [maxTokens, setMaxTokens] = useState(2048);
   const [rankingMethod, setRankingMethod] = useState<'hybrid' | 'bm25' | 'semantic' | 'rrf'>('hybrid');
   const [bundle, setBundle] = useState<EvidenceBundle | null>(null);
@@ -20,8 +23,13 @@ export const EvidencePage: React.FC = () => {
   };
 
   useEffect(() => {
-    executeSearch(query);
-  }, []);
+    if (qParam) {
+      setQuery(qParam);
+      executeSearch(qParam);
+    } else {
+      executeSearch(query);
+    }
+  }, [qParam]);
 
   const handleCopyBundle = () => {
     if (!bundle) return;

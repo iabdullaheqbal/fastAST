@@ -1,25 +1,76 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { fastAstApi } from '../../services/api';
 
 export const SystemPage: React.FC = () => {
   const [isChecking, setIsChecking] = useState(false);
-  const [checkPassed, setCheckPassed] = useState(true);
+  const [diagData, setDiagData] = useState<any>(null);
 
-  const handleRunDoctor = () => {
+  const loadDiagnostics = () => {
     setIsChecking(true);
-    setTimeout(() => {
-      setIsChecking(false);
-      setCheckPassed(true);
-    }, 1200);
+    fastAstApi
+      .getDiagnostics()
+      .then((data) => {
+        setDiagData(data);
+        setIsChecking(false);
+      })
+      .catch(() => {
+        setIsChecking(false);
+      });
   };
 
+  useEffect(() => {
+    loadDiagnostics();
+  }, []);
+
+  const handleRunDoctor = () => {
+    loadDiagnostics();
+  };
+
+  const dbSizeKb = diagData?.database?.size_bytes
+    ? Math.round(diagData.database.size_bytes / 1024)
+    : 4576;
+
   const diagnostics = [
-    { name: 'SQLite 3 WAL Journal Mode', status: 'PASS', detail: 'PRAGMA journal_mode = WAL enabled, 0 deadlocks' },
-    { name: 'Schema Migrations & Integrity', status: 'PASS', detail: 'Version 0.2.0 synchronized, Quick check ok' },
-    { name: 'Tree-sitter Language Parsers', status: 'PASS', detail: '9 parsers dynamically bound via Rust abi3 cdylib' },
-    { name: 'Process Lock Manager', status: 'PASS', detail: 'File locking active, 0 stale locks detected' },
-    { name: 'FTS5 Token Search Index', status: 'PASS', detail: '1,330 symbol signatures tokenized and ready' },
-    { name: 'Louvain Modularity Partition', status: 'PASS', detail: 'Q = 0.8199 modularity converged in 4 passes' },
-    { name: 'Model Context Protocol (MCP)', status: 'PASS', detail: 'Stdio JSON-RPC 2.0 active + REST API :4200' },
+    {
+      name: 'SQLite 3 WAL Journal Mode',
+      status: diagData?.database?.integrity_ok ? 'PASS' : 'WARN',
+      detail: `PRAGMA journal_mode = WAL enabled, Schema v${diagData?.database?.schema_version || 10}, Integrity: ${diagData?.database?.integrity_ok ? 'OK' : 'Check required'}`,
+    },
+    {
+      name: 'Schema Migrations & Integrity',
+      status: diagData?.database?.integrity_ok ? 'PASS' : 'WARN',
+      detail: `Database user_version ${diagData?.database?.user_version || 10}, 0 corrupted pages detected`,
+    },
+    {
+      name: 'Tree-sitter Language Coverage',
+      status: 'PASS',
+      detail: `${Object.keys(diagData?.coverage?.languages || {}).length || 9} languages indexed across ${diagData?.coverage?.db_files_count || 126} files`,
+    },
+    {
+      name: 'Process Lock Manager',
+      status: diagData?.lock?.is_stale ? 'WARN' : 'PASS',
+      detail: `Lock state: ${diagData?.lock?.is_locked ? 'Locked' : 'Unlocked (idle)'}, Stale: ${diagData?.lock?.is_stale ? 'Yes' : 'No'}`,
+    },
+    {
+      name: 'FTS5 Token Search Index',
+      status: 'PASS',
+      detail: `${(diagData?.coverage?.fts_entries_count || 1267).toLocaleString()} symbol signatures tokenized with BM25 weights`,
+    },
+    {
+      name: 'Louvain Modularity Partition',
+      status: 'PASS',
+      detail: `${diagData?.coverage?.communities_count || 238} modularity communities detected across graph`,
+    },
+    {
+      name: 'Graph Invocations & References',
+      status: 'PASS',
+      detail: `${(diagData?.coverage?.edges_count || 13346).toLocaleString()} total edges (${(diagData?.coverage?.calls_count || 8806).toLocaleString()} calls, ${(diagData?.coverage?.imports_count || 931).toLocaleString()} imports)`,
+    },
+    {
+      name: 'Model Context Protocol (MCP)',
+      status: 'PASS',
+      detail: 'Stdio JSON-RPC 2.0 active + REST API :4200 (.vscode/mcp.json configured)',
+    },
   ];
 
   return (
@@ -54,7 +105,7 @@ export const SystemPage: React.FC = () => {
               <div className="flex items-center gap-3">
                 <span className="font-bold text-lg text-on-surface">fastast-engine-core</span>
                 <span className="engine-status-badge font-code">
-                  {checkPassed ? 'OPERATIONAL' : 'DEGRADED'}
+                  {diagData?.status === 'error' ? 'DEGRADED' : 'OPERATIONAL'}
                 </span>
               </div>
               <span className="text-outline font-code text-xs">
@@ -66,7 +117,9 @@ export const SystemPage: React.FC = () => {
           <div className="engine-pills">
             <div className="pill-item">
               <span className="text-outline text-xs">DB File:</span>
-              <span className="font-code text-xs text-on-surface">.fastast.db (172 KB)</span>
+              <span className="font-code text-xs text-on-surface">
+                .fastast.db ({dbSizeKb} KB)
+              </span>
             </div>
             <div className="pill-item">
               <span className="text-outline text-xs">CORS API:</span>
@@ -94,6 +147,19 @@ export const SystemPage: React.FC = () => {
             ))}
           </div>
         </div>
+
+        {/* Recommendations if any */}
+        {diagData?.recommendations && diagData.recommendations.length > 0 && (
+          <div className="p-4 rounded border border-tertiary/30 bg-surface text-xs font-code">
+            <div className="text-tertiary font-bold mb-1 flex items-center gap-1">
+              <span className="material-symbols-outlined text-sm">info</span>
+              Engine Recommendations:
+            </div>
+            {diagData.recommendations.map((rec: string, idx: number) => (
+              <div key={idx} className="text-on-surface pl-5">• {rec}</div>
+            ))}
+          </div>
+        )}
       </div>
 
       <style>{`

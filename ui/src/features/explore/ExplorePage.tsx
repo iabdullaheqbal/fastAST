@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { fastAstApi } from '../../services/api';
-import type { FileItem, FileOutline } from '../../types';
+import type { CallGraphData, FileItem, FileOutline } from '../../types';
 
 interface ExplorePageProps {
   initialSymbol?: string;
@@ -8,17 +9,43 @@ interface ExplorePageProps {
 }
 
 export const ExplorePage: React.FC<ExplorePageProps> = ({
-  initialSymbol = 'ASTVisitorEngine.traverseEdges',
-  initialFilePath = 'src/parser/ast_visitor.ts',
+  initialSymbol = 'get_repository_stats',
+  initialFilePath = 'python/fastast/db.py',
 }) => {
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+
+  const initFile =
+    (location.state as any)?.filePath ||
+    searchParams.get('file') ||
+    initialFilePath;
+  const initSym =
+    (location.state as any)?.symbolName ||
+    searchParams.get('symbol') ||
+    initialSymbol;
+
   const [files, setFiles] = useState<FileItem[]>([]);
-  const [selectedFile, setSelectedFile] = useState<string>(initialFilePath);
-  const [selectedSymbol, setSelectedSymbol] = useState<string>(initialSymbol);
+  const [selectedFile, setSelectedFile] = useState<string>(initFile);
+  const [selectedSymbol, setSelectedSymbol] = useState<string>(initSym);
   const [fileFilter, setFileFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'source' | 'test' | 'config' | 'docs'>('all');
   const [outline, setOutline] = useState<FileOutline | null>(null);
   const [snippetData, setSnippetData] = useState<any>(null);
+  const [callGraph, setCallGraph] = useState<CallGraphData | null>(null);
+  const [isLoadingSnippet, setIsLoadingSnippet] = useState(false);
   const [copiedEvidence, setCopiedEvidence] = useState(false);
+
+  // Sync with location or query params
+  useEffect(() => {
+    const sFile = (location.state as any)?.filePath || searchParams.get('file');
+    const sSym = (location.state as any)?.symbolName || searchParams.get('symbol');
+    if (sFile && sFile !== selectedFile) {
+      setSelectedFile(sFile);
+    }
+    if (sSym && sSym !== selectedSymbol) {
+      setSelectedSymbol(sSym);
+    }
+  }, [location.state, searchParams]);
 
   // Load files
   useEffect(() => {
@@ -35,18 +62,39 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({
     if (!selectedFile) return;
     fastAstApi.getFileOutline(selectedFile).then((data) => {
       setOutline(data);
+      if (data) {
+        const firstClass = data.classes?.[0];
+        const firstMethod = firstClass?.methods?.[0];
+        const firstFunc = data.functions?.[0];
+        const firstOther = data.other_symbols?.[0];
+        const defaultCandidate = firstMethod?.name
+          ? `${firstClass.name}.${firstMethod.name}`
+          : firstClass?.name || firstFunc?.name || firstOther?.name;
+
+        if (defaultCandidate && (!selectedSymbol || !selectedFile.includes(selectedSymbol))) {
+          setSelectedSymbol(defaultCandidate);
+        }
+      }
     });
   }, [selectedFile]);
 
-  // When selected symbol changes, fetch snippet
+  // When selected symbol changes, fetch snippet and call graph
   useEffect(() => {
     if (!selectedSymbol) return;
+    const cleanSym = selectedSymbol.split('.').pop() || selectedSymbol;
+    setIsLoadingSnippet(true);
     fastAstApi
-      .getSnippet({ symbol: selectedSymbol.split('.').pop() || selectedSymbol })
+      .getSnippet({ symbol: cleanSym, filePath: selectedFile })
       .then((data) => {
         setSnippetData(data);
-      });
-  }, [selectedSymbol]);
+        setIsLoadingSnippet(false);
+      })
+      .catch(() => setIsLoadingSnippet(false));
+
+    fastAstApi.getCallGraph(cleanSym).then((cg) => {
+      setCallGraph(cg);
+    });
+  }, [selectedSymbol, selectedFile]);
 
   const filteredFiles = files.filter((f) => {
     const matchesQuery = f.path.toLowerCase().includes(fileFilter.toLowerCase());
@@ -61,7 +109,9 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({
         target_file: selectedFile,
         target_symbol: selectedSymbol,
         outline: outline?.classes || outline?.functions || [],
-        snippet: snippetData?.snippet || 'public async traverseEdges(...)',
+        snippet: snippetData?.snippet || '',
+        callers: callGraph?.callers || [],
+        callees: callGraph?.callees || [],
       },
       null,
       2
@@ -160,14 +210,14 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({
               {selectedFile}
             </span>
             <span className="meta-tag">{outline?.language || 'source'}</span>
-            <span className="meta-tag">{outline?.total_lines || 284} LOC</span>
-            <span className="meta-tag text-tertiary">Indexed via SQLite WAL</span>
+            <span className="meta-tag">{outline?.total_lines || files.find(f => f.path === selectedFile)?.total_lines || 120} LOC</span>
+            <span className="meta-tag text-tertiary">SQLite WAL Indexed</span>
           </div>
 
           <div className="canvas-view-mode">
-            <button className="view-mode-btn view-mode-btn-active">Outline</button>
-            <button className="view-mode-btn">Bounded Source</button>
-            <button className="view-mode-btn">Symbol Index</button>
+            <button className="view-mode-btn view-mode-btn-active">AST Outline</button>
+            <button className="view-mode-btn">Bounded Snippet</button>
+            <button className="view-mode-btn">Call Neighborhood</button>
           </div>
         </div>
 
@@ -178,7 +228,7 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({
             <div className="scope-info">
               <span className="scope-title">Target Scope:</span>
               <span className="scope-val font-code">
-                {selectedFile} [Lines 1-{outline?.total_lines || 150}]
+                {selectedFile} [Lines 1-{outline?.total_lines || files.find(f => f.path === selectedFile)?.total_lines || 100}]
               </span>
             </div>
             <div className="action-bar-btns">
@@ -188,179 +238,184 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({
               </button>
               <button
                 className="btn-canvas-action btn-purple"
-                onClick={() => setSelectedSymbol('ASTVisitorEngine.traverseEdges')}
+                onClick={() => {
+                  window.location.hash = '#/globe';
+                }}
               >
                 <span className="material-symbols-outlined text-sm">bubble_chart</span>
                 <span>Galaxy Graph</span>
               </button>
-              <button className="btn-canvas-action">
-                <span className="material-symbols-outlined text-primary text-sm">call_split</span>
-                <span>Find Callers</span>
-              </button>
             </div>
           </div>
 
-          {/* Scope Card 1: Classes & Methods */}
-          <section className="scope-card">
-            <div className="scope-card-header">
-              <div className="card-header-left">
-                <span className="badge-class">Class</span>
-                <span className="font-code font-semibold text-on-surface">ASTVisitorEngine&lt;T&gt;</span>
-                <span className="text-outline font-code text-xs">lines 24-118 (8 methods)</span>
-              </div>
-              <div className="card-header-right font-code text-xs">
-                <span className="text-tertiary">export</span>
-                <span className="text-outline">cyclomatic: 4</span>
-              </div>
-            </div>
-
-            <div className="methods-quick-row">
-              <span className="method-pill">
-                <span className="dot dot-emerald" /> visitNode()
+          {/* Active Bounded Snippet Box */}
+          <div className="mb-4">
+            <div className="flex-between pb-2 font-code text-xs text-outline">
+              <span className="flex items-center gap-1">
+                <span className="material-symbols-outlined text-sm text-primary">data_object</span>
+                Active Bounded Window: <strong className="text-on-surface">{selectedSymbol}</strong>
               </span>
-              <span
-                className="method-pill method-pill-active"
-                onClick={() => setSelectedSymbol('ASTVisitorEngine.traverseEdges')}
-              >
-                <span className="dot dot-cyan animate-pulse" /> traverseEdges() [Active]
-              </span>
-              <span className="method-pill">
-                <span className="dot dot-emerald" /> computeDegreeCentrality()
-              </span>
-              <span className="method-pill text-outline">+ 5 more internal methods</span>
+              <span>{snippetData?.snippet ? `${snippetData.snippet.split('\n').length} lines bounded` : 'Select symbol'}</span>
             </div>
 
-            {/* Bounded Code Snippet with Syntax & Context */}
-            <div className="code-snippet-box">
-              <div className="omission-line">
-                <span className="line-num">...</span>
-                <span className="omission-text">··· [17 lines: constructor & node validators omitted] ···</span>
+            {isLoadingSnippet ? (
+              <div className="code-snippet-box p-6 text-center text-outline font-code text-xs">
+                Fetching bounded snippet from SQLite...
               </div>
-
-              <div className="code-line">
-                <span className="line-num">42</span>
-                <div className="code-text">
-                  <span className="kw">public async</span> <span className="fn-name">traverseEdges</span>(
+            ) : snippetData && snippetData.snippet ? (
+              <div className="code-snippet-box">
+                <div className="omission-line">
+                  <span className="line-num">...</span>
+                  <span className="omission-text">
+                    ··· [{snippetData.file_path || selectedFile}:{snippetData.start_line ?? 1}-{snippetData.end_line ?? 'end'} • Bounded AST definition for {selectedSymbol}] ···
+                  </span>
                 </div>
+                {snippetData.snippet.split('\n').map((line: string, idx: number) => {
+                  const lineNum = (snippetData.start_line ?? 1) + idx;
+                  const isHighlighted = idx < 2;
+                  return (
+                    <div key={idx} className={`code-line ${isHighlighted ? 'code-line-highlight' : ''}`}>
+                      <span className={`line-num ${isHighlighted ? 'text-primary font-bold' : ''}`}>{lineNum}</span>
+                      <div className="code-text font-code text-xs whitespace-pre">{line || ' '}</div>
+                    </div>
+                  );
+                })}
+                {snippetData.is_truncated && (
+                  <div className="omission-line">
+                    <span className="line-num">...</span>
+                    <span className="omission-text">··· [Remaining lines omitted to enforce strict token budget] ···</span>
+                  </div>
+                )}
               </div>
+            ) : (
+              <div className="code-snippet-box p-6 text-center text-outline font-code text-xs">
+                Select a class, method, or function below to inspect its bounded context window.
+              </div>
+            )}
+          </div>
 
-              <div className="code-line">
-                <span className="line-num">43</span>
-                <div className="code-text pl-4">
-                  node: <span className="type-name">ASTNode</span>,
-                </div>
+          {/* Classes & Methods Section */}
+          {outline?.classes && outline.classes.length > 0 && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-outline mb-2">
+                Classes & Methods ({outline.classes.length})
               </div>
+              {outline.classes.map((cls, cIdx) => (
+                <section key={cIdx} className="scope-card mb-3">
+                  <div className="scope-card-header">
+                    <div className="card-header-left">
+                      <span className="badge-class">Class</span>
+                      <span
+                        className="font-code font-semibold text-on-surface cursor-pointer hover:text-primary transition-colors"
+                        onClick={() => setSelectedSymbol(cls.name)}
+                      >
+                        {cls.name}
+                      </span>
+                      <span className="text-outline font-code text-xs">
+                        lines {cls.start_line}-{cls.end_line} ({cls.methods?.length || 0} methods)
+                      </span>
+                    </div>
+                    <div className="card-header-right font-code text-xs">
+                      <span className="text-tertiary">AST Node</span>
+                    </div>
+                  </div>
 
-              <div className="code-line">
-                <span className="line-num">44</span>
-                <div className="code-text pl-4">
-                  depth: <span className="type-name">number</span> = <span className="num">2</span>
-                </div>
-              </div>
-
-              <div className="code-line">
-                <span className="line-num">45</span>
-                <div className="code-text">
-                  ): <span className="kw">Promise</span>&lt;<span className="type-name">GraphEdge</span>[]&gt; {'{'}
-                </div>
-              </div>
-
-              <div className="code-line">
-                <span className="line-num">46</span>
-                <div className="code-text pl-4">
-                  <span className="kw">const</span> neighbors = <span className="kw">await this</span>.resolveSymbolDependencies(node);
-                </div>
-              </div>
-
-              <div className="code-line code-line-highlight">
-                <span className="line-num text-primary font-bold">47</span>
-                <div className="code-text pl-4 text-on-surface">
-                  <span className="kw">const</span> outboundEdges = neighbors.map(dep =&gt; <span className="fn-name">dep.asEdgeRecord</span>(depth));
-                </div>
-              </div>
-
-              <div className="code-line">
-                <span className="line-num">48</span>
-                <div className="code-text pl-4">
-                  <span className="kw">return</span> this.applySpectralRank(outboundEdges);
-                </div>
-              </div>
-
-              <div className="code-line">
-                <span className="line-num">49</span>
-                <div className="code-text">{'}'}</div>
-              </div>
-
-              <div className="omission-line">
-                <span className="line-num">...</span>
-                <span className="omission-text">··· [69 lines: spectral heuristics & caching omitted] ···</span>
-              </div>
+                  {cls.methods && cls.methods.length > 0 && (
+                    <div className="methods-quick-row">
+                      {cls.methods.map((m, mIdx) => {
+                        const isMethodActive =
+                          selectedSymbol === m.name ||
+                          selectedSymbol === `${cls.name}.${m.name}`;
+                        return (
+                          <span
+                            key={mIdx}
+                            className={`method-pill ${isMethodActive ? 'method-pill-active' : ''}`}
+                            onClick={() => setSelectedSymbol(`${cls.name}.${m.name}`)}
+                          >
+                            <span
+                              className={`dot ${isMethodActive ? 'dot-cyan animate-pulse' : 'dot-emerald'}`}
+                            />
+                            {m.name}() {isMethodActive ? '[Active]' : ''}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              ))}
             </div>
-          </section>
+          )}
 
-          {/* Scope Card 2: Exported Function Definition */}
-          <section className="scope-card">
-            <div className="scope-card-header">
-              <div className="card-header-left">
-                <span className="badge-func">Function</span>
-                <span className="font-code font-semibold text-on-surface">
-                  resolveSymbolDependencies(sym: SymbolNode): EdgeRecord[]
-                </span>
+          {/* Functions Section */}
+          {outline?.functions && outline.functions.length > 0 && (
+            <div className="mt-3">
+              <div className="text-xs font-semibold uppercase tracking-wider text-outline mb-2">
+                Module Functions ({outline.functions.length})
               </div>
-              <div className="card-header-right font-code text-xs">
-                <span className="text-outline">lines 122-184</span>
-                <span className="community-tag">Community #0: Parser Core</span>
-              </div>
+              {outline.functions.map((fn, fIdx) => {
+                const isFnActive = selectedSymbol === fn.name;
+                return (
+                  <section
+                    key={fIdx}
+                    className={`scope-card mb-3 ${isFnActive ? 'border-primary/50' : ''}`}
+                  >
+                    <div className="scope-card-header">
+                      <div className="card-header-left">
+                        <span className="badge-func">{fn.kind || 'Function'}</span>
+                        <span className="font-code font-semibold text-on-surface">{fn.name}</span>
+                      </div>
+                      <div className="card-header-right font-code text-xs">
+                        <span className="text-outline">lines {fn.start_line}-{fn.end_line}</span>
+                      </div>
+                    </div>
+
+                    <div className="func-details-row">
+                      <div className="func-desc">
+                        <span className="font-code text-xs text-outline truncate block max-w-lg">
+                          {fn.signature || `def ${fn.name}(...)`}
+                        </span>
+                      </div>
+                      <button
+                        className={`btn-snippet-expand ${isFnActive ? 'bg-primary/20 text-primary' : ''}`}
+                        onClick={() => setSelectedSymbol(fn.name)}
+                      >
+                        {isFnActive ? 'Focused' : 'Focus Symbol'}
+                      </button>
+                    </div>
+                  </section>
+                );
+              })}
             </div>
+          )}
 
-            <div className="func-details-row">
-              <div className="func-desc">
-                <span>Returns resolved semantic references in deterministic topological order.</span>
-                <div className="func-metrics">
-                  <span className="mini-badge">ASTNode Resolution: O(1)</span>
-                  <span className="mini-badge text-tertiary">Pure Function</span>
-                  <span className="mini-badge text-outline">3 inbound calls</span>
+          {/* Other Symbols Section */}
+          {outline?.other_symbols && outline.other_symbols.length > 0 && (
+            <div className="mt-3">
+              <div className="text-xs font-semibold uppercase tracking-wider text-outline mb-2">
+                Type & Interface Definitions ({outline.other_symbols.length})
+              </div>
+              <section className="scope-card">
+                <div className="interface-fields-grid">
+                  {outline.other_symbols.map((sym, sIdx) => (
+                    <div
+                      key={sIdx}
+                      className="field-card cursor-pointer hover:border-primary/50 transition-colors"
+                      onClick={() => setSelectedSymbol(sym.name)}
+                    >
+                      <span className="field-name font-code text-primary">{sym.name}</span>
+                      <span className="field-default">{sym.kind} • Lines {sym.start_line}-{sym.end_line}</span>
+                    </div>
+                  ))}
                 </div>
-              </div>
-              <button
-                className="btn-snippet-expand"
-                onClick={() => setSelectedSymbol('resolveSymbolDependencies')}
-              >
-                Focus Symbol
-              </button>
+              </section>
             </div>
-          </section>
+          )}
 
-          {/* Scope Card 3: Interface Definition */}
-          <section className="scope-card">
-            <div className="scope-card-header">
-              <div className="card-header-left">
-                <span className="badge-interface">Interface</span>
-                <span className="font-code font-semibold text-on-surface">VisitorConfig</span>
-                <span className="text-outline font-code text-xs">lines 8-22 (4 fields)</span>
-              </div>
-              <span className="text-outline font-code text-xs">AST Traversal Options</span>
+          {!outline?.classes?.length && !outline?.functions?.length && !outline?.other_symbols?.length && (
+            <div className="scope-card p-6 text-center text-outline font-code text-xs">
+              No top-level AST symbols parsed in this file. File total lines: {outline?.total_lines || 0}.
             </div>
-
-            <div className="interface-fields-grid">
-              <div className="field-card">
-                <span className="field-name font-code">maxDepth: number</span>
-                <span className="field-default">default: 3</span>
-              </div>
-              <div className="field-card">
-                <span className="field-name font-code">ignoreComments: boolean</span>
-                <span className="field-default">default: true</span>
-              </div>
-              <div className="field-card">
-                <span className="field-name font-code">collectTelemetry: boolean</span>
-                <span className="field-default">default: false</span>
-              </div>
-              <div className="field-card">
-                <span className="field-name font-code">clusterSeed?: string</span>
-                <span className="field-default">optional</span>
-              </div>
-            </div>
-          </section>
+          )}
         </div>
       </main>
 
@@ -368,7 +423,9 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({
       <aside className="explore-right-panel">
         <div className="panel-header">
           <span className="panel-title font-semibold">Symbol Context & Metadata</span>
-          <span className="kind-badge">METHOD</span>
+          <span className="kind-badge">
+            {callGraph ? 'AST GRAPH' : 'METHOD'}
+          </span>
         </div>
 
         <div className="panel-scrollable">
@@ -376,100 +433,88 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({
           <div className="focus-symbol-box">
             <span className="box-label">Active Focus Symbol</span>
             <div className="focus-name-card">
-              <span className="focus-sym-title font-semibold">{selectedSymbol}</span>
-              <span className="focus-sym-sig font-code text-xs text-outline">
-                (node: ASTNode, depth: number = 2): Promise&lt;GraphEdge[]&gt;
+              <span className="focus-sym-title font-semibold truncate block">{selectedSymbol}</span>
+              <span className="focus-sym-sig font-code text-xs text-outline truncate block">
+                {selectedFile}
               </span>
             </div>
           </div>
 
-          {/* Semantic Intent */}
-          <div className="section-card">
-            <span className="box-label">Semantic Intent</span>
-            <p className="intent-text">
-              Traverses outgoing AST edge references up to depth hops and computes neighborhood degree
-              weights for semantic ranking in downstream evidence retrieval.
-            </p>
-          </div>
-
-          {/* Louvain Community Card */}
-          <div className="community-box">
-            <div className="flex-between">
-              <span className="box-label">Louvain Community</span>
-              <span className="text-secondary font-code text-xs font-semibold">Q = 0.82</span>
-            </div>
-            <div className="comm-inner-card">
-              <div className="comm-title-wrap">
-                <span className="dot dot-cyan" />
-                <span className="comm-inner-title font-semibold">#0 Parser Core & AST</span>
-              </div>
-              <div className="flex-between font-code text-xs text-outline pt-1">
-                <span>Cohesion: 48 symbols</span>
-                <span>Centrality: High (0.92)</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Inbound Callers */}
+          {/* Callers (Inbound) */}
           <div className="callers-section">
             <div className="flex-between">
-              <span className="box-label">Callers (Inbound 4)</span>
-              <span className="font-code text-xs text-outline">Ranked</span>
+              <span className="box-label">
+                Inbound Callers ({callGraph?.caller_count ?? 0})
+              </span>
+              <span className="font-code text-xs text-outline">SQLite Edges</span>
             </div>
             <div className="caller-rows">
-              <div
-                className="caller-row"
-                onClick={() => setSelectedSymbol('executeGraphQuery')}
-              >
-                <div className="caller-main">
-                  <span className="material-symbols-outlined text-xs text-primary">call_received</span>
-                  <span className="font-code text-xs font-semibold text-primary truncate">
-                    executeGraphQuery
-                  </span>
+              {callGraph && callGraph.callers && callGraph.callers.length > 0 ? (
+                callGraph.callers.map((c, idx) => (
+                  <div
+                    key={idx}
+                    className="caller-row cursor-pointer hover:bg-surface-high transition-colors"
+                    onClick={() => {
+                      setSelectedSymbol(c.caller);
+                      if (c.file_path) setSelectedFile(c.file_path);
+                    }}
+                    title={`Focus caller ${c.caller}`}
+                  >
+                    <div className="caller-main">
+                      <span className="material-symbols-outlined text-xs text-primary">call_received</span>
+                      <span className="font-code text-xs font-semibold text-primary truncate">
+                        {c.caller}
+                      </span>
+                    </div>
+                    <span className="caller-loc font-code">
+                      {c.file_path?.split('/').pop() || 'file'}:{c.line_number || 1}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="p-2 text-xs text-outline font-code">
+                  No inbound callers detected in graph.
                 </div>
-                <span className="caller-loc font-code">graph.py:89</span>
-              </div>
-
-              <div
-                className="caller-row"
-                onClick={() => setSelectedSymbol('retrieveContextSlice')}
-              >
-                <div className="caller-main">
-                  <span className="material-symbols-outlined text-xs text-primary">call_received</span>
-                  <span className="font-code text-xs font-semibold text-primary truncate">
-                    retrieveContextSlice
-                  </span>
-                </div>
-                <span className="caller-loc font-code">retrieval.py:142</span>
-              </div>
+              )}
             </div>
           </div>
 
-          {/* Outbound Callees */}
+          {/* Callees (Outbound) */}
           <div className="callers-section">
             <div className="flex-between">
-              <span className="box-label">Callees (Outbound 3)</span>
-              <span className="font-code text-xs text-outline">Ranked</span>
+              <span className="box-label">
+                Outbound Callees ({callGraph?.callee_count ?? 0})
+              </span>
+              <span className="font-code text-xs text-outline">SQLite Edges</span>
             </div>
             <div className="caller-rows">
-              <div className="caller-row">
-                <div className="caller-main">
-                  <span className="material-symbols-outlined text-xs text-secondary">call_made</span>
-                  <span className="font-code text-xs font-semibold text-secondary truncate">
-                    resolveSymbolDependencies
-                  </span>
+              {callGraph && callGraph.callees && callGraph.callees.length > 0 ? (
+                callGraph.callees.map((c, idx) => (
+                  <div
+                    key={idx}
+                    className="caller-row cursor-pointer hover:bg-surface-high transition-colors"
+                    onClick={() => {
+                      setSelectedSymbol(c.callee);
+                      if (c.file_path) setSelectedFile(c.file_path);
+                    }}
+                    title={`Focus callee ${c.callee}`}
+                  >
+                    <div className="caller-main">
+                      <span className="material-symbols-outlined text-xs text-secondary">call_made</span>
+                      <span className="font-code text-xs font-semibold text-secondary truncate">
+                        {c.callee}
+                      </span>
+                    </div>
+                    <span className="caller-loc font-code">
+                      {c.file_path?.split('/').pop() || 'file'}:{c.line_number || 1}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="p-2 text-xs text-outline font-code">
+                  No outbound invocations recorded.
                 </div>
-                <span className="caller-loc font-code">ast_visitor.ts:122</span>
-              </div>
-              <div className="caller-row">
-                <div className="caller-main">
-                  <span className="material-symbols-outlined text-xs text-secondary">call_made</span>
-                  <span className="font-code text-xs font-semibold text-secondary truncate">
-                    applySpectralRank
-                  </span>
-                </div>
-                <span className="caller-loc font-code">ast_visitor.ts:210</span>
-              </div>
+              )}
             </div>
           </div>
 
@@ -477,7 +522,7 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({
           <div className="pt-2">
             <button className="btn-action btn-action-copy w-full" onClick={handleCopyEvidence}>
               <span className="material-symbols-outlined text-sm">content_copy</span>
-              <span>{copiedEvidence ? 'Copied Bundle!' : 'Copy Evidence Window (185 tok)'}</span>
+              <span>{copiedEvidence ? 'Copied Bundle!' : 'Copy Evidence Window'}</span>
             </button>
           </div>
         </div>

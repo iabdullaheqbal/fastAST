@@ -1509,9 +1509,161 @@ def main() -> None:
             )
             return
 
-    if mcp is None:
-        raise RuntimeError("MCP server is not available. Please install mcp.")
-    mcp.run(transport="stdio")
+    if mcp is not None:
+        mcp.run(transport="stdio")
+    else:
+        _run_builtin_stdio_server()
+
+
+def _run_builtin_stdio_server() -> None:
+    """Built-in lightweight JSON-RPC 2.0 stdio server for MCP clients (VS Code, Cursor, Windsurf).
+    
+    Provides full Model Context Protocol compatibility without third-party dependencies.
+    """
+    import sys
+    from fastast import __version__
+
+    tools_registry = {
+        "index_repository": (index_repository, "Incrementally parse and index repository files into .fastast.db"),
+        "get_repository_stats": (get_repository_stats, "Return summary counts of indexed files, symbols, calls, and languages"),
+        "query_symbols": (query_symbols, "Search for symbol definitions (functions, classes, methods) across the indexed codebase"),
+        "get_call_graph": (get_call_graph, "Trace direct incoming callers and outgoing callees of a named symbol"),
+        "get_graph_neighborhood": (get_graph_neighborhood, "Extract bounded graph neighborhood around an anchor symbol within hop depth"),
+        "retrieve_evidence": (retrieve_evidence, "Hybrid dense + BM25 retrieval returning ranked candidates and token-bounded snippets"),
+        "query": (query, "Alias for retrieve_evidence"),
+        "build_evidence_bundle": (build_evidence_bundle, "Assemble compact, deduplicated evidence bundle within max_tokens budget"),
+        "get_symbol_evidence": (get_symbol_evidence, "Retrieve full symbol definition metadata, bounded source window, and callers/callees"),
+        "get_file_outline": (get_file_outline, "Generate compact skeleton outline of classes, methods, and functions in a file"),
+        "get_snippet": (get_snippet, "Retrieve targeted source code snippet with line numbers"),
+        "get_similar_symbols": (get_similar_symbols, "Find structurally similar symbols using MinHash and Locality-Sensitive Hashing"),
+        "get_community": (get_community, "Retrieve Louvain community cluster and central hub for a symbol"),
+        "list_communities": (list_communities, "List all detected architectural communities, sizes, and hubs"),
+        "diagnose_repository": (diagnose_repository, "Verify SQLite database integrity, schema version, and lock state"),
+    }
+
+    tools_list = []
+    for tname, (_, tdesc) in tools_registry.items():
+        tools_list.append({
+            "name": tname,
+            "description": tdesc,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query or symbol name"},
+                    "symbol": {"type": "string", "description": "Symbol name"},
+                    "name": {"type": "string", "description": "Alias for symbol"},
+                    "directory_path": {"type": "string", "description": "Repository path", "default": "."},
+                    "max_tokens": {"type": "integer", "description": "Token budget ceiling", "default": 1500},
+                    "limit": {"type": "integer", "description": "Max results to return", "default": 50},
+                    "depth": {"type": "integer", "description": "Hop depth", "default": 2},
+                    "file_path": {"type": "string", "description": "Path to source file"}
+                }
+            }
+        })
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        method = req.get("method")
+        req_id = req.get("id")
+
+        if method == "initialize":
+            resp = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": {"listChanged": False}
+                    },
+                    "serverInfo": {
+                        "name": "fastast",
+                        "version": __version__
+                    }
+                }
+            }
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+
+        elif method == "notifications/initialized":
+            pass
+
+        elif method == "ping":
+            resp = {"jsonrpc": "2.0", "id": req_id, "result": {}}
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+
+        elif method == "tools/list":
+            resp = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "tools": tools_list
+                }
+            }
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+
+        elif method == "tools/call":
+            params = req.get("params", {})
+            tool_name = params.get("name")
+            args = params.get("arguments", {})
+
+            if tool_name in tools_registry:
+                fn, _ = tools_registry[tool_name]
+                try:
+                    res_raw = fn(**args)
+                    if isinstance(res_raw, (dict, list)):
+                        res_text = json.dumps(res_raw, indent=2)
+                    else:
+                        res_text = str(res_raw)
+                    resp = {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "content": [{"type": "text", "text": res_text}],
+                            "isError": False
+                        }
+                    }
+                except Exception as exc:
+                    resp = {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "content": [{"type": "text", "text": f"Error executing tool {tool_name}: {exc}"}],
+                            "isError": True
+                        }
+                    }
+            else:
+                resp = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32601,
+                        "message": f"Tool not found: {tool_name}"
+                    }
+                }
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+
+        elif req_id is not None:
+            # Fallback for other methods with id
+            resp = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not supported: {method}"
+                }
+            }
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
 
 
 def create_server():

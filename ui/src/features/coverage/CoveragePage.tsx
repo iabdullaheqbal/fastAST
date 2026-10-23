@@ -9,19 +9,40 @@ export const CoveragePage: React.FC = () => {
     fastAstApi.getStats().then(setStats);
   }, []);
 
-  const languagesList = [
-    { name: 'Python', ext: '.py', count: stats?.languages?.python || 47, color: '#38bdf8' },
-    { name: 'Markdown', ext: '.md', count: stats?.languages?.markdown || 42, color: '#94a3b8' },
-    { name: 'Rust', ext: '.rs', count: stats?.languages?.rust || 22, color: '#f97316' },
-    { name: 'JSON', ext: '.json', count: stats?.languages?.json || 7, color: '#fbbf24' },
-    { name: 'TypeScript', ext: '.ts, .tsx', count: stats?.languages?.typescript || 5, color: '#3b82f6' },
-    { name: 'JavaScript', ext: '.js, .jsx', count: stats?.languages?.javascript || 3, color: '#eab308' },
-    { name: 'HTML', ext: '.html', count: stats?.languages?.html || 3, color: '#f43f5e' },
-    { name: 'CSS', ext: '.css', count: stats?.languages?.css || 3, color: '#06b6d4' },
-    { name: 'TOML', ext: '.toml', count: stats?.languages?.toml || 3, color: '#a855f7' },
-  ];
+  const colors: Record<string, string> = {
+    python: '#38bdf8',
+    markdown: '#94a3b8',
+    rust: '#f97316',
+    json: '#fbbf24',
+    typescript: '#3b82f6',
+    javascript: '#eab308',
+    html: '#f43f5e',
+    css: '#06b6d4',
+    toml: '#a855f7',
+    yaml: '#f59e0b',
+    java: '#ef4444',
+  };
 
-  const totalFiles = stats?.files || 142;
+  const languagesList = stats?.languages && Object.keys(stats.languages).length > 0
+    ? Object.entries(stats.languages).map(([lang, count]) => ({
+        name: lang.charAt(0).toUpperCase() + lang.slice(1),
+        ext: `.${lang.slice(0, 3)}`,
+        count,
+        color: colors[lang.toLowerCase()] || '#a855f7',
+      }))
+    : [
+        { name: 'Python', ext: '.py', count: 47, color: '#38bdf8' },
+        { name: 'Markdown', ext: '.md', count: 42, color: '#94a3b8' },
+        { name: 'Rust', ext: '.rs', count: 22, color: '#f97316' },
+        { name: 'JSON', ext: '.json', count: 7, color: '#fbbf24' },
+        { name: 'TypeScript', ext: '.ts, .tsx', count: 5, color: '#3b82f6' },
+        { name: 'JavaScript', ext: '.js, .jsx', count: 3, color: '#eab308' },
+        { name: 'HTML', ext: '.html', count: 3, color: '#f43f5e' },
+        { name: 'CSS', ext: '.css', count: 3, color: '#06b6d4' },
+        { name: 'TOML', ext: '.toml', count: 3, color: '#a855f7' },
+      ];
+
+  const totalFiles = stats?.files || 126;
 
   return (
     <div className="coverage-page">
@@ -44,7 +65,7 @@ export const CoveragePage: React.FC = () => {
           <div className="summary-card">
             <span className="card-label">Total Files Scanned</span>
             <span className="card-val font-code text-primary">{totalFiles}</span>
-            <span className="card-sub text-tertiary">142 indexed, 0 errors</span>
+            <span className="card-sub text-tertiary">{totalFiles} indexed, 0 errors</span>
           </div>
 
           <div className="summary-card">
