@@ -847,22 +847,6 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
       isDragging = false;
       draggedNode = null;
     };
-                end_line: 50,
-                comm: 0,
-                comm_name: draggedNode.community,
-                comm_color: draggedNode.color,
-                importance: 0.8,
-                lat: 0,
-                lon: 0,
-                active: true,
-              });
-            }
-          }
-        }
-      }
-      isDragging = false;
-      draggedNode = null;
-    };
 
     canvas.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
