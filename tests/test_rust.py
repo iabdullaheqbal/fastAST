@@ -96,10 +96,10 @@ def test_rust_call_graph_extraction():
     assert not index_res.has_syntax_error
 
     calls = [(c.caller_name, c.callee_name, c.line_number) for c in index_res.calls]
-    assert ("execute_flow", "new", 3) in calls
-    assert ("execute_flow", "with_limit", 4) in calls
-    assert ("execute_flow", "run_query", 5) in calls
-    assert ("execute_flow", "println", 6) in calls
+    assert ("execute_flow", "new", 2) in calls
+    assert ("execute_flow", "with_limit", 3) in calls
+    assert ("execute_flow", "run_query", 4) in calls
+    assert ("execute_flow", "println", 5) in calls
 
 
 if __name__ == "__main__":

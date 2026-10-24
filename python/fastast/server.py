@@ -1469,6 +1469,29 @@ def diagnose_repository(
 
 # Register tools with MCP server if available
 if mcp is not None:
+    try:
+        from fastast.mcp import (
+            tool_community_detail,
+            tool_file_outline,
+            tool_get_evidence,
+            tool_graph_neighbors,
+            tool_index_status,
+            tool_list_communities,
+            tool_search_symbols,
+            tool_similar_symbols,
+            tool_trigger_index,
+        )
+        mcp.tool()(tool_index_status)
+        mcp.tool()(tool_search_symbols)
+        mcp.tool()(tool_get_evidence)
+        mcp.tool()(tool_graph_neighbors)
+        mcp.tool()(tool_list_communities)
+        mcp.tool()(tool_community_detail)
+        mcp.tool()(tool_similar_symbols)
+        mcp.tool()(tool_file_outline)
+        mcp.tool()(tool_trigger_index)
+    except Exception:
+        pass
     mcp.tool()(index_repository)
     mcp.tool()(get_repository_stats)
     mcp.tool()(query_symbols)
@@ -1487,32 +1510,9 @@ if mcp is not None:
 
 
 def main() -> None:
-    """Run the FastAST MCP server over stdio."""
-    import sys
-    from fastast import __version__
-
-    if len(sys.argv) > 1:
-        arg = sys.argv[1]
-        if arg in ("-v", "--version"):
-            print(f"fastast-mcp {__version__}")
-            return
-        if arg in ("-h", "--help"):
-            print(
-                f"fastast-mcp {__version__}: FastAST Model Context Protocol (MCP) stdio server.\n\n"
-                "Usage:\n"
-                "  fastast-mcp              Start JSON-RPC 2.0 MCP server over stdio\n"
-                "  fastast-mcp --version    Show version and exit\n"
-                "  fastast-mcp --help       Show this help message and exit\n\n"
-                "Setup:\n"
-                "  Claude Code:  claude mcp add fastast -- fastast-mcp\n"
-                "  Cursor IDE:   Add {\"mcpServers\": {\"fastast\": {\"command\": \"fastast-mcp\"}}} to .cursor/mcp.json"
-            )
-            return
-
-    if mcp is not None:
-        mcp.run(transport="stdio")
-    else:
-        _run_builtin_stdio_server()
+    """Run the FastAST MCP server."""
+    from fastast.mcp import main as mcp_main
+    mcp_main()
 
 
 def _run_builtin_stdio_server() -> None:

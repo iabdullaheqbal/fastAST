@@ -148,54 +148,138 @@ fastast watch .
 
 Register FastAST using the Claude CLI:
 
+### Model Context Protocol (MCP) Setup
+
+FastAST exposes its core codebase-memory engine over a standards-compliant Model Context Protocol (MCP) JSON-RPC 2.0 server supporting **stdio** (primary) and **SSE/HTTP** transports.
+
+#### Run Command
 ```bash
-claude mcp add fastast -- fastast-mcp
+# Direct Python module invocation
+python3 -m fastast.mcp
+
+# Or via FastAST CLI
+fastast mcp
+
+# Or SSE transport on custom port
+fastast mcp --transport sse --port 4200
 ```
 
-Or add to `~/.claude.json` / `.mcp.json`:
-
+#### 1. Cursor IDE
+Add to `.cursor/mcp.json` or user `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
     "fastast": {
-      "command": "fastast-mcp"
+      "command": "python3",
+      "args": ["-m", "fastast.mcp"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/python"
+      }
     }
   }
 }
 ```
 
-### Cursor
+#### 2. VS Code (Official MCP / Continue / Cline)
+Add to `.vscode/mcp.json`:
+```json
+{
+  "servers": {
+    "fastast": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["-m", "fastast.mcp"],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/python"
+      }
+    }
+  }
+}
+```
+Or for **Continue** (`~/.continue/config.json`):
+```json
+{
+  "experimental": {
+    "modelContextProtocolServers": [
+      {
+        "transport": {
+          "type": "stdio",
+          "command": "python3",
+          "args": ["-m", "fastast.mcp"],
+          "env": {
+            "PYTHONPATH": "/path/to/fastast/python"
+          }
+        }
+      }
+    ]
+  }
+}
+```
 
-Add to `.cursor/mcp.json` (or **Cursor Settings → Features → MCP**):
-
+#### 3. Claude Desktop
+Add to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`, Linux: `~/.config/Claude/claude_desktop_config.json`, Windows: `%APPDATA%\Claude\claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
     "fastast": {
-      "command": "fastast-mcp"
+      "command": "python3",
+      "args": ["-m", "fastast.mcp"],
+      "cwd": "/path/to/repository",
+      "env": {
+        "PYTHONPATH": "/path/to/fastast/python"
+      }
     }
   }
 }
 ```
 
-### Available MCP Tools
+#### 4. Windsurf
+Add to `~/.codeium/windsurf/mcp_config.json`:
+```json
+{
+  "mcpServers": {
+    "fastast": {
+      "command": "python3",
+      "args": ["-m", "fastast.mcp"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}
+```
 
-| MCP Tool | CLI Equivalent | Description |
+#### 5. Zed
+Add to `~/.config/zed/settings.json`:
+```json
+{
+  "context_servers": [
+    "fastast": {
+      "command": {
+        "path": "python3",
+        "args": ["-m", "fastast.mcp"]
+      }
+    }
+  ]
+}
+```
+
+---
+
+### Core MCP Tools Reference
+
+| MCP Tool | Typed Inputs | Description |
 | :--- | :--- | :--- |
-| `index_repository` | `fastast index [dir]` | Incrementally parse and index repository files into `.fastast.db` |
-| `get_repository_stats` | `fastast stats [dir]` | High-level counts of indexed files, symbols, edges, and languages |
-| `retrieve_evidence` / `query` | `fastast query <q>` | Hybrid retrieval returning ranked candidates and token-bounded snippets |
-| `build_evidence_bundle` | `fastast evidence <q>` | Assemble compact, deduplicated evidence bundles within `max_tokens` |
-| `get_symbol_evidence` | `fastast snippet <sym>` | Definition metadata, bounded source window, and callers/callees |
-| `get_file_outline` | `fastast outline <file>` | Compact class/method/function skeleton of a source file |
-| `get_snippet` | `fastast snippet -f ...` | Bounded source code slice by symbol or line range |
-| `query_symbols` | `fastast symbols <q>` | Exact or substring search over symbol definitions |
-| `get_call_graph` | `fastast calls <sym>` | Inbound callers and outbound callees for blast-radius analysis |
-| `get_graph_neighborhood` | `fastast graph <sym>` | Bounded multi-hop graph traversal (`calls`, `imports`, `defines`, `inherits`) |
-| `get_similar_symbols` | `fastast similar <sym>` | Near-duplicate symbol detection using MinHash ($m=64$) + LSH |
-| `get_community` | `fastast community <sym>` | Louvain architectural community membership, hub, and peer symbols |
-| `list_communities` | `fastast communities` | List detected functional modules across the codebase |
-| `diagnose_repository` | `fastast doctor [dir]` | Health check for SQLite integrity, schema version, and locks |
+| `fastast_index_status` | `directory_path?: string` | Return current project/index status (`idle` / `indexing` / `ready` / `error`) + repository file, symbol, and edge metrics. |
+| `fastast_search_symbols` | `query: string`, `kind?: string`, `path?: string`, `community?: int`, `language?: string`, `limit?: int` | Search symbols across codebase with filters by kind, file path, community, or language. |
+| `fastast_get_evidence` | `query?: string`, `symbol?: string`, `file_path?: string`, `start_line?: int`, `end_line?: int`, `max_tokens?: int` | Compact, token-bounded evidence bundle or code slices for a symbol or location (never dumps whole files). |
+| `fastast_graph_neighbors` | `symbol: string`, `depth?: int`, `direction?: string`, `limit?: int` | Multi-hop neighborhood graph (nodes + confidence-weighted edges) for IDE/globe visualization. |
+| `fastast_list_communities` | `limit?: int`, `directory_path?: string` | List detected architectural communities from Louvain modularity clustering ($Q \approx 0.82$). |
+| `fastast_community_detail` | `community_id?: int`, `symbol?: string`, `limit?: int` | Detail, modularity metrics, sample files, and peer members of a specific community cluster. |
+| `fastast_similar_symbols` | `symbol: string`, `min_similarity?: float`, `limit?: int` | Structural near-duplicate clone detection using MinHash ($m=64$) + Locality-Sensitive Hashing. |
+| `fastast_file_outline` | `file_path: string`, `include_snippets?: bool` | Compact skeleton outline of classes, methods, functions, and key definition preview snippets. |
+| `fastast_trigger_index` | `directory_path?: string`, `force?: bool` | Start or re-trigger incremental repository indexing into SQLite symbol graph (`.fastast.db`). |
+
+*(Legacy tool aliases `index_repository`, `query_symbols`, `retrieve_evidence`, `get_call_graph`, `get_file_outline`, `get_snippet`, `get_similar_symbols`, `list_communities`, `diagnose_repository` are also preserved for backward compatibility).*
 
 ---
 

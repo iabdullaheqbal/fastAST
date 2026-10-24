@@ -1737,6 +1737,46 @@ def main() -> None:
     serve_parser.add_argument("-p", "--port", type=int, default=4200, help="Port to listen on (default: 4200)")
     serve_parser.add_argument("-H", "--host", default="127.0.0.1", help="Host address to bind (default: 127.0.0.1)")
 
+    # `mcp` subcommand
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Start Model Context Protocol (MCP) server for IDEs",
+        description="Run the standards-compliant FastAST MCP server for Cursor, VS Code, Claude Desktop, Windsurf, Zed.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast mcp\n"
+            "  fastast mcp --transport stdio\n"
+            "  fastast mcp --transport sse --port 4200"
+        ),
+    )
+    mcp_parser.add_argument(
+        "-d",
+        "--dir",
+        default=".",
+        help="Repository root directory (default: current directory)",
+    )
+    mcp_parser.add_argument(
+        "-t",
+        "--transport",
+        choices=["stdio", "sse", "http"],
+        default="stdio",
+        help="Transport protocol: 'stdio' (default) or 'sse'/'http'",
+    )
+    mcp_parser.add_argument(
+        "-p",
+        "--port",
+        type=int,
+        default=4200,
+        help="Port for SSE/HTTP transport (default: 4200)",
+    )
+    mcp_parser.add_argument(
+        "-H",
+        "--host",
+        default="127.0.0.1",
+        help="Host address for SSE/HTTP transport (default: 127.0.0.1)",
+    )
+
     args = parser.parse_args()
 
     if args.command in ("query", "evidence"):
@@ -1884,6 +1924,15 @@ def main() -> None:
     elif args.command == "serve":
         from fastast.api_server import run_api_server
         run_api_server(port=args.port, host=args.host)
+        sys.exit(0)
+    elif args.command == "mcp":
+        from fastast.mcp import run_sse_server, run_stdio_server
+        if args.dir and args.dir != ".":
+            os.chdir(args.dir)
+        if args.transport == "stdio":
+            run_stdio_server()
+        else:
+            run_sse_server(host=args.host, port=args.port)
         sys.exit(0)
     else:
         parser.print_help()

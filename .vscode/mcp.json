@@ -1,11 +1,18 @@
-
 {
   "servers": {
+    "fastast": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["-m", "fastast.mcp"],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/python"
+      }
+    },
     "stitch": {
       "type": "http",
       "url": "https://stitch.googleapis.com/mcp",
       "headers": {
-        "X-Goog-Api-Key": "${input:AQ.Ab8RN6Kb3haf5-91ndJz_Xtm9xsI0GyL7I1OjNMlppSlKrn7Wg}"
+        "X-Goog-Api-Key": "${input:stitch_api_key}"
       }
     }
   },
@@ -13,7 +20,7 @@
     {
       "id": "stitch_api_key",
       "type": "promptString",
-      "description": "AQ.Ab8RN6Kb3haf5-91ndJz_Xtm9xsI0GyL7I1OjNMlppSlKrn7Wg",
+      "description": "Google Stitch API Key",
       "password": true
     }
   ]

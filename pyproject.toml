@@ -63,7 +63,7 @@ Documentation = "https://github.com/iabdullaheqbal/fastAST#readme"
 
 [project.scripts]
 fastast = "fastast.cli:main"
-fastast-mcp = "fastast.server:main"
+fastast-mcp = "fastast.mcp:main"
 
 [tool.maturin]
 python-source = "python"

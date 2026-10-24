@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "fastast": {
+      "command": "python3",
+      "args": ["-m", "fastast.mcp"],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/python"
+      }
+    }
+  }
+}
+
