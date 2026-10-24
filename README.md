@@ -46,10 +46,9 @@ Launch the interactive 3D Globe Graph & Codebase Explorer:
 # Start backend API (:4200) and frontend UI (:5173) together
 ./start_ui.sh
 
-# Or run frontend independently
-cd ui
-npm install
-npm run dev
+# Or run backend API and frontend separately
+fastast serve --port 4200
+cd ui && npm install && npm run dev
 ```
 
 For editable local development:

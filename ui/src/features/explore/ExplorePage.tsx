@@ -1,1116 +1,1005 @@
-import React, { useEffect, useState } from 'react';
-import { useLocation, useSearchParams } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { fastAstApi } from '../../services/api';
-import type { CallGraphData, FileItem, FileOutline } from '../../types';
+import type {
+  CallGraphEntry,
+  FileRecord,
+  SimilarSymbol,
+  SymbolRecord,
+} from '../../types';
 
-interface ExplorePageProps {
-  initialSymbol?: string;
-  initialFilePath?: string;
-}
-
-export const ExplorePage: React.FC<ExplorePageProps> = ({
-  initialSymbol = 'get_repository_stats',
-  initialFilePath = 'python/fastast/db.py',
-}) => {
-  const [searchParams] = useSearchParams();
+export const ExplorePage: React.FC = () => {
+  const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navState = location.state as { symbolName?: string; filePath?: string } | null;
 
-  const initFile =
-    (location.state as any)?.filePath ||
-    searchParams.get('file') ||
-    initialFilePath;
-  const initSym =
-    (location.state as any)?.symbolName ||
-    searchParams.get('symbol') ||
-    initialSymbol;
+  const initialFile = searchParams.get('file') || navState?.filePath || '';
+  const initialSymbol = searchParams.get('symbol') || navState?.symbolName || '';
 
-  const [files, setFiles] = useState<FileItem[]>([]);
-  const [selectedFile, setSelectedFile] = useState<string>(initFile);
-  const [selectedSymbol, setSelectedSymbol] = useState<string>(initSym);
-  const [fileFilter, setFileFilter] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<'all' | 'source' | 'test' | 'config' | 'docs'>('all');
-  const [outline, setOutline] = useState<FileOutline | null>(null);
-  const [snippetData, setSnippetData] = useState<any>(null);
-  const [callGraph, setCallGraph] = useState<CallGraphData | null>(null);
-  const [isLoadingSnippet, setIsLoadingSnippet] = useState(false);
-  const [copiedEvidence, setCopiedEvidence] = useState(false);
+  const [files, setFiles] = useState<FileRecord[]>([]);
+  const [selectedFile, setSelectedFile] = useState<string>(initialFile);
+  const [outlineSymbols, setOutlineSymbols] = useState<SymbolRecord[]>([]);
+  const [selectedSymbolName, setSelectedSymbolName] = useState<string>(initialSymbol);
 
-  // Sync with location or query params
-  useEffect(() => {
-    const sFile = (location.state as any)?.filePath || searchParams.get('file');
-    const sSym = (location.state as any)?.symbolName || searchParams.get('symbol');
-    if (sFile && sFile !== selectedFile) {
-      setSelectedFile(sFile);
-    }
-    if (sSym && sSym !== selectedSymbol) {
-      setSelectedSymbol(sSym);
-    }
-  }, [location.state, searchParams]);
+  const [fileFilter, setFileFilter] = useState<string>('');
+  const [symbolFilter, setSymbolFilter] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'snippet' | 'outline' | 'calls'>('snippet');
 
-  // Load files
-  useEffect(() => {
-    fastAstApi.getFiles().then((fileList) => {
-      setFiles(fileList);
-      if (fileList.length > 0 && !selectedFile) {
-        setSelectedFile(fileList[0].path);
-      }
-    });
-  }, []);
+  const [snippetData, setSnippetData] = useState<{
+    content: string;
+    file_path: string;
+    start_line: number;
+    end_line: number;
+    tokens?: number;
+  } | null>(null);
 
-  // When selected file changes, fetch outline
-  useEffect(() => {
-    if (!selectedFile) return;
-    fastAstApi.getFileOutline(selectedFile).then((data) => {
-      setOutline(data);
-      if (data) {
-        const firstClass = data.classes?.[0];
-        const firstMethod = firstClass?.methods?.[0];
-        const firstFunc = data.functions?.[0];
-        const firstOther = data.other_symbols?.[0];
-        const defaultCandidate = firstMethod?.name
-          ? `${firstClass.name}.${firstMethod.name}`
-          : firstClass?.name || firstFunc?.name || firstOther?.name;
+  const [callGraph, setCallGraph] = useState<{
+    callers: CallGraphEntry[];
+    callees: CallGraphEntry[];
+  }>({ callers: [], callees: [] });
+  const [similarSymbols, setSimilarSymbols] = useState<SimilarSymbol[]>([]);
 
-        if (defaultCandidate && (!selectedSymbol || !selectedFile.includes(selectedSymbol))) {
-          setSelectedSymbol(defaultCandidate);
+  const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(true);
+  const [isLoadingOutline, setIsLoadingOutline] = useState<boolean>(false);
+  const [isLoadingSnippet, setIsLoadingSnippet] = useState<boolean>(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+
+  // 1. Load repository file list
+  const loadFiles = async () => {
+    setIsLoadingFiles(true);
+    setApiError(null);
+    try {
+      const list = await fastAstApi.getFiles();
+      setFiles(list);
+
+      // If a symbol was passed without a file, resolve its file first
+      if (!selectedFile && initialSymbol) {
+        const matches = await fastAstApi.searchSymbols(initialSymbol, undefined, undefined, 5);
+        const exact = matches.find((m) => m.name === initialSymbol) || matches[0];
+        if (exact?.file_path) {
+          setSelectedFile(exact.file_path);
+          return;
         }
       }
-    });
+
+      if (!selectedFile && list.length > 0) {
+        const defaultSource =
+          list.find((f) => f.path === 'python/fastast/retrieval.py') ||
+          list.find((f) => f.category === 'source' && (f.symbol_count ?? 0) > 0) ||
+          list[0];
+        setSelectedFile(defaultSource.path);
+      }
+    } catch (err: any) {
+      setApiError(err?.message || 'Failed to load repository files from /api/files.');
+    } finally {
+      setIsLoadingFiles(false);
+    }
+  };
+
+  useEffect(() => {
+    loadFiles();
+  }, []);
+
+  // Sync URL search params when navigated to
+  useEffect(() => {
+    const fParam = searchParams.get('file');
+    const sParam = searchParams.get('symbol');
+    if (fParam && fParam !== selectedFile) {
+      setSelectedFile(fParam);
+    }
+    if (sParam && sParam !== selectedSymbolName) {
+      setSelectedSymbolName(sParam);
+    }
+  }, [searchParams]);
+
+  // 2. When selectedFile changes, load its AST outline
+  useEffect(() => {
+    if (!selectedFile) return;
+    let cancelled = false;
+    setIsLoadingOutline(true);
+
+    fastAstApi
+      .getOutline(selectedFile)
+      .then((outline) => {
+        if (cancelled) return;
+        setOutlineSymbols(outline);
+        setIsLoadingOutline(false);
+
+        if (outline.length > 0) {
+          // Preserve selectedSymbolName if it exists in this file's outline
+          const matchingSym = outline.find((s) => s.name === selectedSymbolName);
+          if (!matchingSym) {
+            setSelectedSymbolName(outline[0].name);
+          }
+        } else {
+          setSelectedSymbolName('');
+          // Load file snippet lines 1..60 when file has no AST symbols
+          fastAstApi
+            .getSnippet(undefined, selectedFile, 1, 60)
+            .then((snip) => {
+              if (!cancelled) setSnippetData(snip);
+            })
+            .catch(() => {});
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setApiError(err?.message || 'Failed to load file outline.');
+          setIsLoadingOutline(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedFile]);
 
-  // When selected symbol changes, fetch snippet and call graph
+  // 3. When selectedSymbolName changes, load bounded snippet, call graph, and similar symbols
   useEffect(() => {
-    if (!selectedSymbol) return;
-    const cleanSym = selectedSymbol.split('.').pop() || selectedSymbol;
+    if (!selectedSymbolName) return;
+    let cancelled = false;
     setIsLoadingSnippet(true);
-    fastAstApi
-      .getSnippet({ symbol: cleanSym, filePath: selectedFile })
-      .then((data) => {
-        setSnippetData(data);
-        setIsLoadingSnippet(false);
-      })
-      .catch(() => setIsLoadingSnippet(false));
 
-    fastAstApi.getCallGraph(cleanSym).then((cg) => {
-      setCallGraph(cg);
+    Promise.all([
+      fastAstApi.getSnippet(selectedSymbolName, selectedFile || undefined).catch(() => null),
+      fastAstApi.getCallGraph(selectedSymbolName).catch(() => ({
+        symbol: selectedSymbolName,
+        callers: [],
+        callees: [],
+      })),
+      fastAstApi.getSimilarSymbols(selectedSymbolName, 6).catch(() => []),
+    ]).then(([snip, cg, sims]) => {
+      if (cancelled) return;
+      setSnippetData(snip);
+      setCallGraph({ callers: cg.callers || [], callees: cg.callees || [] });
+      setSimilarSymbols(sims || []);
+      setIsLoadingSnippet(false);
     });
-  }, [selectedSymbol, selectedFile]);
 
-  const filteredFiles = files.filter((f) => {
-    const matchesQuery = f.path.toLowerCase().includes(fileFilter.toLowerCase());
-    const matchesCat =
-      categoryFilter === 'all' || f.category.toLowerCase() === categoryFilter;
-    return matchesQuery && matchesCat;
-  });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSymbolName, selectedFile]);
 
-  const handleCopyEvidence = () => {
-    const evidenceText = JSON.stringify(
-      {
-        target_file: selectedFile,
-        target_symbol: selectedSymbol,
-        outline: outline?.classes || outline?.functions || [],
-        snippet: snippetData?.snippet || '',
-        callers: callGraph?.callers || [],
-        callees: callGraph?.callees || [],
-      },
-      null,
-      2
+  const activeSymbolObj: SymbolRecord | undefined = useMemo(
+    () => outlineSymbols.find((s) => s.name === selectedSymbolName) || outlineSymbols[0],
+    [outlineSymbols, selectedSymbolName]
+  );
+
+  const filteredFiles = useMemo(() => {
+    const q = fileFilter.trim().toLowerCase();
+    if (!q) return files;
+    return files.filter(
+      (f) => f.path.toLowerCase().includes(q) || f.language.toLowerCase().includes(q)
     );
-    navigator.clipboard.writeText(evidenceText);
-    setCopiedEvidence(true);
-    setTimeout(() => setCopiedEvidence(false), 2000);
+  }, [files, fileFilter]);
+
+  const filteredOutline = useMemo(() => {
+    const q = symbolFilter.trim().toLowerCase();
+    if (!q) return outlineSymbols;
+    return outlineSymbols.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        s.kind.toLowerCase().includes(q) ||
+        (s.signature || '').toLowerCase().includes(q)
+    );
+  }, [outlineSymbols, symbolFilter]);
+
+  const snippetLines = useMemo(() => {
+    if (!snippetData?.content) return [];
+    return snippetData.content.split('\n');
+  }, [snippetData]);
+
+  const handleSelectFile = (path: string) => {
+    setSelectedFile(path);
+    setSearchParams({ file: path });
+  };
+
+  const handleSelectSymbol = (symName: string, filePath?: string) => {
+    if (filePath && filePath !== selectedFile) {
+      setSelectedFile(filePath);
+      setSelectedSymbolName(symName);
+      setSearchParams({ file: filePath, symbol: symName });
+    } else {
+      setSelectedSymbolName(symName);
+      setSearchParams({ file: selectedFile, symbol: symName });
+    }
   };
 
   return (
-    <div className="explore-page-layout">
-      {/* 1. LEFT PANEL: File & Symbol Hierarchy (280px) */}
-      <aside className="explore-left-panel">
-        <div className="explore-panel-header">
-          <div className="flex-between">
-            <span className="panel-sub-title">File Navigator</span>
-            <span className="count-chip">{files.length || 142} files</span>
+    <div className="explore-layout">
+      {/* 1. LEFT PANEL: Repository File Tree & AST Outline */}
+      <aside className="explore-left">
+        {/* Files List Section */}
+        <div className="subpanel files-subpanel">
+          <div className="subpanel-header">
+            <span className="material-symbols-outlined text-primary text-sm">folder_open</span>
+            <span className="subpanel-title">Indexed Files ({filteredFiles.length})</span>
           </div>
-          <div className="search-box">
-            <span className="material-symbols-outlined text-sm text-outline">filter_alt</span>
+          <div className="filter-box">
             <input
               type="text"
-              placeholder="Filter files (*visitor, parser)..."
               value={fileFilter}
               onChange={(e) => setFileFilter(e.target.value)}
-              className="filter-input"
+              placeholder="Filter files by path or language..."
+              className="filter-input font-code"
             />
           </div>
-          <div className="category-pills">
-            {(['all', 'source', 'test', 'config', 'docs'] as const).map((cat) => (
-              <button
-                key={cat}
-                className={`cat-pill ${categoryFilter === cat ? 'cat-pill-active' : ''}`}
-                onClick={() => setCategoryFilter(cat)}
-              >
-                {cat.charAt(0).toUpperCase() + cat.slice(1)}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* File List */}
-        <div className="file-tree-scroll">
-          <div className="folder-label">
-            <span className="material-symbols-outlined text-sm text-primary">folder_open</span>
-            <span className="font-semibold text-xs">fastAST/</span>
-          </div>
-
-          <div className="file-items-list">
-            {filteredFiles.map((f) => {
-              const isSelected = f.path === selectedFile;
-              return (
-                <div
-                  key={f.id}
-                  className={`file-row ${isSelected ? 'file-row-selected' : ''}`}
-                  onClick={() => setSelectedFile(f.path)}
-                >
-                  <div className="file-row-left">
-                    <span className="material-symbols-outlined text-sm file-icon">
-                      {f.language === 'python'
-                        ? 'code'
-                        : f.language === 'rust'
-                        ? 'settings_ethernet'
-                        : 'description'}
+          <div className="subpanel-list font-code">
+            {isLoadingFiles ? (
+              <div className="empty-msg">Loading files...</div>
+            ) : filteredFiles.length > 0 ? (
+              filteredFiles.map((f) => {
+                const isSelected = f.path === selectedFile;
+                return (
+                  <div
+                    key={f.path}
+                    className={`tree-row ${isSelected ? 'tree-row-active' : ''}`}
+                    onClick={() => handleSelectFile(f.path)}
+                    title={`${f.path} (${f.language}, ${f.lines} lines)`}
+                  >
+                    <span className="tree-path truncate">{f.path}</span>
+                    <span className="tree-meta">
+                      {f.symbol_count !== undefined && f.symbol_count > 0
+                        ? `${f.symbol_count} sym`
+                        : `${f.lines}L`}
                     </span>
-                    <span className="file-name truncate">{f.path}</span>
                   </div>
-                  <div className="file-row-right">
-                    <span className="line-count">{f.total_lines}L</span>
-                    <span className="lang-tag">{f.language}</span>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            ) : (
+              <div className="empty-msg">No matching files</div>
+            )}
           </div>
         </div>
 
-        <div className="explore-panel-footer">
-          <div className="status-indicator">
-            <span className="status-pip" />
-            <span>{files.length || 142} files indexed</span>
+        {/* File AST Symbols Section */}
+        <div className="subpanel outline-subpanel">
+          <div className="subpanel-header">
+            <span className="material-symbols-outlined text-secondary text-sm">data_object</span>
+            <span className="subpanel-title">
+              File Symbols ({filteredOutline.length})
+            </span>
           </div>
-          <span className="stale-count">0 stale</span>
+          <div className="filter-box">
+            <input
+              type="text"
+              value={symbolFilter}
+              onChange={(e) => setSymbolFilter(e.target.value)}
+              placeholder="Filter symbols in file..."
+              className="filter-input font-code"
+            />
+          </div>
+          <div className="subpanel-list font-code">
+            {isLoadingOutline ? (
+              <div className="empty-msg">Loading AST outline...</div>
+            ) : filteredOutline.length > 0 ? (
+              filteredOutline.map((sym) => {
+                const isSelected = sym.name === selectedSymbolName;
+                return (
+                  <div
+                    key={`${sym.id}-${sym.start_line}`}
+                    className={`tree-row ${isSelected ? 'tree-row-active' : ''}`}
+                    onClick={() => handleSelectSymbol(sym.name)}
+                  >
+                    <div className="sym-row-left">
+                      <span className={`sym-kind-tag kind-${sym.kind.toLowerCase()}`}>
+                        {sym.kind.slice(0, 3).toUpperCase()}
+                      </span>
+                      <span className="tree-path truncate">{sym.name}</span>
+                    </div>
+                    <span className="tree-meta">
+                      L{sym.start_line}–{sym.end_line}
+                    </span>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="empty-msg">No AST symbols extracted in this file</div>
+            )}
+          </div>
         </div>
       </aside>
 
-      {/* 2. CENTER WORKSPACE: Bounded Code & Symbol Inspector Canvas */}
-      <main className="explore-center-canvas">
-        {/* Breadcrumb Header */}
-        <div className="canvas-header">
-          <div className="breadcrumb-wrap">
-            <span className="text-outline">fastAST</span>
-            <span className="text-outline">/</span>
-            <span className="text-primary font-semibold flex items-center gap-1">
-              <span className="material-symbols-outlined text-sm">feed</span>
-              {selectedFile}
-            </span>
-            <span className="meta-tag">{outline?.language || 'source'}</span>
-            <span className="meta-tag">{outline?.total_lines || files.find(f => f.path === selectedFile)?.total_lines || 120} LOC</span>
-            <span className="meta-tag text-tertiary">SQLite WAL Indexed</span>
-          </div>
-
-          <div className="canvas-view-mode">
-            <button className="view-mode-btn view-mode-btn-active">AST Outline</button>
-            <button className="view-mode-btn">Bounded Snippet</button>
-            <button className="view-mode-btn">Call Neighborhood</button>
-          </div>
-        </div>
-
-        {/* Content Area */}
-        <div className="canvas-content-scroll">
-          {/* Quick Action Bar */}
-          <div className="action-bar-strip">
-            <div className="scope-info">
-              <span className="scope-title">Target Scope:</span>
-              <span className="scope-val font-code">
-                {selectedFile} [Lines 1-{outline?.total_lines || files.find(f => f.path === selectedFile)?.total_lines || 100}]
-              </span>
-            </div>
-            <div className="action-bar-btns">
-              <button className="btn-canvas-action" onClick={handleCopyEvidence}>
-                <span className="material-symbols-outlined text-tertiary text-sm">content_copy</span>
-                <span>{copiedEvidence ? 'Copied Evidence!' : 'Extract Evidence'}</span>
-              </button>
-              <button
-                className="btn-canvas-action btn-purple"
-                onClick={() => {
-                  window.location.hash = '#/globe';
-                }}
-              >
-                <span className="material-symbols-outlined text-sm">bubble_chart</span>
-                <span>Galaxy Graph</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Active Bounded Snippet Box */}
-          <div className="mb-4">
-            <div className="flex-between pb-2 font-code text-xs text-outline">
-              <span className="flex items-center gap-1">
-                <span className="material-symbols-outlined text-sm text-primary">data_object</span>
-                Active Bounded Window: <strong className="text-on-surface">{selectedSymbol}</strong>
-              </span>
-              <span>{snippetData?.snippet ? `${snippetData.snippet.split('\n').length} lines bounded` : 'Select symbol'}</span>
-            </div>
-
-            {isLoadingSnippet ? (
-              <div className="code-snippet-box p-6 text-center text-outline font-code text-xs">
-                Fetching bounded snippet from SQLite...
-              </div>
-            ) : snippetData && snippetData.snippet ? (
-              <div className="code-snippet-box">
-                <div className="omission-line">
-                  <span className="line-num">...</span>
-                  <span className="omission-text">
-                    ··· [{snippetData.file_path || selectedFile}:{snippetData.start_line ?? 1}-{snippetData.end_line ?? 'end'} • Bounded AST definition for {selectedSymbol}] ···
-                  </span>
-                </div>
-                {snippetData.snippet.split('\n').map((line: string, idx: number) => {
-                  const lineNum = (snippetData.start_line ?? 1) + idx;
-                  const isHighlighted = idx < 2;
-                  return (
-                    <div key={idx} className={`code-line ${isHighlighted ? 'code-line-highlight' : ''}`}>
-                      <span className={`line-num ${isHighlighted ? 'text-primary font-bold' : ''}`}>{lineNum}</span>
-                      <div className="code-text font-code text-xs whitespace-pre">{line || ' '}</div>
-                    </div>
-                  );
-                })}
-                {snippetData.is_truncated && (
-                  <div className="omission-line">
-                    <span className="line-num">...</span>
-                    <span className="omission-text">··· [Remaining lines omitted to enforce strict token budget] ···</span>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="code-snippet-box p-6 text-center text-outline font-code text-xs">
-                Select a class, method, or function below to inspect its bounded context window.
-              </div>
+      {/* 2. CENTER WORKSPACE: Bounded Snippet / AST Outline / Call Neighborhood */}
+      <main className="explore-center">
+        {/* Top File & Mode Bar */}
+        <div className="center-toolbar">
+          <div className="breadcrumb font-code">
+            <span className="material-symbols-outlined text-primary text-sm">description</span>
+            <span className="text-on-surface font-semibold">{selectedFile || 'Select a file'}</span>
+            {selectedSymbolName && (
+              <>
+                <span className="text-outline">/</span>
+                <span className="text-primary font-bold">{selectedSymbolName}</span>
+              </>
             )}
           </div>
 
-          {/* Classes & Methods Section */}
-          {outline?.classes && outline.classes.length > 0 && (
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wider text-outline mb-2">
-                Classes & Methods ({outline.classes.length})
-              </div>
-              {outline.classes.map((cls, cIdx) => (
-                <section key={cIdx} className="scope-card mb-3">
-                  <div className="scope-card-header">
-                    <div className="card-header-left">
-                      <span className="badge-class">Class</span>
-                      <span
-                        className="font-code font-semibold text-on-surface cursor-pointer hover:text-primary transition-colors"
-                        onClick={() => setSelectedSymbol(cls.name)}
-                      >
-                        {cls.name}
-                      </span>
-                      <span className="text-outline font-code text-xs">
-                        lines {cls.start_line}-{cls.end_line} ({cls.methods?.length || 0} methods)
-                      </span>
-                    </div>
-                    <div className="card-header-right font-code text-xs">
-                      <span className="text-tertiary">AST Node</span>
-                    </div>
-                  </div>
+          <div className="view-tabs">
+            <button
+              className={`tab-btn ${activeTab === 'snippet' ? 'tab-btn-active' : ''}`}
+              onClick={() => setActiveTab('snippet')}
+            >
+              Bounded Snippet
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'outline' ? 'tab-btn-active' : ''}`}
+              onClick={() => setActiveTab('outline')}
+            >
+              AST Outline ({outlineSymbols.length})
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'calls' ? 'tab-btn-active' : ''}`}
+              onClick={() => setActiveTab('calls')}
+            >
+              Call Neighborhood ({callGraph.callers.length + callGraph.callees.length})
+            </button>
+          </div>
 
-                  {cls.methods && cls.methods.length > 0 && (
-                    <div className="methods-quick-row">
-                      {cls.methods.map((m, mIdx) => {
-                        const isMethodActive =
-                          selectedSymbol === m.name ||
-                          selectedSymbol === `${cls.name}.${m.name}`;
-                        return (
-                          <span
-                            key={mIdx}
-                            className={`method-pill ${isMethodActive ? 'method-pill-active' : ''}`}
-                            onClick={() => setSelectedSymbol(`${cls.name}.${m.name}`)}
-                          >
-                            <span
-                              className={`dot ${isMethodActive ? 'dot-cyan animate-pulse' : 'dot-emerald'}`}
-                            />
-                            {m.name}() {isMethodActive ? '[Active]' : ''}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                </section>
-              ))}
+          <div className="toolbar-actions">
+            {selectedSymbolName && (
+              <>
+                <button
+                  className="act-btn act-btn-secondary"
+                  onClick={() =>
+                    navigate(`/evidence?q=${encodeURIComponent(selectedSymbolName)}`)
+                  }
+                >
+                  <span className="material-symbols-outlined text-xs">manage_search</span>
+                  <span>Evidence</span>
+                </button>
+                <button
+                  className="act-btn act-btn-primary"
+                  onClick={() =>
+                    navigate(`/globe?symbol=${encodeURIComponent(selectedSymbolName)}`)
+                  }
+                >
+                  <span className="material-symbols-outlined text-xs">public</span>
+                  <span>Focus in Globe</span>
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {apiError && (
+          <div className="p-3">
+            <div className="api-error-banner">
+              <div>{apiError}</div>
+              <button className="api-retry-btn" onClick={loadFiles}>
+                Retry
+              </button>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Functions Section */}
-          {outline?.functions && outline.functions.length > 0 && (
-            <div className="mt-3">
-              <div className="text-xs font-semibold uppercase tracking-wider text-outline mb-2">
-                Module Functions ({outline.functions.length})
-              </div>
-              {outline.functions.map((fn, fIdx) => {
-                const isFnActive = selectedSymbol === fn.name;
-                return (
-                  <section
-                    key={fIdx}
-                    className={`scope-card mb-3 ${isFnActive ? 'border-primary/50' : ''}`}
-                  >
-                    <div className="scope-card-header">
-                      <div className="card-header-left">
-                        <span className="badge-func">{fn.kind || 'Function'}</span>
-                        <span className="font-code font-semibold text-on-surface">{fn.name}</span>
-                      </div>
-                      <div className="card-header-right font-code text-xs">
-                        <span className="text-outline">lines {fn.start_line}-{fn.end_line}</span>
-                      </div>
-                    </div>
-
-                    <div className="func-details-row">
-                      <div className="func-desc">
-                        <span className="font-code text-xs text-outline truncate block max-w-lg">
-                          {fn.signature || `def ${fn.name}(...)`}
-                        </span>
-                      </div>
-                      <button
-                        className={`btn-snippet-expand ${isFnActive ? 'bg-primary/20 text-primary' : ''}`}
-                        onClick={() => setSelectedSymbol(fn.name)}
-                      >
-                        {isFnActive ? 'Focused' : 'Focus Symbol'}
-                      </button>
-                    </div>
-                  </section>
-                );
-              })}
+        {/* Tab 1: Bounded Snippet View */}
+        {activeTab === 'snippet' && (
+          <div className="code-viewer-wrap">
+            <div className="code-meta-bar font-code">
+              <span>
+                {snippetData?.file_path || selectedFile} • Lines{' '}
+                {snippetData?.start_line ?? activeSymbolObj?.start_line ?? 1}–
+                {snippetData?.end_line ?? activeSymbolObj?.end_line ?? 1}
+              </span>
+              <span className="text-tertiary">
+                Bounded AST Window (~{snippetData?.tokens || Math.max(10, snippetLines.length * 7)}{' '}
+                tokens)
+              </span>
             </div>
-          )}
 
-          {/* Other Symbols Section */}
-          {outline?.other_symbols && outline.other_symbols.length > 0 && (
-            <div className="mt-3">
-              <div className="text-xs font-semibold uppercase tracking-wider text-outline mb-2">
-                Type & Interface Definitions ({outline.other_symbols.length})
-              </div>
-              <section className="scope-card">
-                <div className="interface-fields-grid">
-                  {outline.other_symbols.map((sym, sIdx) => (
-                    <div
-                      key={sIdx}
-                      className="field-card cursor-pointer hover:border-primary/50 transition-colors"
-                      onClick={() => setSelectedSymbol(sym.name)}
+            <div className="code-scroll font-code">
+              {isLoadingSnippet ? (
+                <div className="p-6 text-outline">Extracting bounded AST snippet...</div>
+              ) : snippetLines.length > 0 ? (
+                snippetLines.map((line, idx) => {
+                  const lineNo = (snippetData?.start_line ?? 1) + idx;
+                  return (
+                    <div key={idx} className="code-line">
+                      <span className="line-num">{lineNo}</span>
+                      <span className="line-text">{line || ' '}</span>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="p-6 text-outline">
+                  Select a symbol or file to view its bounded source window.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tab 2: Full File AST Outline Table */}
+        {activeTab === 'outline' && (
+          <div className="outline-table-wrap font-code">
+            {outlineSymbols.length > 0 ? (
+              <table className="ast-table">
+                <thead>
+                  <tr>
+                    <th>Kind</th>
+                    <th>Symbol</th>
+                    <th>Signature</th>
+                    <th>Lines</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {outlineSymbols.map((sym) => (
+                    <tr
+                      key={`${sym.id}-${sym.start_line}`}
+                      className={sym.name === selectedSymbolName ? 'row-selected' : ''}
+                      onClick={() => {
+                        handleSelectSymbol(sym.name);
+                        setActiveTab('snippet');
+                      }}
                     >
-                      <span className="field-name font-code text-primary">{sym.name}</span>
-                      <span className="field-default">{sym.kind} • Lines {sym.start_line}-{sym.end_line}</span>
+                      <td>
+                        <span className={`sym-kind-tag kind-${sym.kind.toLowerCase()}`}>
+                          {sym.kind}
+                        </span>
+                      </td>
+                      <td className="text-primary font-semibold">{sym.name}</td>
+                      <td className="text-on-surface-variant truncate max-w-md">
+                        {sym.signature}
+                      </td>
+                      <td className="text-outline">
+                        L{sym.start_line}–{sym.end_line}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="p-6 text-outline">No AST symbols found in {selectedFile}.</div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 3: Call Neighborhood View */}
+        {activeTab === 'calls' && (
+          <div className="calls-tab-wrap font-code">
+            <div className="calls-col">
+              <div className="calls-col-hdr">
+                Inbound Callers ({callGraph.callers.length})
+              </div>
+              {callGraph.callers.length > 0 ? (
+                callGraph.callers.map((c, i) => (
+                  <div
+                    key={i}
+                    className="call-card"
+                    onClick={() => c.caller && handleSelectSymbol(c.caller, c.file_path)}
+                  >
+                    <span className="text-primary font-semibold">{c.caller}</span>
+                    <span className="text-outline text-xs">
+                      {c.file_path}:L{c.line_number}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="text-outline text-xs">No inbound callers recorded</div>
+              )}
+            </div>
+
+            <div className="calls-col">
+              <div className="calls-col-hdr">
+                Outbound Callees ({callGraph.callees.length})
+              </div>
+              {callGraph.callees.length > 0 ? (
+                callGraph.callees.map((c, i) => (
+                  <div
+                    key={i}
+                    className="call-card"
+                    onClick={() => c.callee && handleSelectSymbol(c.callee, c.file_path)}
+                  >
+                    <span className="text-tertiary font-semibold">{c.callee}</span>
+                    <span className="text-outline text-xs">
+                      {c.file_path}:L{c.line_number}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="text-outline text-xs">No outbound callees recorded</div>
+              )}
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* 3. RIGHT INSPECTOR: Symbol Details, Callers, Callees, Similar */}
+      <aside className="explore-right">
+        <div className="subpanel-header">
+          <span className="material-symbols-outlined text-primary text-sm">info</span>
+          <span className="subpanel-title">Symbol Details</span>
+        </div>
+
+        {activeSymbolObj ? (
+          <div className="right-scroll">
+            <div className="detail-box">
+              <div className="flex justify-between items-center">
+                <span className="sym-kind-tag">{activeSymbolObj.kind.toUpperCase()}</span>
+                <span className="font-code text-xs text-outline">
+                  L{activeSymbolObj.start_line}–{activeSymbolObj.end_line}
+                </span>
+              </div>
+              <div className="detail-sym-name font-code">{activeSymbolObj.name}</div>
+              <div className="font-code text-xs text-outline truncate">
+                {activeSymbolObj.file_path || selectedFile}
+              </div>
+              {activeSymbolObj.signature && (
+                <pre className="detail-sig font-code">{activeSymbolObj.signature}</pre>
+              )}
+              {activeSymbolObj.docstring && (
+                <p className="detail-doc">{activeSymbolObj.docstring}</p>
+              )}
+            </div>
+
+            {/* Callers */}
+            <div className="detail-box">
+              <div className="box-hdr font-code">
+                Inbound Callers ({callGraph.callers.length})
+              </div>
+              {callGraph.callers.length > 0 ? (
+                <div className="mini-list font-code">
+                  {callGraph.callers.slice(0, 10).map((c, i) => (
+                    <div
+                      key={i}
+                      className="mini-item"
+                      onClick={() => c.caller && handleSelectSymbol(c.caller, c.file_path)}
+                    >
+                      <span className="text-primary truncate">{c.caller}</span>
+                      <span className="text-outline text-xs">L{c.line_number}</span>
                     </div>
                   ))}
                 </div>
-              </section>
+              ) : (
+                <div className="text-xs text-outline font-code">None</div>
+              )}
             </div>
-          )}
 
-          {!outline?.classes?.length && !outline?.functions?.length && !outline?.other_symbols?.length && (
-            <div className="scope-card p-6 text-center text-outline font-code text-xs">
-              No top-level AST symbols parsed in this file. File total lines: {outline?.total_lines || 0}.
+            {/* Callees */}
+            <div className="detail-box">
+              <div className="box-hdr font-code">
+                Outbound Callees ({callGraph.callees.length})
+              </div>
+              {callGraph.callees.length > 0 ? (
+                <div className="mini-list font-code">
+                  {callGraph.callees.slice(0, 10).map((c, i) => (
+                    <div
+                      key={i}
+                      className="mini-item"
+                      onClick={() => c.callee && handleSelectSymbol(c.callee, c.file_path)}
+                    >
+                      <span className="text-tertiary truncate">{c.callee}</span>
+                      <span className="text-outline text-xs">L{c.line_number}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs text-outline font-code">None</div>
+              )}
             </div>
-          )}
-        </div>
-      </main>
 
-      {/* 3. RIGHT INSPECTOR PANEL: Symbol Context & Call Graph Metadata */}
-      <aside className="explore-right-panel">
-        <div className="panel-header">
-          <span className="panel-title font-semibold">Symbol Context & Metadata</span>
-          <span className="kind-badge">
-            {callGraph ? 'AST GRAPH' : 'METHOD'}
-          </span>
-        </div>
-
-        <div className="panel-scrollable">
-          {/* Active Focus Symbol */}
-          <div className="focus-symbol-box">
-            <span className="box-label">Active Focus Symbol</span>
-            <div className="focus-name-card">
-              <span className="focus-sym-title font-semibold truncate block">{selectedSymbol}</span>
-              <span className="focus-sym-sig font-code text-xs text-outline truncate block">
-                {selectedFile}
-              </span>
-            </div>
-          </div>
-
-          {/* Callers (Inbound) */}
-          <div className="callers-section">
-            <div className="flex-between">
-              <span className="box-label">
-                Inbound Callers ({callGraph?.caller_count ?? 0})
-              </span>
-              <span className="font-code text-xs text-outline">SQLite Edges</span>
-            </div>
-            <div className="caller-rows">
-              {callGraph && callGraph.callers && callGraph.callers.length > 0 ? (
-                callGraph.callers.map((c, idx) => (
-                  <div
-                    key={idx}
-                    className="caller-row cursor-pointer hover:bg-surface-high transition-colors"
-                    onClick={() => {
-                      setSelectedSymbol(c.caller);
-                      if (c.file_path) setSelectedFile(c.file_path);
-                    }}
-                    title={`Focus caller ${c.caller}`}
-                  >
-                    <div className="caller-main">
-                      <span className="material-symbols-outlined text-xs text-primary">call_received</span>
-                      <span className="font-code text-xs font-semibold text-primary truncate">
-                        {c.caller}
+            {/* Similar Symbols */}
+            <div className="detail-box">
+              <div className="box-hdr font-code">
+                Similar Symbols ({similarSymbols.length})
+              </div>
+              {similarSymbols.length > 0 ? (
+                <div className="mini-list font-code">
+                  {similarSymbols.map((s, i) => (
+                    <div
+                      key={i}
+                      className="mini-item"
+                      onClick={() => handleSelectSymbol(s.name, s.file_path)}
+                    >
+                      <span className="text-secondary truncate">{s.name}</span>
+                      <span className="text-outline text-xs">
+                        {Math.round(s.similarity * 100)}%
                       </span>
                     </div>
-                    <span className="caller-loc font-code">
-                      {c.file_path?.split('/').pop() || 'file'}:{c.line_number || 1}
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <div className="p-2 text-xs text-outline font-code">
-                  No inbound callers detected in graph.
+                  ))}
                 </div>
+              ) : (
+                <div className="text-xs text-outline font-code">None detected</div>
               )}
             </div>
           </div>
-
-          {/* Callees (Outbound) */}
-          <div className="callers-section">
-            <div className="flex-between">
-              <span className="box-label">
-                Outbound Callees ({callGraph?.callee_count ?? 0})
-              </span>
-              <span className="font-code text-xs text-outline">SQLite Edges</span>
-            </div>
-            <div className="caller-rows">
-              {callGraph && callGraph.callees && callGraph.callees.length > 0 ? (
-                callGraph.callees.map((c, idx) => (
-                  <div
-                    key={idx}
-                    className="caller-row cursor-pointer hover:bg-surface-high transition-colors"
-                    onClick={() => {
-                      setSelectedSymbol(c.callee);
-                      if (c.file_path) setSelectedFile(c.file_path);
-                    }}
-                    title={`Focus callee ${c.callee}`}
-                  >
-                    <div className="caller-main">
-                      <span className="material-symbols-outlined text-xs text-secondary">call_made</span>
-                      <span className="font-code text-xs font-semibold text-secondary truncate">
-                        {c.callee}
-                      </span>
-                    </div>
-                    <span className="caller-loc font-code">
-                      {c.file_path?.split('/').pop() || 'file'}:{c.line_number || 1}
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <div className="p-2 text-xs text-outline font-code">
-                  No outbound invocations recorded.
-                </div>
-              )}
-            </div>
+        ) : (
+          <div className="p-4 text-xs text-outline font-code">
+            Select a symbol to inspect metadata and relationships.
           </div>
-
-          {/* Action Trigger */}
-          <div className="pt-2">
-            <button className="btn-action btn-action-copy w-full" onClick={handleCopyEvidence}>
-              <span className="material-symbols-outlined text-sm">content_copy</span>
-              <span>{copiedEvidence ? 'Copied Bundle!' : 'Copy Evidence Window'}</span>
-            </button>
-          </div>
-        </div>
+        )}
       </aside>
 
       <style>{`
-        .explore-page-layout {
-          position: relative;
+        .explore-layout {
           width: 100%;
-          height: calc(100vh - 56px);
+          height: 100%;
           display: flex;
           background: var(--surface-lowest);
           overflow: hidden;
         }
-
-        /* 1. Left Panel */
-        .explore-left-panel {
-          width: 280px;
+        .explore-left {
+          width: 310px;
           flex-shrink: 0;
           height: 100%;
-          background: var(--surface);
+          background: var(--surface-low);
           border-right: 1px solid var(--hairline);
           display: flex;
           flex-direction: column;
-          justify-content: space-between;
         }
-        .explore-panel-header {
-          padding: 12px;
-          background: var(--surface-low);
-          border-bottom: 1px solid var(--hairline);
+        .subpanel {
           display: flex;
           flex-direction: column;
-          gap: 8px;
+          min-height: 0;
         }
-        .flex-between {
+        .files-subpanel {
+          flex: 1.1;
+          border-bottom: 1px solid var(--hairline);
+        }
+        .outline-subpanel {
+          flex: 1;
+        }
+        .subpanel-header {
+          height: 38px;
+          padding: 0 12px;
+          background: var(--surface);
+          border-bottom: 1px solid var(--hairline);
           display: flex;
           align-items: center;
-          justify-content: space-between;
+          gap: 7px;
+          flex-shrink: 0;
         }
-        .panel-sub-title {
-          font-family: var(--font-mono);
-          font-size: 11px;
+        .subpanel-title {
+          font-size: 11.5px;
+          font-weight: 700;
           text-transform: uppercase;
-          color: var(--outline);
-          letter-spacing: 0.05em;
+          letter-spacing: 0.04em;
+          color: var(--on-surface);
         }
-        .count-chip {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          padding: 1px 6px;
-          background: rgba(56, 189, 248, 0.15);
-          color: var(--primary);
-          border-radius: 4px;
-        }
-        .search-box {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          background: var(--surface-lowest);
-          padding: 4px 8px;
-          border-radius: 4px;
-          border: 1px solid var(--hairline);
+        .filter-box {
+          padding: 6px 8px;
+          border-bottom: 1px solid var(--hairline);
+          background: var(--surface-low);
         }
         .filter-input {
-          background: transparent;
-          border: none;
-          color: var(--on-surface);
-          font-family: var(--font-mono);
-          font-size: 11px;
           width: 100%;
+          height: 26px;
+          background: var(--surface-lowest);
+          border: 1px solid var(--hairline);
+          border-radius: 4px;
+          padding: 0 8px;
+          color: var(--on-surface);
+          font-size: 11px;
           outline: none;
         }
-        .category-pills {
-          display: flex;
-          gap: 4px;
-          overflow-x: auto;
-          padding-top: 2px;
+        .filter-input:focus {
+          border-color: var(--primary);
         }
-        .cat-pill {
-          background: var(--surface-container);
-          border: none;
-          color: var(--outline);
-          font-family: var(--font-mono);
-          font-size: 10px;
-          padding: 2px 7px;
-          border-radius: 3px;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .cat-pill-active {
-          background: var(--primary);
-          color: var(--surface-lowest);
-          font-weight: 600;
-        }
-        .file-tree-scroll {
+        .subpanel-list {
           flex: 1;
           overflow-y: auto;
-          padding: 8px;
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .folder-label {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 6px;
-          color: var(--on-surface);
-        }
-        .file-items-list {
+          padding: 4px;
           display: flex;
           flex-direction: column;
           gap: 2px;
-          padding-left: 8px;
         }
-        .file-row {
+        .tree-row {
           display: flex;
           align-items: center;
           justify-content: space-between;
+          gap: 8px;
           padding: 5px 8px;
           border-radius: 4px;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .file-row:hover {
-          background: var(--surface-container);
-        }
-        .file-row-selected {
-          background: var(--surface-high);
-          box-shadow: inset 2px 0 0 0 var(--primary);
-        }
-        .file-row-left {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          overflow: hidden;
-        }
-        .file-icon {
-          color: var(--outline);
-        }
-        .file-row-selected .file-icon {
-          color: var(--primary);
-        }
-        .file-name {
-          font-family: var(--font-mono);
-          font-size: 11px;
+          font-size: 11.5px;
           color: var(--on-surface-variant);
+          cursor: pointer;
         }
-        .file-row-selected .file-name {
+        .tree-row:hover {
+          background: var(--surface);
+          color: var(--on-surface);
+        }
+        .tree-row-active {
+          background: var(--primary-container);
           color: var(--primary);
           font-weight: 600;
         }
-        .file-row-right {
-          display: flex;
-          align-items: center;
-          gap: 4px;
+        .tree-path {
+          flex: 1;
+          min-width: 0;
         }
-        .line-count {
-          font-family: var(--font-mono);
+        .tree-meta {
           font-size: 10px;
           color: var(--outline);
+          flex-shrink: 0;
         }
-        .lang-tag {
-          font-family: var(--font-mono);
-          font-size: 9px;
-          padding: 1px 4px;
-          border-radius: 3px;
-          background: var(--surface-lowest);
-          color: var(--outline);
-        }
-        .explore-panel-footer {
-          padding: 8px 12px;
-          background: var(--surface-low);
-          border-top: 1px solid var(--hairline);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          font-family: var(--font-mono);
-          font-size: 11px;
-        }
-        .status-indicator {
+        .sym-row-left {
           display: flex;
           align-items: center;
           gap: 6px;
-          color: var(--on-surface);
+          min-width: 0;
+          flex: 1;
         }
-        .status-pip {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: var(--tertiary-light);
+        .sym-kind-tag {
+          font-family: var(--font-mono);
+          font-size: 9.5px;
+          font-weight: 700;
+          padding: 1px 5px;
+          border-radius: 3px;
+          background: var(--surface-high);
+          color: var(--primary);
+          flex-shrink: 0;
         }
-        .stale-count {
+        .empty-msg {
+          padding: 16px;
+          text-align: center;
           color: var(--outline);
+          font-size: 11.5px;
         }
 
-        /* 2. Center Canvas */
-        .explore-center-canvas {
+        /* Center Workspace */
+        .explore-center {
           flex: 1;
+          height: 100%;
           display: flex;
           flex-direction: column;
+          min-width: 0;
           background: var(--surface-lowest);
-          overflow: hidden;
-          border-right: 1px solid var(--hairline);
         }
-        .canvas-header {
-          height: 48px;
-          padding: 0 16px;
+        .center-toolbar {
+          height: 44px;
+          padding: 0 14px;
           background: var(--surface);
           border-bottom: 1px solid var(--hairline);
           display: flex;
           align-items: center;
           justify-content: space-between;
+          gap: 12px;
+          flex-shrink: 0;
         }
-        .breadcrumb-wrap {
+        .breadcrumb {
           display: flex;
           align-items: center;
-          gap: 8px;
-          font-family: var(--font-mono);
+          gap: 6px;
           font-size: 12px;
+          min-width: 0;
+          overflow: hidden;
         }
-        .meta-tag {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          padding: 2px 6px;
-          background: var(--surface-container);
-          border-radius: 3px;
-          color: var(--on-surface-variant);
-        }
-        .canvas-view-mode {
+        .view-tabs {
           display: flex;
-          gap: 2px;
-          background: var(--surface-lowest);
-          padding: 2px;
-          border-radius: 4px;
+          gap: 4px;
+          background: var(--surface-low);
+          padding: 3px;
+          border-radius: 5px;
+          border: 1px solid var(--hairline);
         }
-        .view-mode-btn {
+        .tab-btn {
           background: transparent;
           border: none;
-          padding: 4px 10px;
-          border-radius: 3px;
-          font-size: 11px;
           color: var(--outline);
+          font-size: 11.5px;
+          font-weight: 600;
+          padding: 4px 10px;
+          border-radius: 4px;
           cursor: pointer;
         }
-        .view-mode-btn-active {
+        .tab-btn-active {
           background: var(--surface-high);
           color: var(--primary);
-          font-weight: 600;
         }
-        .canvas-content-scroll {
-          flex: 1;
-          overflow-y: auto;
-          padding: 16px;
+        .toolbar-actions {
           display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-        .action-bar-strip {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 8px 12px;
-          background: var(--surface-low);
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-        }
-        .scope-info {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .scope-title {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
-          text-transform: uppercase;
-        }
-        .scope-val {
-          font-size: 12px;
-          color: var(--on-surface);
-          background: var(--surface-container);
-          padding: 2px 8px;
-          border-radius: 4px;
-        }
-        .action-bar-btns {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .btn-canvas-action {
-          display: flex;
-          align-items: center;
           gap: 6px;
+        }
+        .act-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
           padding: 5px 10px;
           border-radius: 4px;
-          background: var(--surface-container);
-          border: 1px solid var(--hairline);
-          color: var(--on-surface);
           font-size: 11.5px;
-          font-weight: 500;
+          font-weight: 600;
           cursor: pointer;
-          transition: background 0.15s;
+          border: 1px solid var(--hairline);
         }
-        .btn-canvas-action:hover {
-          background: var(--surface-high);
+        .act-btn-secondary {
+          background: var(--surface-container);
+          color: var(--on-surface);
         }
-        .btn-purple {
-          background: var(--secondary-container);
-          color: var(--secondary-light);
-          border-color: rgba(168, 85, 247, 0.3);
+        .act-btn-primary {
+          background: var(--primary);
+          color: var(--on-primary);
+          border-color: transparent;
         }
 
-        .scope-card {
-          background: var(--surface);
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-          overflow: hidden;
+        .code-viewer-wrap {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          min-height: 0;
         }
-        .scope-card-header {
-          height: 36px;
-          padding: 0 12px;
+        .code-meta-bar {
+          padding: 6px 14px;
           background: var(--surface-low);
           border-bottom: 1px solid var(--hairline);
           display: flex;
-          align-items: center;
           justify-content: space-between;
-        }
-        .card-header-left {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .badge-class {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          padding: 2px 6px;
-          background: rgba(245, 158, 11, 0.15);
-          color: var(--amber);
-          border-radius: 3px;
-          text-transform: uppercase;
-          font-weight: 600;
-        }
-        .badge-func {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          padding: 2px 6px;
-          background: rgba(16, 185, 129, 0.15);
-          color: var(--tertiary-light);
-          border-radius: 3px;
-          text-transform: uppercase;
-          font-weight: 600;
-        }
-        .badge-interface {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          padding: 2px 6px;
-          background: rgba(129, 140, 248, 0.15);
-          color: #818cf8;
-          border-radius: 3px;
-          text-transform: uppercase;
-          font-weight: 600;
-        }
-        .card-header-right {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        .community-tag {
-          padding: 2px 6px;
-          background: var(--secondary-container);
-          color: var(--secondary-light);
-          border-radius: 3px;
-        }
-        .methods-quick-row {
-          padding: 8px 12px;
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-          background: var(--surface);
-          border-bottom: 1px solid var(--hairline);
-        }
-        .method-pill {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-family: var(--font-mono);
           font-size: 11px;
-          padding: 3px 8px;
-          background: var(--surface-container);
-          color: var(--on-surface-variant);
-          border-radius: 4px;
-          cursor: pointer;
+          color: var(--outline);
         }
-        .method-pill-active {
-          background: rgba(56, 189, 248, 0.18);
-          color: var(--primary);
-          box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
-        }
-        .code-snippet-box {
-          background: var(--surface-lowest);
-          padding: 12px;
-          font-family: var(--font-mono);
+        .code-scroll {
+          flex: 1;
+          overflow: auto;
+          padding: 10px 0;
           font-size: 12px;
-          line-height: 1.6;
-          overflow-x: auto;
-        }
-        .omission-line {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          color: rgba(135, 146, 154, 0.6);
-          padding: 2px 0;
-          font-style: italic;
-          font-size: 11px;
+          line-height: 1.55;
         }
         .code-line {
           display: flex;
-          align-items: flex-start;
-          gap: 12px;
-          padding: 2px 4px;
-          border-radius: 3px;
+          padding: 0 14px;
         }
         .code-line:hover {
-          background: rgba(30, 31, 38, 0.6);
-        }
-        .code-line-highlight {
-          background: rgba(56, 189, 248, 0.12);
+          background: rgba(56, 189, 248, 0.06);
         }
         .line-num {
-          width: 28px;
-          text-align: right;
+          width: 44px;
+          flex-shrink: 0;
           color: var(--outline);
           user-select: none;
-          font-size: 11px;
-          flex-shrink: 0;
+          text-align: right;
+          padding-right: 14px;
         }
-        .code-text {
-          flex: 1;
+        .line-text {
+          white-space: pre;
+          color: var(--on-surface);
         }
-        .kw { color: var(--secondary-light); font-weight: 600; }
-        .fn-name { color: var(--primary); font-weight: 700; }
-        .type-name { color: var(--amber); }
-        .num { color: var(--tertiary-light); }
 
-        .func-details-row {
-          padding: 12px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
+        .outline-table-wrap {
+          flex: 1;
+          overflow: auto;
+          padding: 14px;
         }
-        .func-desc {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
+        .ast-table {
+          width: 100%;
+          border-collapse: collapse;
           font-size: 12px;
-          color: var(--on-surface-variant);
         }
-        .func-metrics {
-          display: flex;
-          gap: 6px;
-        }
-        .mini-badge {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          padding: 2px 6px;
-          background: var(--surface-container);
-          border-radius: 3px;
+        .ast-table th {
+          text-align: left;
+          padding: 8px 10px;
+          border-bottom: 1px solid var(--hairline);
           color: var(--outline);
+          font-size: 10.5px;
+          text-transform: uppercase;
         }
-        .btn-snippet-expand {
-          background: var(--surface-container);
-          border: 1px solid var(--hairline);
-          color: var(--primary);
-          padding: 6px 12px;
-          border-radius: 4px;
-          font-size: 11px;
+        .ast-table td {
+          padding: 8px 10px;
+          border-bottom: 1px solid var(--hairline);
           cursor: pointer;
         }
+        .ast-table tr:hover td {
+          background: var(--surface);
+        }
+        .row-selected td {
+          background: var(--primary-container);
+        }
 
-        .interface-fields-grid {
-          padding: 12px;
+        .calls-tab-wrap {
+          flex: 1;
+          overflow: auto;
+          padding: 16px;
           display: grid;
           grid-template-columns: 1fr 1fr;
+          gap: 16px;
+        }
+        .calls-col {
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          padding: 12px;
+          display: flex;
+          flex-direction: column;
           gap: 8px;
         }
-        .field-card {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          background: var(--surface-container);
-          padding: 8px 10px;
-          border-radius: 4px;
-        }
-        .field-name {
-          color: var(--primary);
+        .calls-col-hdr {
           font-size: 11px;
-        }
-        .field-default {
+          text-transform: uppercase;
           color: var(--outline);
-          font-size: 10px;
+          font-weight: 700;
+          padding-bottom: 6px;
+          border-bottom: 1px solid var(--hairline);
+        }
+        .call-card {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 7px 10px;
+          background: var(--surface-low);
+          border: 1px solid var(--hairline);
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 12px;
+        }
+        .call-card:hover {
+          border-color: var(--primary);
         }
 
-        /* 3. Right Inspector Panel */
-        .explore-right-panel {
-          width: 320px;
+        /* Right Panel */
+        .explore-right {
+          width: 300px;
           flex-shrink: 0;
           height: 100%;
-          background: var(--surface);
+          background: var(--surface-low);
+          border-left: 1px solid var(--hairline);
           display: flex;
           flex-direction: column;
         }
-        .box-label {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
+        .right-scroll {
+          flex: 1;
+          overflow-y: auto;
+          padding: 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
         }
-        .focus-symbol-box {
+        .detail-box {
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          padding: 10px;
           display: flex;
           flex-direction: column;
           gap: 6px;
         }
-        .focus-name-card {
-          background: var(--surface-low);
-          padding: 10px;
-          border-radius: 4px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .focus-sym-title {
-          font-size: 13px;
+        .detail-sym-name {
+          font-size: 13.5px;
+          font-weight: 700;
           color: var(--on-surface);
           word-break: break-all;
         }
-        .community-box {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .comm-inner-card {
-          background: var(--surface-high);
-          padding: 10px;
-          border-radius: 4px;
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .comm-title-wrap {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .comm-inner-title {
-          font-size: 12px;
-          color: var(--on-surface);
-        }
-        .caller-rows {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-          padding-top: 4px;
-        }
-        .caller-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
+        .detail-sig {
+          margin: 0;
           padding: 6px 8px;
-          background: var(--surface-container);
+          background: var(--surface-lowest);
+          border: 1px solid var(--hairline);
           border-radius: 4px;
+          font-size: 11px;
+          color: var(--on-surface-variant);
+          white-space: pre-wrap;
+          overflow-x: auto;
+        }
+        .detail-doc {
+          margin: 0;
+          font-size: 11.5px;
+          color: var(--on-surface-variant);
+          line-height: 1.45;
+        }
+        .box-hdr {
+          font-size: 10px;
+          text-transform: uppercase;
+          color: var(--outline);
+          font-weight: 700;
+        }
+        .mini-list {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .mini-item {
+          display: flex;
+          justify-content: space-between;
+          gap: 6px;
+          padding: 4px 7px;
+          background: var(--surface-low);
+          border: 1px solid var(--hairline);
+          border-radius: 4px;
+          font-size: 11px;
           cursor: pointer;
         }
-        .caller-row:hover {
-          background: var(--surface-high);
-        }
-        .caller-main {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          overflow: hidden;
-        }
-        .caller-loc {
-          font-size: 10px;
-          color: var(--outline);
-          flex-shrink: 0;
+        .mini-item:hover {
+          border-color: var(--primary);
         }
       `}</style>
     </div>

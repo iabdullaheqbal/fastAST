@@ -1,37 +1,37 @@
-/* FastAST Obsidian Kinetic Design System (from Stitch design) */
+/* FastAST Lens Design System — Dense Engineering Workspace (CBM Lens inspired) */
 :root {
-  --surface-lowest: #0c0e14;
-  --surface-low: #191b22;
-  --surface: #111319;
-  --surface-container: #1e1f26;
-  --surface-high: #282a30;
-  --surface-highest: #33343b;
-  --surface-bright: #373940;
+  --surface-lowest: #0b0d13;
+  --surface-low: #12151e;
+  --surface: #161a24;
+  --surface-container: #1c212e;
+  --surface-high: #242a3a;
+  --surface-highest: #2e364a;
+  --surface-bright: #364056;
 
-  --on-surface: #e2e2eb;
-  --on-surface-variant: #bdc8d1;
-  --outline: #87929a;
-  --outline-variant: #3e484f;
-  --hairline: #232b3e;
+  --on-surface: #ebedf5;
+  --on-surface-variant: #c8d1dc;
+  --outline: #98a4b3;
+  --outline-variant: #4a5568;
+  --hairline: #252d3d;
 
   --primary: #38bdf8;
-  --primary-light: #8ed5ff;
-  --primary-container: rgba(56, 189, 248, 0.15);
-  --on-primary: #00354a;
+  --primary-light: #7dd3fc;
+  --primary-container: rgba(56, 189, 248, 0.14);
+  --on-primary: #06283d;
 
   --secondary: #a855f7;
-  --secondary-light: #ddb7ff;
-  --secondary-container: rgba(168, 85, 247, 0.15);
-  --on-secondary: #490080;
+  --secondary-light: #d8b4fe;
+  --secondary-container: rgba(168, 85, 247, 0.14);
+  --on-secondary: #3b0764;
 
   --tertiary: #10b981;
-  --tertiary-light: #56e5a9;
-  --tertiary-container: rgba(16, 185, 129, 0.15);
-  --on-tertiary: #003824;
+  --tertiary-light: #34d399;
+  --tertiary-container: rgba(16, 185, 129, 0.14);
+  --on-tertiary: #064e3b;
 
   --amber: #f59e0b;
   --error: #f43f5e;
-  --error-light: #ffb4ab;
+  --error-light: #fda4af;
 
   --font-body: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
@@ -63,11 +63,11 @@ html, body {
   background: var(--surface-lowest);
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--surface-container);
+  background: var(--surface-high);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--surface-highest);
+  background: var(--surface-bright);
 }
 
 /* Material Symbols helper */
@@ -75,7 +75,7 @@ html, body {
   font-family: 'Material Symbols Outlined';
   font-weight: normal;
   font-style: normal;
-  font-size: 20px;
+  font-size: 18px;
   line-height: 1;
   letter-spacing: normal;
   text-transform: none;
@@ -87,7 +87,53 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Utility & Layout Classes matching Stitch Tailwind tokens */
+/* Shared API Error Banner */
+.api-error-banner {
+  background: rgba(244, 63, 94, 0.12);
+  border: 1px solid rgba(244, 63, 94, 0.45);
+  color: #fecdd3;
+  padding: 10px 16px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.api-error-banner code {
+  font-family: var(--font-mono);
+  background: rgba(0, 0, 0, 0.35);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #fda4af;
+}
+
+.api-retry-btn {
+  background: var(--error);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.api-retry-btn:hover {
+  opacity: 0.9;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
+}
+
+/* Utility & Layout Classes */
 .bg-surface-lowest { background-color: var(--surface-lowest); }
 .bg-surface-low { background-color: var(--surface-low); }
 .bg-surface { background-color: var(--surface); }

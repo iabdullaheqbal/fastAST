@@ -1,247 +1,340 @@
 import React, { useState } from 'react';
-import type { RepoStats } from '../types';
+import type { HealthStatus, RepoStats } from '../types';
 
 interface AppHeaderProps {
   stats: RepoStats | null;
+  health: HealthStatus | null;
+  apiError: string | null;
+  onSearchSubmit: (query: string) => void;
   onReindex: () => void;
+  onRetryConnection: () => void;
   isReindexing: boolean;
-  onSearch: (q: string) => void;
 }
 
 export const AppHeader: React.FC<AppHeaderProps> = ({
   stats,
+  health,
+  apiError,
+  onSearchSubmit,
   onReindex,
+  onRetryConnection,
   isReindexing,
-  onSearch,
 }) => {
-  const [searchVal, setSearchVal] = useState('');
+  const [searchValue, setSearchValue] = useState('');
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      onSearch(searchVal);
+    if (e.key === 'Enter' && searchValue.trim()) {
+      onSearchSubmit(searchValue.trim());
     }
   };
 
-  const totalSymbols = stats?.symbols ?? 1330;
+  const isOnline = Boolean(health?.ok && !apiError);
+  const repoName = stats?.repo_name || health?.repo_name || 'fastAST';
+  const symbolCount = stats?.symbols ?? health?.symbol_count;
+  const fileCount = stats?.files ?? health?.file_count;
+  const edgeCount = stats?.edges ?? health?.edge_count;
 
   return (
     <header className="app-header">
-      {/* Left: Repo identifier and Status */}
+      {/* Left: Brand & Active Repository */}
       <div className="header-left">
-        <div className="repo-pill">
-          <span className="material-symbols-outlined icon-cyan">folder_open</span>
-          <span className="repo-path">fastAST</span>
-          <span className="repo-branch">main (v0.2.0)</span>
+        <div className="brand-title">
+          <span className="material-symbols-outlined brand-icon">hub</span>
+          <span className="brand-name">FastAST</span>
+          <span className="brand-tag">LENS</span>
         </div>
 
-        <div className="status-pill">
-          <span className={`status-dot ${isReindexing ? 'status-dot-reindexing' : 'status-dot-ready'}`} />
-          <span className="status-text">
-            {isReindexing ? 'Indexing AST...' : `Ready (${totalSymbols.toLocaleString()} symbols)`}
+        <div className="repo-badge" title={stats?.repo_path || health?.repo_path || ''}>
+          <span className="material-symbols-outlined text-xs text-outline">folder_code</span>
+          <span className="repo-name">{repoName}</span>
+          <span
+            className={`status-pill ${isOnline ? 'status-pill-online' : 'status-pill-offline'}`}
+            onClick={!isOnline ? onRetryConnection : undefined}
+            title={
+              isOnline
+                ? `Connected to ${health?.db_path || '.fastast.db'}`
+                : apiError || 'API server unreachable on port 4200'
+            }
+          >
+            <span className={`status-dot ${isOnline ? 'dot-online' : 'dot-offline'}`} />
+            {isOnline ? 'API :4200' : 'API Offline'}
           </span>
         </div>
       </div>
 
-      {/* Center: Command Palette search input */}
-      <div className="header-center">
-        <div className="search-bar">
-          <span className="material-symbols-outlined search-icon">search</span>
-          <input
-            type="text"
-            className="search-input"
-            placeholder="Search AST nodes, symbols, files (Press Enter)..."
-            value={searchVal}
-            onChange={(e) => setSearchVal(e.target.value)}
-            onKeyDown={handleKeyDown}
-          />
-          <span className="kbd-shortcut">⌘K</span>
-        </div>
+      {/* Center: Global Search Input */}
+      <div className="header-search-wrap">
+        <span className="material-symbols-outlined search-icon">search</span>
+        <input
+          type="text"
+          value={searchValue}
+          onChange={(e) => setSearchValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Search symbols, files, or query evidence (Enter)..."
+          className="header-search-input"
+        />
+        {searchValue && (
+          <button
+            className="search-clear-btn"
+            onClick={() => setSearchValue('')}
+            title="Clear search"
+          >
+            ×
+          </button>
+        )}
       </div>
 
-      {/* Right: Actions */}
+      {/* Right: Live Index Telemetry & Actions */}
       <div className="header-right">
+        {isOnline ? (
+          <div className="telemetry-group">
+            <div className="telemetry-pill" title="Indexed files in .fastast.db">
+              <span className="telemetry-val">{fileCount !== undefined ? fileCount.toLocaleString() : '—'}</span>
+              <span className="telemetry-lbl">files</span>
+            </div>
+            <div className="telemetry-pill" title="Extracted AST symbols">
+              <span className="telemetry-val text-primary">
+                {symbolCount !== undefined ? symbolCount.toLocaleString() : '—'}
+              </span>
+              <span className="telemetry-lbl">symbols</span>
+            </div>
+            <div className="telemetry-pill" title="Graph dependency edges">
+              <span className="telemetry-val text-tertiary">
+                {edgeCount !== undefined ? edgeCount.toLocaleString() : '—'}
+              </span>
+              <span className="telemetry-lbl">edges</span>
+            </div>
+          </div>
+        ) : (
+          <button className="header-btn header-btn-error" onClick={onRetryConnection}>
+            <span className="material-symbols-outlined text-sm">sync_problem</span>
+            <span>Reconnect API</span>
+          </button>
+        )}
+
         <button
-          className={`btn-header ${isReindexing ? 'btn-loading' : ''}`}
           onClick={onReindex}
-          disabled={isReindexing}
-          title="Re-index repository into SQLite symbol graph"
+          disabled={isReindexing || !isOnline}
+          className="header-btn header-btn-secondary"
+          title="Re-run incremental AST indexing on repository"
         >
-          <span className={`material-symbols-outlined ${isReindexing ? 'spin-icon' : ''}`}>sync</span>
+          <span className={`material-symbols-outlined text-sm ${isReindexing ? 'spin-icon' : ''}`}>
+            refresh
+          </span>
           <span>{isReindexing ? 'Indexing...' : 'Re-index'}</span>
         </button>
 
         <button
-          className="btn-header btn-primary-accent"
-          onClick={() => onSearch('traverseEdges')}
-          title="Ask or inspect Agent Memory"
+          onClick={() => {
+            const q = searchValue.trim() || 'retrieve_context';
+            onSearchSubmit(q);
+          }}
+          className="header-btn header-btn-primary"
+          title="Retrieve token-bounded evidence bundle"
         >
-          <span className="material-symbols-outlined">smart_toy</span>
-          <span>Query Agent</span>
+          <span className="material-symbols-outlined text-sm">manage_search</span>
+          <span>Evidence Query</span>
         </button>
-
-        <div className="user-avatar" title="Local Engineer Session">
-          <span className="material-symbols-outlined">terminal</span>
-        </div>
       </div>
 
       <style>{`
         .app-header {
-          position: fixed;
-          top: 0;
-          left: 256px;
-          right: 0;
-          height: 56px;
-          background: rgba(17, 19, 25, 0.92);
-          backdrop-filter: blur(16px);
+          height: 52px;
+          width: 100%;
+          background: var(--surface);
           border-bottom: 1px solid var(--hairline);
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 0 20px;
+          padding: 0 16px;
           z-index: 40;
+          flex-shrink: 0;
+          gap: 16px;
         }
         .header-left {
           display: flex;
           align-items: center;
-          gap: 12px;
+          gap: 14px;
         }
-        .repo-pill {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          background: var(--surface-container);
-          padding: 5px 10px;
-          border-radius: 4px;
-          border: 1px solid var(--hairline);
-          font-family: var(--font-mono);
-          font-size: 11px;
-        }
-        .icon-cyan {
-          color: var(--primary);
-          font-size: 16px;
-        }
-        .repo-path {
-          color: var(--on-surface);
-          font-weight: 500;
-        }
-        .repo-branch {
-          color: var(--outline);
-        }
-        .status-pill {
+        .brand-title {
           display: flex;
           align-items: center;
           gap: 6px;
-          background: var(--surface-low);
-          padding: 5px 10px;
-          border-radius: 4px;
-          font-family: var(--font-mono);
-          font-size: 11px;
+        }
+        .brand-icon {
+          color: var(--primary);
+          font-size: 20px;
+        }
+        .brand-name {
+          font-weight: 700;
+          font-size: 14.5px;
+          letter-spacing: -0.02em;
           color: var(--on-surface);
-          border: 1px solid var(--hairline);
         }
-        .status-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
+        .brand-tag {
+          font-family: var(--font-mono);
+          font-size: 9.5px;
+          font-weight: 700;
+          color: var(--primary);
+          background: var(--primary-container);
+          padding: 2px 5px;
+          border-radius: 3px;
+          letter-spacing: 0.06em;
         }
-        .status-dot-ready {
-          background: var(--tertiary-light);
-          box-shadow: 0 0 8px rgba(86, 229, 169, 0.6);
-        }
-        .status-dot-reindexing {
-          background: var(--primary);
-          animation: pulseGlow 1.2s infinite;
-        }
-        .header-center {
-          flex: 1;
-          max-width: 440px;
-          margin: 0 24px;
-        }
-        .search-bar {
+        .repo-badge {
           display: flex;
           align-items: center;
+          gap: 7px;
+          padding: 4px 9px;
+          background: var(--surface-low);
+          border: 1px solid var(--hairline);
+          border-radius: 5px;
+        }
+        .repo-name {
+          font-family: var(--font-mono);
+          font-size: 11.5px;
+          font-weight: 600;
+          color: var(--on-surface);
+        }
+        .status-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 2px 6px;
+          border-radius: 3px;
+          font-family: var(--font-mono);
+          font-size: 10px;
+          font-weight: 600;
+        }
+        .status-pill-online {
+          background: rgba(16, 185, 129, 0.14);
+          color: var(--tertiary-light);
+        }
+        .status-pill-offline {
+          background: rgba(244, 63, 94, 0.18);
+          color: var(--error-light);
+          cursor: pointer;
+        }
+        .status-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+        }
+        .dot-online {
+          background: var(--tertiary);
+        }
+        .dot-offline {
+          background: var(--error);
+        }
+        .header-search-wrap {
+          flex: 1;
+          max-width: 440px;
+          position: relative;
+          display: flex;
+          align-items: center;
+        }
+        .header-search-wrap .search-icon {
+          position: absolute;
+          left: 10px;
+          font-size: 16px;
+          color: var(--outline);
+          pointer-events: none;
+        }
+        .header-search-input {
+          width: 100%;
+          height: 32px;
           background: var(--surface-lowest);
           border: 1px solid var(--hairline);
-          border-radius: 4px;
-          padding: 4px 10px;
-          transition: border-color 0.2s;
-        }
-        .search-bar:focus-within {
-          border-color: var(--primary);
-          box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
-        }
-        .search-icon {
-          color: var(--outline);
-          font-size: 18px;
-          margin-right: 8px;
-        }
-        .search-input {
-          background: transparent;
-          border: none;
+          border-radius: 5px;
+          padding: 0 28px 0 32px;
           color: var(--on-surface);
           font-family: var(--font-mono);
           font-size: 12px;
-          width: 100%;
           outline: none;
+          transition: border-color 0.15s;
         }
-        .search-input::placeholder {
+        .header-search-input:focus {
+          border-color: var(--primary);
+        }
+        .header-search-input::placeholder {
           color: var(--outline);
         }
-        .kbd-shortcut {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          background: var(--surface-container);
+        .search-clear-btn {
+          position: absolute;
+          right: 6px;
+          background: transparent;
+          border: none;
           color: var(--outline);
-          padding: 2px 6px;
-          border-radius: 3px;
+          font-size: 15px;
+          cursor: pointer;
+          padding: 2px 5px;
         }
         .header-right {
           display: flex;
           align-items: center;
-          gap: 12px;
+          gap: 10px;
         }
-        .btn-header {
+        .telemetry-group {
           display: flex;
           align-items: center;
           gap: 6px;
-          padding: 6px 12px;
-          border-radius: 4px;
-          background: var(--surface-container);
-          border: 1px solid var(--hairline);
-          color: var(--on-surface);
-          font-size: 12px;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.2s;
         }
-        .btn-header:hover {
-          background: var(--surface-high);
-          color: #fff;
-        }
-        .btn-primary-accent {
-          background: var(--primary);
-          color: var(--surface-lowest);
-          border: 1px solid transparent;
-          font-weight: 600;
-        }
-        .btn-primary-accent:hover {
-          background: var(--primary-light);
-          color: var(--surface-lowest);
-          box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
-        }
-        .spin-icon {
-          animation: spinSlow 1.5s linear infinite;
-        }
-        .user-avatar {
-          width: 32px;
-          height: 32px;
-          border-radius: 50%;
-          background: var(--surface-container-high);
-          border: 1px solid var(--hairline);
+        .telemetry-pill {
           display: flex;
+          align-items: baseline;
+          gap: 4px;
+          padding: 4px 8px;
+          background: var(--surface-low);
+          border: 1px solid var(--hairline);
+          border-radius: 4px;
+          font-family: var(--font-mono);
+          font-size: 11px;
+        }
+        .telemetry-val {
+          font-weight: 700;
+          color: var(--on-surface);
+        }
+        .telemetry-lbl {
+          font-size: 10px;
+          color: var(--outline);
+        }
+        .header-btn {
+          height: 30px;
+          padding: 0 11px;
+          border-radius: 5px;
+          font-size: 11.5px;
+          font-weight: 600;
+          display: inline-flex;
           align-items: center;
-          justify-content: center;
-          color: var(--primary);
+          gap: 6px;
+          cursor: pointer;
+          transition: all 0.15s;
+          border: 1px solid transparent;
+        }
+        .header-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .header-btn-secondary {
+          background: var(--surface-container);
+          border-color: var(--hairline);
+          color: var(--on-surface);
+        }
+        .header-btn-secondary:hover:not(:disabled) {
+          background: var(--surface-high);
+          border-color: var(--outline-variant);
+        }
+        .header-btn-primary {
+          background: var(--primary);
+          color: var(--on-primary);
+        }
+        .header-btn-primary:hover {
+          opacity: 0.92;
+        }
+        .header-btn-error {
+          background: rgba(244, 63, 94, 0.2);
+          border-color: var(--error);
+          color: var(--error-light);
         }
       `}</style>
     </header>
