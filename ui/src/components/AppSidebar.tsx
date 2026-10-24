@@ -12,9 +12,9 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ stats }) => {
   const navItems = [
     {
       to: '/globe',
-      label: 'Globe Graph',
-      icon: 'public',
-      badge: '3D Planet',
+      label: 'Code Graph',
+      icon: 'hub',
+      badge: '2D / 3D',
       badgeColor: 'badge-purple',
     },
     {

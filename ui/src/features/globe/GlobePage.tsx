@@ -42,6 +42,12 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
   const [callees, setCallees] = useState<Array<{ callee: string; file_path: string; line_number: number }>>([]);
   const [isLoadingCalls, setIsLoadingCalls] = useState(false);
 
+  // 2D vs 3D View Mode & Animation
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
+  const [animRunning2D, setAnimRunning2D] = useState(true);
+  const canvas2dRef = useRef<HTMLCanvasElement>(null);
+  const simNodesRef = useRef<any[]>([]);
+
   // References to three.js scene controls
   const controlsRef = useRef<{
     recenter: () => void;
@@ -103,6 +109,7 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
 
   // 2. Initialize 3D Three.js Spherical Planet
   useEffect(() => {
+    if (viewMode !== '3d') return;
     const container = containerRef.current;
     if (!container || !topology) return;
 
@@ -554,7 +561,401 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
       window.removeEventListener('resize', onResize);
       renderer.dispose();
     };
-  }, [topology, glowEnabled]);
+  }, [topology, glowEnabled, viewMode]);
+
+  // 3. Initialize & Animate 2D Interactive Network Graph (Approved Graph UI)
+  useEffect(() => {
+    if (viewMode !== '2d') return;
+    const canvas = canvas2dRef.current;
+    if (!canvas || !topology) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let animId: number;
+    let animOffset = 0;
+    let isDragging = false;
+    let draggedNode: any = null;
+    let startPos = { x: 0, y: 0 };
+    let didMove = false;
+
+    const parent = canvas.parentElement;
+    const w = parent?.clientWidth || 800;
+    const h = parent?.clientHeight || 600;
+
+    const activeNode = selectedNode || topology.nodes[0];
+    if (!activeNode) return;
+
+    const centerId = activeNode.name;
+    const centerColor = activeNode.comm_color || '#38bdf8';
+
+    const nodesMap = new Map<string, any>();
+    const edgesList: Array<{ from: string; to: string; type: string; color: string }> = [];
+
+    // Center Node (Focus Target)
+    nodesMap.set(centerId, {
+      id: centerId,
+      name: activeNode.name,
+      kind: activeNode.kind || 'function',
+      filePath: activeNode.file_path || '',
+      x: w / 2,
+      y: h / 2,
+      vx: 0,
+      vy: 0,
+      radius: 20,
+      color: centerColor,
+      community: activeNode.comm_name || 'Core Subsystem',
+      isCenter: true,
+      isInbound: false,
+      isOutbound: false,
+      rawNode: activeNode,
+    });
+
+    // Inbound Callers (Arrayed to the Left)
+    const validCallers = (callers || []).slice(0, 7);
+    const cCount = validCallers.length;
+    validCallers.forEach((c, idx) => {
+      const cId = c.caller;
+      const targetY = h / 2 + (idx - (cCount - 1) / 2) * 58;
+      const targetX = Math.max(90, w / 2 - 240);
+      const raw = topology.nodes.find((n) => n.name === cId);
+      const col = raw?.comm_color || '#38bdf8';
+
+      nodesMap.set(cId, {
+        id: cId,
+        name: cId,
+        kind: raw?.kind || 'caller',
+        filePath: c.file_path || raw?.file_path || '',
+        x: targetX,
+        y: targetY,
+        vx: 0,
+        vy: 0,
+        radius: 14,
+        color: col,
+        community: raw?.comm_name || 'Inbound',
+        isCenter: false,
+        isInbound: true,
+        isOutbound: false,
+        rawNode: raw,
+      });
+
+      if (filterEdges.calls) {
+        edgesList.push({
+          from: cId,
+          to: centerId,
+          type: 'CALLS',
+          color: '#38bdf8',
+        });
+      }
+    });
+
+    // Outbound Callees (Arrayed to the Right)
+    const validCallees = (callees || []).slice(0, 7);
+    const outCount = validCallees.length;
+    validCallees.forEach((c, idx) => {
+      const cId = c.callee;
+      const targetY = h / 2 + (idx - (outCount - 1) / 2) * 58;
+      const targetX = Math.min(w - 90, w / 2 + 240);
+      const raw = topology.nodes.find((n) => n.name === cId);
+      const col = raw?.comm_color || '#a855f7';
+
+      nodesMap.set(cId, {
+        id: cId,
+        name: cId,
+        kind: raw?.kind || 'callee',
+        filePath: c.file_path || raw?.file_path || '',
+        x: targetX,
+        y: targetY,
+        vx: 0,
+        vy: 0,
+        radius: 14,
+        color: col,
+        community: raw?.comm_name || 'Outbound',
+        isCenter: false,
+        isInbound: false,
+        isOutbound: true,
+        rawNode: raw,
+      });
+
+      if (filterEdges.calls) {
+        edgesList.push({
+          from: centerId,
+          to: cId,
+          type: 'CALLS',
+          color: '#a855f7',
+        });
+      }
+    });
+
+    // Extended Hop Neighbors (2-Hop / Full)
+    if (activeHop === 2 || activeHop === 3 || activeHop === 'full') {
+      const maxExtra = activeHop === 2 ? 6 : activeHop === 3 ? 12 : 20;
+      let added = 0;
+      for (const n of topology.nodes) {
+        if (added >= maxExtra) break;
+        if (nodesMap.has(n.name)) continue;
+        const isNeighbor = topology.edges.some(
+          (e) => (e.src === n.name && nodesMap.has(e.dst)) || (e.dst === n.name && nodesMap.has(e.src))
+        );
+        if (isNeighbor || n.comm === activeNode.comm) {
+          const angle = (added / maxExtra) * Math.PI * 2;
+          const dist = 320;
+          nodesMap.set(n.name, {
+            id: n.name,
+            name: n.name,
+            kind: n.kind,
+            filePath: n.file_path,
+            x: w / 2 + Math.cos(angle) * dist,
+            y: h / 2 + Math.sin(angle) * (dist * 0.7),
+            vx: 0,
+            vy: 0,
+            radius: 12,
+            color: n.comm_color || '#34d399',
+            community: n.comm_name,
+            isCenter: false,
+            isInbound: false,
+            isOutbound: false,
+            rawNode: n,
+          });
+          added++;
+        }
+      }
+
+      topology.edges.forEach((e) => {
+        if (nodesMap.has(e.src) && nodesMap.has(e.dst)) {
+          if (!edgesList.some((ex) => ex.from === e.src && ex.to === e.dst)) {
+            edgesList.push({
+              from: e.src,
+              to: e.dst,
+              type: e.type || 'CALLS',
+              color: e.type === 'IMPORTS' ? '#a855f7' : e.type === 'DEFINES' ? '#fbbf24' : '#38bdf8',
+            });
+          }
+        }
+      });
+    }
+
+    const currentNodes = Array.from(nodesMap.values());
+    simNodesRef.current = currentNodes;
+
+    const resize = () => {
+      const p = canvas.parentElement;
+      if (!p) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = p.clientWidth * dpr;
+      canvas.height = p.clientHeight * dpr;
+      ctx.resetTransform?.();
+      ctx.scale(dpr, dpr);
+    };
+
+    resize();
+    window.addEventListener('resize', resize);
+
+    const onMouseDown = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      startPos = { x, y };
+      didMove = false;
+
+      for (const n of simNodesRef.current) {
+        const dx = n.x - x;
+        const dy = n.y - y;
+        if (Math.sqrt(dx * dx + dy * dy) <= n.radius + 6) {
+          isDragging = true;
+          draggedNode = n;
+          break;
+        }
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      if (isDragging && draggedNode) {
+        const dx = x - startPos.x;
+        const dy = y - startPos.y;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didMove = true;
+        draggedNode.x = Math.max(35, Math.min(rect.width - 35, x));
+        draggedNode.y = Math.max(35, Math.min(rect.height - 35, y));
+      } else {
+        const hovering = simNodesRef.current.some((n) => {
+          const dx = n.x - x;
+          const dy = n.y - y;
+          return Math.sqrt(dx * dx + dy * dy) <= n.radius + 6;
+        });
+        canvas.style.cursor = hovering ? 'pointer' : 'default';
+      }
+    };
+
+    const onMouseUp = () => {
+      if (isDragging && draggedNode) {
+        if (!didMove) {
+          if (draggedNode.rawNode) {
+            setSelectedNode(draggedNode.rawNode);
+          } else {
+            const found = topology.nodes.find((n) => n.name === draggedNode?.name);
+            if (found) {
+              setSelectedNode(found);
+            } else {
+              setSelectedNode({
+                id: Math.floor(Math.random() * 10000),
+                idx: 0,
+                name: draggedNode.name,
+                kind: draggedNode.kind,
+                signature: `${draggedNode.kind} ${draggedNode.name}()`,
+                file_path: draggedNode.filePath,
+                start_line: 1,
+                end_line: 50,
+                comm: 0,
+                comm_name: draggedNode.community,
+                comm_color: draggedNode.color,
+                importance: 0.8,
+                lat: 0,
+                lon: 0,
+                active: true,
+              });
+            }
+          }
+        }
+      }
+      isDragging = false;
+      draggedNode = null;
+    };
+
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
+    const render = () => {
+      const rect = canvas.getBoundingClientRect();
+      const width = rect.width;
+      const height = rect.height;
+
+      ctx.clearRect(0, 0, width, height);
+
+      // Subtle Background Grid
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < width; x += 44) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      for (let y = 0; y < height; y += 44) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+
+      // Render Edges
+      edgesList.forEach((edge, idx) => {
+        const source = nodesMap.get(edge.from);
+        const target = nodesMap.get(edge.to);
+        if (!source || !target) return;
+
+        const isRelated = edge.from === activeNode.name || edge.to === activeNode.name;
+
+        ctx.strokeStyle = isRelated ? edge.color : 'rgba(100, 116, 139, 0.25)';
+        ctx.lineWidth = isRelated ? 2.2 : 1;
+
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+
+        // Arrowhead
+        const headlen = 7;
+        const angle = Math.atan2(target.y - source.y, target.x - source.x);
+        const arrowDist = target.radius + 3;
+        const arrowX = target.x - arrowDist * Math.cos(angle);
+        const arrowY = target.y - arrowDist * Math.sin(angle);
+
+        ctx.fillStyle = isRelated ? edge.color : 'rgba(100, 116, 139, 0.4)';
+        ctx.beginPath();
+        ctx.moveTo(arrowX, arrowY);
+        ctx.lineTo(
+          arrowX - headlen * Math.cos(angle - Math.PI / 7),
+          arrowY - headlen * Math.sin(angle - Math.PI / 7)
+        );
+        ctx.lineTo(
+          arrowX - headlen * Math.cos(angle + Math.PI / 7),
+          arrowY - headlen * Math.sin(angle + Math.PI / 7)
+        );
+        ctx.closePath();
+        ctx.fill();
+
+        // Directional pulse particle
+        if (animRunning2D && isRelated) {
+          const t = ((animOffset * 0.015) + idx * 0.28) % 1;
+          const px = source.x + (target.x - source.x) * t;
+          const py = source.y + (target.y - source.y) * t;
+          ctx.beginPath();
+          ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = edge.color;
+          ctx.shadowColor = edge.color;
+          ctx.shadowBlur = 8;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+      });
+
+      // Render Nodes
+      currentNodes.forEach((node) => {
+        const isCenter = node.isCenter;
+        const isNeighbor = node.isInbound || node.isOutbound;
+
+        if (isCenter) {
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, node.radius + 9, 0, Math.PI * 2);
+          ctx.fillStyle = `${node.color}33`;
+          ctx.fill();
+        }
+
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+        ctx.fillStyle = isCenter ? node.color : isNeighbor ? `${node.color}dd` : '#1e293b';
+        ctx.fill();
+
+        ctx.strokeStyle = isCenter ? '#ffffff' : node.color;
+        ctx.lineWidth = isCenter ? 2.5 : 1.8;
+        ctx.stroke();
+
+        ctx.font = isCenter ? 'bold 12px monospace' : '11px monospace';
+        ctx.fillStyle = isCenter ? '#ffffff' : isNeighbor ? '#f1f5f9' : '#94a3b8';
+        const label = node.name;
+        const textWidth = ctx.measureText(label).width;
+        ctx.fillText(label, node.x - textWidth / 2, node.y + node.radius + 15);
+
+        if (isCenter || isNeighbor) {
+          ctx.font = '9px sans-serif';
+          ctx.fillStyle = isCenter ? node.color : 'rgba(255, 255, 255, 0.6)';
+          const sub = isCenter ? 'ACTIVE FOCUS' : node.isInbound ? 'INBOUND' : 'OUTBOUND';
+          const subWidth = ctx.measureText(sub).width;
+          ctx.fillText(sub, node.x - subWidth / 2, node.y - node.radius - 6);
+        }
+      });
+
+      if (animRunning2D) {
+        animOffset += 1;
+      }
+      animId = requestAnimationFrame(render);
+    };
+
+    render();
+
+    return () => {
+      cancelAnimationFrame(animId);
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('resize', resize);
+    };
+  }, [viewMode, topology, selectedNode, callers, callees, activeHop, filterEdges, animRunning2D]);
 
   const handleCopyBundle = () => {
     if (!selectedNode) return;
@@ -828,21 +1229,51 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
         </div>
       </aside>
 
-      {/* 2. CENTER CANVAS (THE 3D GLOBE VIEWPORT) */}
+      {/* 2. CENTER CANVAS (THE 2D / 3D GRAPH VIEWPORT) */}
       <main className="globe-viewport">
         {/* Subtle coordinate dot grid */}
         <div className="cosmic-grid-overlay" />
 
-        {/* Pure Three.js Canvas Container */}
-        <div ref={containerRef} className="threejs-canvas-wrapper" />
+        {/* Viewport Canvas (2D Interactive Graph vs 3D Planet Globe) */}
+        {viewMode === '2d' ? (
+          <div className="graph-2d-container">
+            <canvas ref={canvas2dRef} className="graph-2d-canvas" />
+            <div className="graph-2d-hint">
+              <span className="material-symbols-outlined text-xs text-primary">touch_app</span>
+              <span>Click node to focus callers/callees • Drag to reposition • Pulses show call flow</span>
+            </div>
+          </div>
+        ) : (
+          <div ref={containerRef} className="threejs-canvas-wrapper" />
+        )}
 
         {/* Top Canvas HUD Bar */}
         <div className="top-hud-bar">
+          {/* View Mode Switcher: 2D Interactive Graph vs 3D Planet */}
+          <div className="hud-pill view-mode-switcher">
+            <button
+              className={`hop-btn ${viewMode === '2d' ? 'hop-btn-active' : ''}`}
+              onClick={() => setViewMode('2d')}
+            >
+              <span className="material-symbols-outlined text-xs">hub</span>
+              <span>2D Interactive Graph</span>
+            </button>
+            <button
+              className={`hop-btn ${viewMode === '3d' ? 'hop-btn-active' : ''}`}
+              onClick={() => setViewMode('3d')}
+            >
+              <span className="material-symbols-outlined text-xs">public</span>
+              <span>3D Planet Globe</span>
+            </button>
+          </div>
+
           {/* Topology Telemetry */}
           <div className="hud-pill">
             <div className="live-ping">
               <span className="ping-dot" />
-              <span className="hud-heading">Planet Topology</span>
+              <span className="hud-heading">
+                {viewMode === '2d' ? 'AST Call Graph' : 'Planet Topology'}
+              </span>
             </div>
             <span className="hud-sub">
               {topology?.total_nodes ?? 142} Nodes • {topology?.total_edges ?? 284} Arcs
@@ -874,27 +1305,55 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
               className={`hop-btn ${activeHop === 'full' ? 'hop-btn-active' : ''}`}
               onClick={() => setActiveHop('full')}
             >
-              Full Sphere
+              Full Graph
             </button>
           </div>
 
-          {/* Camera View Mode Toggles */}
+          {/* Camera / Animation Action Toggles */}
           <div className="hud-actions">
-            <button
-              className={`hud-btn ${autoRotate ? 'hud-btn-active' : ''}`}
-              onClick={() => controlsRef.current?.toggleOrbit()}
-            >
-              <span className="material-symbols-outlined text-sm">rotate_right</span>
-              <span>Auto Orbit</span>
-            </button>
-            <button className="hud-btn" onClick={() => controlsRef.current?.viewPoles()}>
-              <span className="material-symbols-outlined text-sm">explore</span>
-              <span>Poles</span>
-            </button>
-            <button className="hud-btn" onClick={() => controlsRef.current?.recenter()}>
-              <span className="material-symbols-outlined text-sm">center_focus_strong</span>
-              <span>Recenter</span>
-            </button>
+            {viewMode === '2d' ? (
+              <>
+                <button
+                  className={`hud-btn ${animRunning2D ? 'hud-btn-active' : ''}`}
+                  onClick={() => setAnimRunning2D(!animRunning2D)}
+                >
+                  <span className="material-symbols-outlined text-sm">
+                    {animRunning2D ? 'pause' : 'play_arrow'}
+                  </span>
+                  <span>{animRunning2D ? 'Pause Float' : 'Resume Float'}</span>
+                </button>
+                <button
+                  className="hud-btn"
+                  onClick={() => {
+                    if (selectedNode) {
+                      // Trigger re-center on selected node
+                      setSelectedNode({ ...selectedNode });
+                    }
+                  }}
+                >
+                  <span className="material-symbols-outlined text-sm">center_focus_strong</span>
+                  <span>Recenter</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className={`hud-btn ${autoRotate ? 'hud-btn-active' : ''}`}
+                  onClick={() => controlsRef.current?.toggleOrbit()}
+                >
+                  <span className="material-symbols-outlined text-sm">rotate_right</span>
+                  <span>Auto Orbit</span>
+                </button>
+                <button className="hud-btn" onClick={() => controlsRef.current?.viewPoles()}>
+                  <span className="material-symbols-outlined text-sm">explore</span>
+                  <span>Poles</span>
+                </button>
+                <button className="hud-btn" onClick={() => controlsRef.current?.recenter()}>
+                  <span className="material-symbols-outlined text-sm">center_focus_strong</span>
+                  <span>Recenter</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -1503,6 +1962,44 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
           inset: 0;
           width: 100%;
           height: 100%;
+        }
+        .graph-2d-container {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          overflow: hidden;
+          background: rgba(10, 14, 20, 0.4);
+        }
+        .graph-2d-canvas {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          touch-action: none;
+        }
+        .graph-2d-hint {
+          position: absolute;
+          bottom: 46px;
+          left: 18px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 14px;
+          background: rgba(15, 23, 42, 0.85);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          font-size: 11px;
+          color: var(--on-surface-variant);
+          backdrop-filter: blur(10px);
+          z-index: 10;
+          pointer-events: none;
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+        }
+        .view-mode-switcher {
+          border: 1px solid rgba(56, 189, 248, 0.4) !important;
+          background: rgba(56, 189, 248, 0.08) !important;
+          box-shadow: 0 0 16px rgba(56, 189, 248, 0.15);
         }
 
         .top-hud-bar {
