@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import { AppHeader } from './components/AppHeader';
 import { AppSidebar } from './components/AppSidebar';
@@ -10,122 +10,163 @@ import { ExplorePage } from './features/explore/ExplorePage';
 import { GlobePage } from './features/globe/GlobePage';
 import { SystemPage } from './features/system/SystemPage';
 import { fastAstApi } from './services/api';
-import type { RepoStats } from './types';
+import type { HealthStatus, RepoStats } from './types';
 
-const AppContent: React.FC = () => {
-  const [stats, setStats] = useState<RepoStats | null>(null);
-  const [isReindexing, setIsReindexing] = useState(false);
+const AppWorkspace: React.FC = () => {
   const navigate = useNavigate();
+  const [stats, setStats] = useState<RepoStats | null>(null);
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [isReindexing, setIsReindexing] = useState(false);
 
-  const loadStats = async () => {
+  const loadBackendState = useCallback(async () => {
     try {
-      const data = await fastAstApi.getStats();
-      setStats(data);
-    } catch (err) {
-      console.error('Failed to load stats:', err);
+      const [healthRes, statsRes] = await Promise.all([
+        fastAstApi.getHealth(),
+        fastAstApi.getStats(),
+      ]);
+      setHealth(healthRes);
+      setStats(statsRes);
+      setApiError(null);
+    } catch (err: any) {
+      setApiError(
+        err?.message ||
+          'Cannot connect to FastAST API Server on http://127.0.0.1:4200.'
+      );
     }
-  };
+  }, []);
 
   useEffect(() => {
-    loadStats();
-  }, []);
+    loadBackendState();
+  }, [loadBackendState]);
+
+  const handleSearchSubmit = (query: string) => {
+    navigate(`/evidence?q=${encodeURIComponent(query)}`);
+  };
 
   const handleReindex = async () => {
     setIsReindexing(true);
     try {
-      await fastAstApi.triggerReindex(true);
-      await loadStats();
-    } catch (err) {
-      console.error('Reindex failed:', err);
+      await fastAstApi.triggerReindex(false);
+      await loadBackendState();
+    } catch (err: any) {
+      setApiError(err?.message || 'Re-index request failed.');
     } finally {
       setIsReindexing(false);
     }
   };
 
-  const handleSearch = (q: string) => {
-    if (q) {
-      navigate(`/evidence?q=${encodeURIComponent(q)}`);
-    } else {
-      navigate('/evidence');
-    }
-  };
-
-  const handleNavigateToExplore = (symbolName?: string, filePath?: string) => {
+  const handleNavigateToExplore = (symbolName: string, filePath?: string) => {
     const params = new URLSearchParams();
-    if (symbolName) params.set('symbol', symbolName);
     if (filePath) params.set('file', filePath);
-    const qs = params.toString();
-    navigate(qs ? `/explore?${qs}` : '/explore', { state: { symbolName, filePath } });
+    if (symbolName) params.set('symbol', symbolName);
+    navigate(`/explore?${params.toString()}`);
   };
 
   return (
-    <div className="app-layout">
-      {/* Pinned Left Sidebar */}
-      <AppSidebar stats={stats} />
+    <div className="app-root">
+      <AppHeader
+        stats={stats}
+        health={health}
+        apiError={apiError}
+        onSearchSubmit={handleSearchSubmit}
+        onReindex={handleReindex}
+        onRetryConnection={loadBackendState}
+        isReindexing={isReindexing}
+      />
 
-      {/* Main Workspace Frame */}
-      <div className="workbench-main">
-        <AppHeader
-          stats={stats}
-          onReindex={handleReindex}
-          isReindexing={isReindexing}
-          onSearch={handleSearch}
-        />
+      <div className="app-body">
+        <AppSidebar stats={stats} health={health} apiError={apiError} />
 
-        {/* Viewport Content */}
-        <main className="workbench-viewport">
+        <div className="app-main-viewport">
+          {apiError && (
+            <div className="global-error-strip">
+              <div className="api-error-banner">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span className="material-symbols-outlined text-error">error</span>
+                  <div>
+                    <strong>Backend API Unreachable:</strong> {apiError} Run{' '}
+                    <code>fastast serve --port 4200</code> or <code>./start_ui.sh</code> from the
+                    repository root.
+                  </div>
+                </div>
+                <button className="api-retry-btn" onClick={loadBackendState}>
+                  Retry Connection
+                </button>
+              </div>
+            </div>
+          )}
+
           <Routes>
             <Route path="/" element={<Navigate to="/globe" replace />} />
             <Route
               path="/globe"
-              element={<GlobePage onNavigateToExplore={handleNavigateToExplore} />}
+              element={
+                <GlobePage
+                  stats={stats}
+                  onNavigateToExplore={handleNavigateToExplore}
+                />
+              }
             />
-            <Route
-              path="/explore"
-              element={<ExplorePage />}
-            />
+            <Route path="/explore" element={<ExplorePage />} />
             <Route path="/architecture" element={<ArchitecturePage />} />
             <Route path="/evidence" element={<EvidencePage />} />
             <Route path="/coverage" element={<CoveragePage />} />
             <Route path="/communities" element={<CommunitiesPage />} />
-            <Route path="/system" element={<SystemPage />} />
+            <Route
+              path="/system"
+              element={
+                <SystemPage
+                  health={health}
+                  apiError={apiError}
+                  onRefreshGlobal={loadBackendState}
+                />
+              }
+            />
             <Route path="*" element={<Navigate to="/globe" replace />} />
           </Routes>
-        </main>
+        </div>
       </div>
 
       <style>{`
-        .app-layout {
-          display: flex;
+        .app-root {
           width: 100vw;
           height: 100vh;
-          overflow: hidden;
-          background: var(--surface-lowest);
-        }
-        .workbench-main {
-          margin-left: 256px;
-          flex: 1;
           display: flex;
           flex-direction: column;
-          height: 100vh;
+          background: var(--surface-lowest);
           overflow: hidden;
         }
-        .workbench-viewport {
-          margin-top: 56px;
+        .app-body {
           flex: 1;
-          height: calc(100vh - 56px);
+          display: flex;
           overflow: hidden;
           position: relative;
+        }
+        .app-main-viewport {
+          flex: 1;
+          height: calc(100vh - 52px);
+          overflow: hidden;
+          position: relative;
+          display: flex;
+          flex-direction: column;
+        }
+        .global-error-strip {
+          padding: 10px 16px 0 16px;
+          background: var(--surface-lowest);
+          z-index: 35;
         }
       `}</style>
     </div>
   );
 };
 
-export default function App() {
+export const App: React.FC = () => {
   return (
     <BrowserRouter>
-      <AppContent />
+      <AppWorkspace />
     </BrowserRouter>
   );
-}
+};
+
+export default App;

@@ -1,2587 +1,2556 @@
-import React, { useEffect, useRef, useState } from 'react';
-import * as THREE from 'three';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { fastAstApi } from '../../services/api';
-import type { GlobeNode, GlobeTopology } from '../../types';
+import type {
+  CallGraphEntry,
+  GlobeEdge,
+  GlobeNode,
+  GlobeTopology,
+  RepoStats,
+  SimilarSymbol,
+  SymbolRecord,
+} from '../../types';
 
 interface GlobePageProps {
-  onNavigateToExplore?: (symbolName?: string, filePath?: string) => void;
+  stats: RepoStats | null;
+  onNavigateToExplore?: (symbolName: string, filePath?: string) => void;
 }
 
-export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+interface SimNode extends GlobeNode {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  fx: number | null;
+  fy: number | null;
+  degree: number;
+  radius: number;
+}
 
-  // Data states
+interface SimEdge {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+}
+
+const KIND_COLORS: Record<string, string> = {
+  function: '#38bdf8',   // Cyan
+  method: '#60a5fa',     // Blue
+  class: '#a855f7',      // Purple
+  interface: '#f59e0b',  // Amber
+  struct: '#f59e0b',     // Amber
+  type: '#eab308',       // Yellow
+  module: '#10b981',     // Emerald
+  file: '#10b981',       // Emerald
+  variable: '#94a3b8',   // Slate
+};
+
+const COMMUNITY_PALETTE = [
+  '#38bdf8',
+  '#a855f7',
+  '#10b981',
+  '#f59e0b',
+  '#ec4899',
+  '#6366f1',
+  '#14b8a6',
+  '#f97316',
+  '#84cc16',
+  '#06b6d4',
+];
+
+const EDGE_COLORS: Record<string, string> = {
+  CALLS: '#38bdf8',      // Cyan
+  IMPORTS: '#10b981',    // Emerald
+  DEFINES: '#a855f7',    // Purple
+  INHERITS: '#f59e0b',   // Amber
+  SIMILAR_TO: '#ec4899', // Pink
+};
+
+function getNodeColor(node: GlobeNode, colorBy: 'kind' | 'community'): string {
+  if (colorBy === 'community') {
+    if (node.comm_color) return node.comm_color;
+    if (node.comm !== undefined && node.comm !== null) {
+      return COMMUNITY_PALETTE[Math.abs(node.comm) % COMMUNITY_PALETTE.length];
+    }
+  }
+  const k = (node.kind || 'function').toLowerCase();
+  return KIND_COLORS[k] || '#38bdf8';
+}
+
+function hashString(str: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+export const GlobePage: React.FC<GlobePageProps> = ({
+  onNavigateToExplore,
+}) => {
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialSymbol = searchParams.get('symbol') || '';
+
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Graph Data & Shared-Space State
   const [topology, setTopology] = useState<GlobeTopology | null>(null);
-  const [selectedNode, setSelectedNode] = useState<GlobeNode | null>(null);
-  const [autoRotate, setAutoRotate] = useState(true);
-  const [activeHop, setActiveHop] = useState<number | 'full'>(2);
-  const [previewState, setPreviewState] = useState<'populated' | 'focused' | 'forming' | 'preindex'>('populated');
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [maxNodesLimit, setMaxNodesLimit] = useState<number>(240);
 
-  // Filter toggles
-  const [filterTaxonomy, setFilterTaxonomy] = useState({
-    functions: true,
-    classes: true,
-    types: true,
-    files: true,
-    communities: true,
-  });
+  // Scope filter within the shared graph space ('all' is default first-class view)
+  const [hopScope, setHopScope] = useState<'all' | 1 | 2>('all');
+  const [selectedNodeId, setSelectedNodeId] = useState<string>(initialSymbol);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
 
-  const [filterEdges, setFilterEdges] = useState({
-    calls: true,
-    imports: true,
-    defines: true,
-    inherits: true,
-    similar: true,
-  });
-
-  const [curvature, setCurvature] = useState(65);
-  const [glowEnabled, setGlowEnabled] = useState(true);
-  const [azimuthText, setAzimuthText] = useState('Azimuth 42° • El 18°');
-  const [copiedBundle, setCopiedBundle] = useState(false);
-  const [callers, setCallers] = useState<Array<{ caller: string; file_path: string; line_number: number }>>([]);
-  const [callees, setCallees] = useState<Array<{ callee: string; file_path: string; line_number: number }>>([]);
-  const [isLoadingCalls, setIsLoadingCalls] = useState(false);
-
-  // 2D vs 3D View Mode & Animation
-  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
-  const [animRunning2D, setAnimRunning2D] = useState(true);
-  const canvas2dRef = useRef<HTMLCanvasElement>(null);
-  const simNodesRef = useRef<any[]>([]);
-
-  // References to three.js scene controls
-  const controlsRef = useRef<{
-    recenter: () => void;
-    focusNode: (node: GlobeNode) => void;
-    viewPoles: () => void;
-    toggleOrbit: () => void;
-    applyFilters: (
-      tax: typeof filterTaxonomy,
-      edg: typeof filterEdges,
-      hop: number | 'full',
-      selected: GlobeNode | null
-    ) => void;
-    sceneNodes: THREE.Mesh[];
-  } | null>(null);
-
-  // 1. Fetch live topology from FastAST backend
+  // Simulation controls
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const isPausedRef = useRef<boolean>(false);
   useEffect(() => {
-    let isMounted = true;
-    fastAstApi.getGlobeTopology(150).then((data) => {
-      if (isMounted) {
-        setTopology(data);
-        if (data.nodes.length > 0) {
-          setSelectedNode(data.nodes[0]);
-        }
-      }
-    });
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+    isPausedRef.current = isPaused;
+  }, [isPaused]);
 
-  // Fetch callers & callees when selected node changes
+  const [colorBy, setColorBy] = useState<'kind' | 'community'>('kind');
+  const [labelMode, setLabelMode] = useState<'smart' | 'all' | 'focus'>('all');
+
+  // Edge Type Filters
+  const [edgeFilters, setEdgeFilters] = useState<Record<string, boolean>>({
+    CALLS: true,
+    DEFINES: true,
+    IMPORTS: true,
+    INHERITS: true,
+    SIMILAR_TO: true,
+  });
+
+  // Node Kind Filters
+  const [kindFilters, setKindFilters] = useState<Record<string, boolean>>({
+    function: true,
+    method: true,
+    class: true,
+    other: true,
+  });
+
+  // Symbol Search in Left Panel
+  const [symbolQuery, setSymbolQuery] = useState<string>('');
+  const [searchResults, setSearchResults] = useState<SymbolRecord[]>([]);
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+
+  // Right Inspector Details State
+  const [callers, setCallers] = useState<CallGraphEntry[]>([]);
+  const [callees, setCallees] = useState<CallGraphEntry[]>([]);
+  const [similarSymbols, setSimilarSymbols] = useState<SimilarSymbol[]>([]);
+  const [isLoadingDetails, setIsLoadingDetails] = useState<boolean>(false);
+
+  // Physics Simulation Refs (kept in refs for 60fps rendering without React re-render lag)
+  const simNodesRef = useRef<SimNode[]>([]);
+  const simEdgesRef = useRef<SimEdge[]>([]);
+  const nodeMapRef = useRef<Map<string, SimNode>>(new Map());
+  const alphaRef = useRef<number>(1.0);
+
+  // Camera / Viewport transform in 2D canvas space
+  const cameraRef = useRef<{ x: number; y: number; zoom: number }>({
+    x: 0,
+    y: 0,
+    zoom: 1.0,
+  });
+  const targetCameraRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
+
+  // Mouse interaction refs
+  const dragNodeRef = useRef<SimNode | null>(null);
+  const isPanningRef = useRef<boolean>(false);
+  const pointerDownPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const lastPointerPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const didDragRef = useRef<boolean>(false);
+
+  // Build or merge nodes/edges into the shared simulation space
+  const syncSimulationGraph = useCallback(
+    (newNodes: GlobeNode[], newEdges: GlobeEdge[], preservePositions = false) => {
+      const existingMap = preservePositions ? nodeMapRef.current : new Map<string, SimNode>();
+      const nextMap = new Map<string, SimNode>();
+
+      // Compute degrees
+      const degreeCount = new Map<string, number>();
+      const dedupedEdges: SimEdge[] = [];
+      const seenEdgeKeys = new Set<string>();
+
+      for (const e of newEdges) {
+        if (!e.source || !e.target || e.source === e.target) continue;
+        const edgeType = (e.type || 'CALLS').toUpperCase();
+        const key = `${e.source}->${e.target}:${edgeType}`;
+        if (seenEdgeKeys.has(key)) continue;
+        seenEdgeKeys.add(key);
+        dedupedEdges.push({
+          id: key,
+          source: e.source,
+          target: e.target,
+          type: edgeType,
+        });
+        degreeCount.set(e.source, (degreeCount.get(e.source) || 0) + 1);
+        degreeCount.set(e.target, (degreeCount.get(e.target) || 0) + 1);
+      }
+
+      // Group communities/files for organic initial seeding
+      const groupCenters = new Map<string, { x: number; y: number }>();
+      let groupIdx = 0;
+
+      const simNodes: SimNode[] = newNodes.map((n, idx) => {
+        const prev = existingMap.get(n.id);
+        const deg =
+          degreeCount.get(n.id) ?? Math.max(1, (n.in_degree || 0) + (n.out_degree || 0));
+        const radius = Math.max(4.5, Math.min(13, 4.5 + Math.log2(1 + deg) * 1.85));
+
+        if (prev) {
+          prev.name = n.name || prev.name;
+          prev.kind = n.kind || prev.kind;
+          prev.file_path = n.file_path || prev.file_path;
+          prev.start_line = n.start_line ?? prev.start_line;
+          prev.end_line = n.end_line ?? prev.end_line;
+          prev.signature = n.signature ?? prev.signature;
+          prev.comm = n.comm ?? prev.comm;
+          prev.comm_name = n.comm_name || prev.comm_name;
+          prev.comm_color = n.comm_color || prev.comm_color;
+          prev.degree = deg;
+          prev.radius = radius;
+          nextMap.set(n.id, prev);
+          return prev;
+        }
+
+        // Seed position by community or file directory so clusters form naturally
+        const groupKey =
+          n.comm !== undefined && n.comm !== null
+            ? `comm:${n.comm}`
+            : `dir:${(n.file_path || '').split('/').slice(0, 2).join('/')}`;
+
+        let center = groupCenters.get(groupKey);
+        if (!center) {
+          const goldenAngle = groupIdx * 2.399963229728653;
+          const dist = 70 * Math.sqrt(groupIdx + 1);
+          center = {
+            x: Math.cos(goldenAngle) * dist,
+            y: Math.sin(goldenAngle) * dist,
+          };
+          groupCenters.set(groupKey, center);
+          groupIdx++;
+        }
+
+        const h = hashString(n.id + String(idx));
+        const localAngle = ((h % 360) * Math.PI) / 180;
+        const localDist = 18 + ((h >> 8) % 65);
+
+        const simNode: SimNode = {
+          ...n,
+          x: center.x + Math.cos(localAngle) * localDist,
+          y: center.y + Math.sin(localAngle) * localDist,
+          vx: 0,
+          vy: 0,
+          fx: null,
+          fy: null,
+          degree: deg,
+          radius,
+        };
+        nextMap.set(n.id, simNode);
+        return simNode;
+      });
+
+      // Filter edges so both endpoints exist
+      const validEdges = dedupedEdges.filter(
+        (e) => nextMap.has(e.source) && nextMap.has(e.target)
+      );
+
+      // Run synchronous warm-up ticks on initial load so the graph opens already well-organized
+      if (!preservePositions && simNodes.length > 0) {
+        runForceSteps(simNodes, validEdges, nextMap, 85, 0.85);
+      }
+
+      simNodesRef.current = simNodes;
+      simEdgesRef.current = validEdges;
+      nodeMapRef.current = nextMap;
+      alphaRef.current = preservePositions ? 0.45 : 0.6;
+    },
+    []
+  );
+
+  // Load the connected graph into shared space
+  const loadConnectedGraph = useCallback(
+    async (focusSym?: string, maxNodes = maxNodesLimit) => {
+      setIsLoading(true);
+      setApiError(null);
+      try {
+        const symToRequest = focusSym !== undefined ? focusSym : selectedNodeId;
+        const data = await fastAstApi.getGlobeTopology({
+          mode: 'full',
+          symbol: symToRequest || undefined,
+          depth: 2,
+          maxNodes,
+          maxEdges: Math.round(maxNodes * 3.5),
+        });
+
+        let nodes = data.nodes || [];
+        let edges = data.edges || [];
+
+        // If an older server instance returned a tiny set or missed the focus symbol, merge its neighborhood
+        if (symToRequest && !nodes.some((n) => n.id === symToRequest || n.name === symToRequest)) {
+          try {
+            const sub = await fastAstApi.getGlobeTopology({
+              mode: 'neighborhood',
+              symbol: symToRequest,
+              depth: 2,
+              maxNodes: 120,
+              maxEdges: 320,
+            });
+            const existingIds = new Set(nodes.map((n) => n.id));
+            for (const sn of sub.nodes || []) {
+              if (!existingIds.has(sn.id)) {
+                nodes.push(sn);
+                existingIds.add(sn.id);
+              }
+            }
+            edges = [...edges, ...(sub.edges || [])];
+          } catch {
+            // ignore optional neighborhood supplement failure
+          }
+        }
+
+        const mergedTopology: GlobeTopology = {
+          ...data,
+          mode: 'full',
+          nodes,
+          edges,
+        };
+
+        setTopology(mergedTopology);
+        syncSimulationGraph(nodes, edges, false);
+
+        // Pick active selected node
+        if (symToRequest) {
+          const match =
+            nodes.find((n) => n.id === symToRequest) ||
+            nodes.find((n) => n.name === symToRequest);
+          if (match) {
+            setSelectedNodeId(match.id);
+            const sn = nodeMapRef.current.get(match.id);
+            if (sn) {
+              targetCameraRef.current = { x: -sn.x, y: -sn.y, zoom: 1.15 };
+            }
+          }
+        } else if (nodes.length > 0) {
+          // Select the primary hub (or get_call_graph if present) so the center ring + inspector are populated immediately
+          const preferred =
+            nodes.find((n) => n.name === 'get_call_graph') ||
+            nodes.find((n) => n.id === data.focus_symbol) ||
+            [...nodes].sort(
+              (a, b) =>
+                (b.in_degree || 0) +
+                (b.out_degree || 0) -
+                ((a.in_degree || 0) + (a.out_degree || 0))
+            )[0];
+          if (preferred) {
+            setSelectedNodeId(preferred.id);
+            const sn = nodeMapRef.current.get(preferred.id);
+            if (sn) {
+              targetCameraRef.current = { x: -sn.x * 0.5, y: -sn.y * 0.5, zoom: 0.95 };
+            }
+          }
+        }
+      } catch (err: any) {
+        setApiError(err?.message || 'Failed to load connected graph topology.');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [maxNodesLimit, selectedNodeId, syncSimulationGraph]
+  );
+
+  useEffect(() => {
+    loadConnectedGraph(initialSymbol, maxNodesLimit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [maxNodesLimit]);
+
+  // Select a symbol in the SAME shared graph space (merging its neighborhood if not yet present)
+  const focusSymbolInSharedSpace = useCallback(
+    async (symbolNameOrId: string, filePath?: string) => {
+      if (!symbolNameOrId) return;
+
+      // 1. Check if already in our shared graph space
+      const currentNodes = simNodesRef.current;
+      const existing =
+        currentNodes.find((n) => n.id === symbolNameOrId) ||
+        currentNodes.find(
+          (n) => n.name === symbolNameOrId && (!filePath || n.file_path === filePath)
+        ) ||
+        currentNodes.find((n) => n.name === symbolNameOrId);
+
+      if (existing) {
+        setSelectedNodeId(existing.id);
+        setSearchParams({ symbol: existing.name }, { replace: true });
+        alphaRef.current = Math.max(alphaRef.current, 0.35);
+        targetCameraRef.current = {
+          x: -existing.x,
+          y: -existing.y,
+          zoom: Math.max(cameraRef.current.zoom, 1.15),
+        };
+      }
+
+      // 2. Also expand/merge its 1-hop neighborhood into the shared graph if it has missing neighbors or isn't loaded yet
+      try {
+        const sub = await fastAstApi.getGlobeTopology({
+          mode: 'neighborhood',
+          symbol: symbolNameOrId,
+          depth: 1,
+          maxNodes: 80,
+          maxEdges: 200,
+        });
+
+        if (sub.nodes && sub.nodes.length > 0) {
+          const allNodesMap = new Map<string, GlobeNode>();
+          for (const n of simNodesRef.current) {
+            allNodesMap.set(n.id, n);
+          }
+          let addedCount = 0;
+          const anchor = existing || { x: 0, y: 0 };
+
+          for (const sn of sub.nodes) {
+            if (!allNodesMap.has(sn.id)) {
+              allNodesMap.set(sn.id, sn);
+              addedCount++;
+              // Seed near the anchor node so it expands smoothly in-place
+              const h = hashString(sn.id);
+              const angle = ((h % 360) * Math.PI) / 180;
+              const dist = 45 + (h % 55);
+              nodeMapRef.current.set(sn.id, {
+                ...sn,
+                x: anchor.x + Math.cos(angle) * dist,
+                y: anchor.y + Math.sin(angle) * dist,
+                vx: 0,
+                vy: 0,
+                fx: null,
+                fy: null,
+                degree: (sn.in_degree || 0) + (sn.out_degree || 0) || 1,
+                radius: 6,
+              });
+            }
+          }
+
+          const combinedEdges: GlobeEdge[] = [
+            ...simEdgesRef.current.map((e) => ({
+              source: e.source,
+              target: e.target,
+              type: e.type,
+            })),
+            ...(sub.edges || []),
+          ];
+
+          if (addedCount > 0 || (sub.edges && sub.edges.length > 0)) {
+            const combinedNodes = Array.from(allNodesMap.values());
+            syncSimulationGraph(combinedNodes, combinedEdges, true);
+            setTopology((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    nodes: combinedNodes,
+                    edges: combinedEdges,
+                  }
+                : null
+            );
+          }
+
+          const targetNode =
+            nodeMapRef.current.get(symbolNameOrId) ||
+            Array.from(nodeMapRef.current.values()).find((n) => n.name === symbolNameOrId);
+
+          if (targetNode) {
+            setSelectedNodeId(targetNode.id);
+            setSearchParams({ symbol: targetNode.name }, { replace: true });
+            targetCameraRef.current = {
+              x: -targetNode.x,
+              y: -targetNode.y,
+              zoom: Math.max(cameraRef.current.zoom, 1.15),
+            };
+          }
+        }
+      } catch {
+        // Keep existing graph state if neighborhood fetch fails
+      }
+    },
+    [setSearchParams, syncSimulationGraph]
+  );
+
+  // Selected Node object
+  const selectedNode = useMemo(() => {
+    if (!selectedNodeId || !topology) return null;
+    return (
+      topology.nodes.find((n) => n.id === selectedNodeId) ||
+      topology.nodes.find((n) => n.name === selectedNodeId) ||
+      null
+    );
+  }, [selectedNodeId, topology]);
+
+  // Fetch inspector details (Callers, Callees, Similar Symbols) when selectedNode changes
+  // AND ensure any callers/callees are linked in the shared space!
   useEffect(() => {
     if (!selectedNode) {
       setCallers([]);
       setCallees([]);
+      setSimilarSymbols([]);
       return;
     }
-    setIsLoadingCalls(true);
-    fastAstApi
-      .getCallGraph(selectedNode.name)
-      .then((cg) => {
-        setCallers(cg.callers || []);
-        setCallees(cg.callees || []);
-        setIsLoadingCalls(false);
-      })
-      .catch(() => setIsLoadingCalls(false));
-  }, [selectedNode]);
 
-  // Reactivity for taxonomy, edge filters and active hop
-  useEffect(() => {
-    controlsRef.current?.applyFilters(
-      filterTaxonomy,
-      filterEdges,
-      activeHop,
-      selectedNode
-    );
-  }, [filterTaxonomy, filterEdges, activeHop, selectedNode]);
+    let cancelled = false;
+    setIsLoadingDetails(true);
 
-  // 2. Initialize 3D Three.js Spherical Planet
-  useEffect(() => {
-    if (viewMode !== '3d') return;
-    const container = containerRef.current;
-    if (!container || !topology) return;
+    Promise.all([
+      fastAstApi.getCallGraph(selectedNode.name).catch(() => ({
+        symbol: selectedNode.name,
+        callers: [],
+        callees: [],
+      })),
+      fastAstApi.getSimilarSymbols(selectedNode.name, 8).catch(() => []),
+    ]).then(([callData, simData]) => {
+      if (cancelled) return;
+      const inCallers = callData.callers || [];
+      const outCallees = callData.callees || [];
+      setCallers(inCallers);
+      setCallees(outCallees);
+      setSimilarSymbols(simData || []);
+      setIsLoadingDetails(false);
 
-    // Clear previous canvas if any
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
+      // Ensure callers & callees exist in the shared simulation space so they are visibly connected around the selected node
+      if (inCallers.length > 0 || outCallees.length > 0) {
+        const currentMap = nodeMapRef.current;
+        const centerSim = currentMap.get(selectedNode.id);
+        if (!centerSim) return;
 
-    const width = container.clientWidth || 800;
-    const height = container.clientHeight || 600;
+        const updatedNodes: GlobeNode[] = [...simNodesRef.current];
+        const updatedEdges: GlobeEdge[] = simEdgesRef.current.map((e) => ({
+          source: e.source,
+          target: e.target,
+          type: e.type,
+        }));
+        let changed = false;
 
-    // Scene & Camera
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2500);
-    camera.position.set(0, 30, 240);
+        const findOrAddCallNode = (
+          entryName: string,
+          entryFile: string,
+          entryLine: number,
+          entryKind: string,
+          idx: number,
+          isCaller: boolean
+        ): string => {
+          const existingByName =
+            simNodesRef.current.find(
+              (n) => n.name === entryName && (!entryFile || n.file_path === entryFile)
+            ) || simNodesRef.current.find((n) => n.name === entryName);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
-    container.appendChild(renderer.domElement);
-
-    const globeGroup = new THREE.Group();
-    scene.add(globeGroup);
-
-    const SPHERE_RADIUS = 72;
-
-    // A. Dark Glass Core
-    const coreGeo = new THREE.SphereGeometry(SPHERE_RADIUS * 0.98, 48, 48);
-    const coreMat = new THREE.MeshPhongMaterial({
-      color: 0x07090e,
-      emissive: 0x050c18,
-      specular: 0x38bdf8,
-      shininess: 90,
-      transparent: true,
-      opacity: 0.88,
-    });
-    const coreMesh = new THREE.Mesh(coreGeo, coreMat);
-    globeGroup.add(coreMesh);
-
-    // B. Meridian & Latitudinal Grid Rings
-    const gridGroup = new THREE.Group();
-    const ringMat = new THREE.LineBasicMaterial({
-      color: 0x1e293b,
-      transparent: true,
-      opacity: 0.35,
-      blending: THREE.AdditiveBlending,
-    });
-
-    for (let lat = -60; lat <= 60; lat += 30) {
-      const phi = (90 - lat) * (Math.PI / 180);
-      const r = SPHERE_RADIUS * Math.sin(phi);
-      const y = SPHERE_RADIUS * Math.cos(phi);
-      const pts = [];
-      const segments = 64;
-      for (let i = 0; i <= segments; i++) {
-        const theta = (i / segments) * Math.PI * 2;
-        pts.push(new THREE.Vector3(r * Math.cos(theta), y, r * Math.sin(theta)));
-      }
-      const ringGeo = new THREE.BufferGeometry().setFromPoints(pts);
-      gridGroup.add(new THREE.Line(ringGeo, ringMat));
-    }
-
-    for (let lon = 0; lon < 360; lon += 45) {
-      const theta = lon * (Math.PI / 180);
-      const pts = [];
-      const segments = 64;
-      for (let i = 0; i <= segments; i++) {
-        const phi = (i / segments) * Math.PI;
-        const x = SPHERE_RADIUS * Math.sin(phi) * Math.cos(theta);
-        const y = SPHERE_RADIUS * Math.cos(phi);
-        const z = SPHERE_RADIUS * Math.sin(phi) * Math.sin(theta);
-        pts.push(new THREE.Vector3(x, y, z));
-      }
-      const ringGeo = new THREE.BufferGeometry().setFromPoints(pts);
-      gridGroup.add(new THREE.Line(ringGeo, ringMat));
-    }
-    globeGroup.add(gridGroup);
-
-    // C. Atmosphere Halo Shell
-    const auraGeo = new THREE.SphereGeometry(SPHERE_RADIUS * 1.03, 32, 32);
-    const auraMat = new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
-      transparent: true,
-      opacity: 0.05,
-      side: THREE.BackSide,
-      blending: THREE.AdditiveBlending,
-    });
-    const auraMesh = new THREE.Mesh(auraGeo, auraMat);
-    globeGroup.add(auraMesh);
-
-    // Lat/Lon to 3D Vector
-    function latLonToVec3(lat: number, lon: number, radius: number): THREE.Vector3 {
-      const phi = (90 - lat) * (Math.PI / 180);
-      const theta = (lon + 180) * (Math.PI / 180);
-      const x = -(radius * Math.sin(phi) * Math.cos(theta));
-      const z = radius * Math.sin(phi) * Math.sin(theta);
-      const y = radius * Math.cos(phi);
-      return new THREE.Vector3(x, y, z);
-    }
-
-    // D. Compute positions & Render Nodes
-    const nodeMeshes: THREE.Mesh[] = [];
-    const nodePositions: THREE.Vector3[] = [];
-    const nodeGroup = new THREE.Group();
-    globeGroup.add(nodeGroup);
-
-    topology.nodes.forEach((node, idx) => {
-      const pos = latLonToVec3(node.lat, node.lon, SPHERE_RADIUS + (node.active ? 1.6 : 0.8));
-      nodePositions.push(pos);
-
-      const size = node.active
-        ? 3.6
-        : node.importance > 0.8
-        ? 2.4
-        : node.importance > 0.5
-        ? 1.6
-        : 1.0;
-
-      let geom: THREE.BufferGeometry;
-      if (node.kind === 'file') {
-        geom = new THREE.BoxGeometry(size * 1.1, size * 1.1, size * 1.1);
-      } else if (node.kind === 'class') {
-        geom = new THREE.OctahedronGeometry(size * 1.2, 0);
-      } else if (node.kind === 'type' || node.kind === 'struct') {
-        geom = new THREE.TetrahedronGeometry(size * 1.1, 0);
-      } else {
-        geom = new THREE.SphereGeometry(size, 14, 14);
-      }
-
-      const col = new THREE.Color(node.comm_color || '#38bdf8');
-      const mat = new THREE.MeshStandardMaterial({
-        color: col,
-        emissive: col,
-        emissiveIntensity: node.active ? 0.95 : 0.45,
-        roughness: 0.25,
-        metalness: 0.5,
-      });
-
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.position.copy(pos);
-      mesh.lookAt(new THREE.Vector3(0, 0, 0));
-      mesh.userData = { id: node.id, idx, data: node };
-      nodeMeshes.push(mesh);
-      nodeGroup.add(mesh);
-    });
-
-    // E. Beacon for selected node
-    const beaconGroup = new THREE.Group();
-    globeGroup.add(beaconGroup);
-
-    function updateBeacon(pos: THREE.Vector3) {
-      while (beaconGroup.children.length > 0) {
-        beaconGroup.remove(beaconGroup.children[0]);
-      }
-      const ringGeo = new THREE.RingGeometry(5.0, 6.2, 32);
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: 0x38bdf8,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.85,
-        blending: THREE.AdditiveBlending,
-      });
-      const beacon = new THREE.Mesh(ringGeo, ringMat);
-      beacon.position.copy(pos.clone().multiplyScalar(1.02));
-      beacon.lookAt(new THREE.Vector3(0, 0, 0));
-      beaconGroup.add(beacon);
-
-      const haloGeo = new THREE.RingGeometry(7.5, 8.5, 32);
-      const haloMat = new THREE.MeshBasicMaterial({
-        color: 0x818cf8,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.4,
-        blending: THREE.AdditiveBlending,
-      });
-      const halo = new THREE.Mesh(haloGeo, haloMat);
-      halo.position.copy(pos.clone().multiplyScalar(1.025));
-      halo.lookAt(new THREE.Vector3(0, 0, 0));
-      beaconGroup.add(halo);
-    }
-
-    if (nodePositions.length > 0) {
-      updateBeacon(nodePositions[0]);
-    }
-
-    // F. Curved Great-Circle Relational Arcs
-    const edgeGroup = new THREE.Group();
-    globeGroup.add(edgeGroup);
-    const edgeLines: Array<{ line: THREE.Line; edge: any }> = [];
-
-    function createCurvedArc(pA: THREE.Vector3, pB: THREE.Vector3, altitude: number) {
-      const points = [];
-      const segments = 24;
-      for (let i = 0; i <= segments; i++) {
-        const t = i / segments;
-        const p = new THREE.Vector3().lerpVectors(pA, pB, t);
-        const dist = pA.distanceTo(pB);
-        const arcHeight = Math.sin(t * Math.PI) * (dist * 0.22 + altitude);
-        p.normalize().multiplyScalar(SPHERE_RADIUS + arcHeight);
-        points.push(p);
-      }
-      return new THREE.BufferGeometry().setFromPoints(points);
-    }
-
-    topology.edges.forEach((rel) => {
-      const pA = nodePositions[rel.from];
-      const pB = nodePositions[rel.to];
-      if (!pA || !pB) return;
-
-      const isPrimary = rel.from === 0 || rel.to === 0;
-      const geo = createCurvedArc(pA, pB, isPrimary ? 3.5 : 1.2);
-      const mat = new THREE.LineBasicMaterial({
-        color: new THREE.Color(rel.color || '#38bdf8'),
-        transparent: true,
-        opacity: isPrimary ? 0.95 : 0.28,
-        blending: isPrimary ? THREE.AdditiveBlending : THREE.NormalBlending,
-      });
-      const line = new THREE.Line(geo, mat);
-      line.userData = { edge: rel };
-      edgeLines.push({ line, edge: rel });
-      edgeGroup.add(line);
-    });
-
-    // G. Lighting
-    const ambientLight = new THREE.AmbientLight(0x0f172a, 2.5);
-    scene.add(ambientLight);
-
-    const dirLight1 = new THREE.DirectionalLight(0x38bdf8, 2.0);
-    dirLight1.position.set(120, 100, 150);
-    scene.add(dirLight1);
-
-    const dirLight2 = new THREE.DirectionalLight(0xa855f7, 1.4);
-    dirLight2.position.set(-150, -80, -100);
-    scene.add(dirLight2);
-
-    // H. Mouse drag, Zoom, and Raycasting
-    let isDragging = false;
-    let prevMouse = { x: 0, y: 0 };
-    let targetRotX = 0.25;
-    let targetRotY = -0.55;
-    let curRotX = 0.25;
-    let curRotY = -0.55;
-    let localAutoOrbit = true;
-
-    const dom = renderer.domElement;
-
-    const onMouseDown = (e: MouseEvent) => {
-      isDragging = true;
-      localAutoOrbit = false;
-      setAutoRotate(false);
-      prevMouse = { x: e.clientX, y: e.clientY };
-    };
-
-    const onMouseUp = () => {
-      isDragging = false;
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isDragging) return;
-      const dx = e.clientX - prevMouse.x;
-      const dy = e.clientY - prevMouse.y;
-      targetRotY += dx * 0.005;
-      targetRotX += dy * 0.005;
-      targetRotX = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, targetRotX));
-      prevMouse = { x: e.clientX, y: e.clientY };
-
-      const az = Math.round(((targetRotY * 180) / Math.PI) % 360);
-      const el = Math.round((targetRotX * 180) / Math.PI);
-      setAzimuthText(`Azimuth ${Math.abs(az)}° • El ${el}°`);
-    };
-
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      camera.position.z += e.deltaY * 0.15;
-      camera.position.z = Math.max(120, Math.min(480, camera.position.z));
-    };
-
-    // Raycast click selection
-    const raycaster = new THREE.Raycaster();
-    const mouseCoord = new THREE.Vector2();
-
-    const onClick = (e: MouseEvent) => {
-      const rect = dom.getBoundingClientRect();
-      mouseCoord.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      mouseCoord.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-      raycaster.setFromCamera(mouseCoord, camera);
-      const intersects = raycaster.intersectObjects(nodeMeshes);
-
-      if (intersects.length > 0) {
-        const hit = intersects[0].object as THREE.Mesh;
-        const nodeData = hit.userData.data as GlobeNode;
-        setSelectedNode(nodeData);
-        updateBeacon(hit.position);
-      }
-    };
-
-    dom.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mouseup', onMouseUp);
-    window.addEventListener('mousemove', onMouseMove);
-    dom.addEventListener('wheel', onWheel, { passive: false });
-    dom.addEventListener('click', onClick);
-
-    // Expose control actions
-    controlsRef.current = {
-      recenter: () => {
-        targetRotX = 0.25;
-        targetRotY = -0.55;
-        camera.position.set(0, 30, 240);
-        localAutoOrbit = false;
-        setAutoRotate(false);
-      },
-      focusNode: (node: GlobeNode) => {
-        const phi = (90 - node.lat) * (Math.PI / 180);
-        const theta = (node.lon + 180) * (Math.PI / 180);
-        targetRotX = -(phi - Math.PI / 2);
-        targetRotY = -theta + Math.PI / 2;
-        camera.position.set(0, 15, 175);
-        localAutoOrbit = false;
-        setAutoRotate(false);
-        const idx = topology.nodes.findIndex((n) => n.id === node.id);
-        if (idx >= 0 && nodePositions[idx]) {
-          updateBeacon(nodePositions[idx]);
-        }
-      },
-      viewPoles: () => {
-        targetRotX = Math.PI / 2.2;
-        targetRotY = 0;
-        localAutoOrbit = false;
-        setAutoRotate(false);
-      },
-      toggleOrbit: () => {
-        localAutoOrbit = !localAutoOrbit;
-        setAutoRotate(localAutoOrbit);
-      },
-      applyFilters: (
-        tax: typeof filterTaxonomy,
-        edg: typeof filterEdges,
-        hop: number | 'full',
-        selected: GlobeNode | null
-      ) => {
-        const selectedName = selected?.name;
-        const neighborNames = new Set<string>();
-        if (selectedName) {
-          neighborNames.add(selectedName);
-          topology.edges.forEach((e) => {
-            if (e.src === selectedName) neighborNames.add(e.dst);
-            if (e.dst === selectedName) neighborNames.add(e.src);
-          });
-        }
-
-        nodeMeshes.forEach((mesh) => {
-          const node = mesh.userData.data as GlobeNode;
-          let visible = true;
-          const kind = (node.kind || '').toLowerCase();
-          if (kind.includes('func') || kind === 'method') {
-            visible = tax.functions;
-          } else if (kind === 'class' || kind === 'struct') {
-            visible = tax.classes;
-          } else if (kind === 'type' || kind === 'interface') {
-            visible = tax.types;
-          } else if (kind === 'file') {
-            visible = tax.files;
+          if (existingByName) {
+            return existingByName.id;
           }
 
-          if (visible && hop === 1 && selectedName) {
-            visible = neighborNames.has(node.name);
+          const newId = `${entryFile || 'repo'}::${entryName}`;
+          if (!currentMap.has(newId)) {
+            const angle = ((idx * 47 + (isCaller ? 20 : 200)) * Math.PI) / 180;
+            const dist = 75 + (idx % 4) * 22;
+            const newNode: SimNode = {
+              id: newId,
+              name: entryName,
+              kind: entryKind || 'function',
+              signature: `${entryName}()`,
+              file_path: entryFile || '',
+              language: '',
+              start_line: entryLine || 1,
+              end_line: entryLine || 1,
+              in_degree: isCaller ? 0 : 1,
+              out_degree: isCaller ? 1 : 0,
+              importance: 1,
+              comm: centerSim.comm ?? 0,
+              comm_name: centerSim.comm_name || 'Connected',
+              comm_color: centerSim.comm_color || '#38bdf8',
+              x: centerSim.x + Math.cos(angle) * dist,
+              y: centerSim.y + Math.sin(angle) * dist,
+              vx: 0,
+              vy: 0,
+              fx: null,
+              fy: null,
+              degree: 2,
+              radius: 5.5,
+            };
+            currentMap.set(newId, newNode);
+            updatedNodes.push(newNode);
+            changed = true;
           }
-          mesh.visible = visible;
-        });
+          return newId;
+        };
 
-        edgeLines.forEach(({ line, edge }) => {
-          let visible = true;
-          const relType = (edge.type || '').toUpperCase();
-          if (relType === 'CALLS') visible = edg.calls;
-          else if (relType === 'IMPORTS') visible = edg.imports;
-          else if (relType === 'DEFINES') visible = edg.defines;
-          else if (relType === 'INHERITS') visible = edg.inherits;
-          else if (relType === 'SIMILAR_TO' || relType === 'SIMILAR') visible = edg.similar;
-
-          const touchesSelected =
-            selectedName && (edge.src === selectedName || edge.dst === selectedName);
-
-          if (visible && hop === 1 && selectedName) {
-            visible = !!touchesSelected;
-          }
-          line.visible = visible;
-
-          const mat = line.material as THREE.LineBasicMaterial;
-          if (touchesSelected) {
-            mat.opacity = 0.95;
-          } else {
-            mat.opacity = selectedName ? 0.15 : 0.28;
+        inCallers.slice(0, 20).forEach((caller, idx) => {
+          const callerName = caller.caller || caller.callee || '';
+          if (!callerName) return;
+          const callerId = findOrAddCallNode(
+            callerName,
+            caller.file_path,
+            caller.line_number,
+            caller.kind || 'function',
+            idx,
+            true
+          );
+          const hasEdge = updatedEdges.some(
+            (e) =>
+              (e.source === callerId && e.target === selectedNode.id) ||
+              (e.source === selectedNode.id && e.target === callerId)
+          );
+          if (!hasEdge && callerId !== selectedNode.id) {
+            updatedEdges.push({
+              source: callerId,
+              target: selectedNode.id,
+              type: 'CALLS',
+            });
+            changed = true;
           }
         });
-      },
-      sceneNodes: nodeMeshes,
-    };
 
-    // Resize handler
-    const onResize = () => {
-      if (!container) return;
-      const w = container.clientWidth;
-      const h = container.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    window.addEventListener('resize', onResize);
+        outCallees.slice(0, 20).forEach((callee, idx) => {
+          const calleeName = callee.callee || callee.caller || '';
+          if (!calleeName) return;
+          const calleeId = findOrAddCallNode(
+            calleeName,
+            callee.file_path,
+            callee.line_number,
+            callee.kind || 'function',
+            idx,
+            false
+          );
+          const hasEdge = updatedEdges.some(
+            (e) =>
+              (e.source === selectedNode.id && e.target === calleeId) ||
+              (e.source === calleeId && e.target === selectedNode.id)
+          );
+          if (!hasEdge && calleeId !== selectedNode.id) {
+            updatedEdges.push({
+              source: selectedNode.id,
+              target: calleeId,
+              type: 'CALLS',
+            });
+            changed = true;
+          }
+        });
 
-    // Animation Loop
-    let animId: number;
-    const clock = new THREE.Clock();
-
-    const animate = () => {
-      animId = requestAnimationFrame(animate);
-      const delta = clock.getDelta();
-      const time = clock.getElapsedTime();
-
-      if (localAutoOrbit && !isDragging) {
-        targetRotY += delta * 0.08;
+        if (changed) {
+          syncSimulationGraph(updatedNodes, updatedEdges, true);
+          setTopology((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  nodes: updatedNodes,
+                  edges: updatedEdges,
+                }
+              : null
+          );
+        }
       }
-
-      curRotX += (targetRotX - curRotX) * 0.08;
-      curRotY += (targetRotY - curRotY) * 0.08;
-
-      globeGroup.rotation.x = curRotX;
-      globeGroup.rotation.y = curRotY;
-
-      if (glowEnabled) {
-        auraMesh.scale.setScalar(1 + Math.sin(time * 1.5) * 0.008);
-      }
-      ringMat.opacity = 0.28 + Math.sin(time * 2.0) * 0.06;
-
-      renderer.render(scene, camera);
-    };
-
-    animate();
+    });
 
     return () => {
-      cancelAnimationFrame(animId);
-      dom.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mouseup', onMouseUp);
-      window.removeEventListener('mousemove', onMouseMove);
-      dom.removeEventListener('wheel', onWheel);
-      dom.removeEventListener('click', onClick);
-      window.removeEventListener('resize', onResize);
-      renderer.dispose();
+      cancelled = true;
     };
-  }, [topology, glowEnabled, viewMode]);
+  }, [selectedNode, syncSimulationGraph]);
 
-  // 3. Initialize & Animate 2D Interactive Network Graph (Approved Graph UI)
+  // Symbol Search debounce in left panel
   useEffect(() => {
-    if (viewMode !== '2d') return;
-    const canvas = canvas2dRef.current;
-    if (!canvas || !topology) return;
+    if (!symbolQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const res = await fastAstApi.searchSymbols(symbolQuery.trim(), undefined, undefined, 15);
+        setSearchResults(res);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [symbolQuery]);
 
+  // Compute Hop Distances from Selected Node + Visible Sets
+  const { visibleNodeIds, visibleEdges, oneHopIds, twoHopIds, edgeTypeCounts, kindCounts } =
+    useMemo(() => {
+      const nodes = topology?.nodes || [];
+      const edges = topology?.edges || [];
+
+      const eCounts: Record<string, number> = {
+        CALLS: 0,
+        DEFINES: 0,
+        IMPORTS: 0,
+        INHERITS: 0,
+        SIMILAR_TO: 0,
+      };
+      for (const e of edges) {
+        const t = (e.type || 'CALLS').toUpperCase();
+        eCounts[t] = (eCounts[t] || 0) + 1;
+      }
+
+      const kCounts: Record<string, number> = {
+        function: 0,
+        method: 0,
+        class: 0,
+        other: 0,
+      };
+      for (const n of nodes) {
+        const k = (n.kind || 'function').toLowerCase();
+        if (k === 'function') kCounts.function++;
+        else if (k === 'method') kCounts.method++;
+        else if (k === 'class' || k === 'struct' || k === 'interface' || k === 'type')
+          kCounts.class++;
+        else kCounts.other++;
+      }
+
+      // Filter nodes by kind toggle
+      const kindAllowed = new Set<string>();
+      for (const n of nodes) {
+        const k = (n.kind || 'function').toLowerCase();
+        const bucket =
+          k === 'function'
+            ? 'function'
+            : k === 'method'
+              ? 'method'
+              : k === 'class' || k === 'struct' || k === 'interface' || k === 'type'
+                ? 'class'
+                : 'other';
+        if (kindFilters[bucket] || n.id === selectedNodeId) {
+          kindAllowed.add(n.id);
+        }
+      }
+
+      // Filter edges by active edge type toggles
+      const activeEdges = edges.filter((e) => {
+        const t = (e.type || 'CALLS').toUpperCase();
+        return (
+          edgeFilters[t] !== false &&
+          kindAllowed.has(e.source) &&
+          kindAllowed.has(e.target)
+        );
+      });
+
+      // Compute 1-hop and 2-hop sets around selectedNodeId
+      const hop1 = new Set<string>();
+      const hop2 = new Set<string>();
+      if (selectedNodeId) {
+        hop1.add(selectedNodeId);
+        for (const e of activeEdges) {
+          if (e.source === selectedNodeId) hop1.add(e.target);
+          else if (e.target === selectedNodeId) hop1.add(e.source);
+        }
+        for (const id of hop1) {
+          hop2.add(id);
+        }
+        for (const e of activeEdges) {
+          if (hop1.has(e.source)) hop2.add(e.target);
+          if (hop1.has(e.target)) hop2.add(e.source);
+        }
+      }
+
+      // Determine visible nodes based on hopScope ('all' vs 1 vs 2)
+      const visNodes = new Set<string>();
+      if (hopScope === 'all' || !selectedNodeId) {
+        for (const id of kindAllowed) visNodes.add(id);
+      } else if (hopScope === 1) {
+        for (const id of hop1) {
+          if (kindAllowed.has(id)) visNodes.add(id);
+        }
+      } else {
+        for (const id of hop2) {
+          if (kindAllowed.has(id)) visNodes.add(id);
+        }
+      }
+
+      const visEdges = activeEdges.filter(
+        (e) => visNodes.has(e.source) && visNodes.has(e.target)
+      );
+
+      return {
+        visibleNodeIds: visNodes,
+        visibleEdges: visEdges,
+        oneHopIds: hop1,
+        twoHopIds: hop2,
+        edgeTypeCounts: eCounts,
+        kindCounts: kCounts,
+      };
+    }, [topology, edgeFilters, kindFilters, selectedNodeId, hopScope]);
+
+  // Fit all currently visible nodes in the viewport
+  const handleFitView = useCallback(() => {
+    const visible = simNodesRef.current.filter((n) => visibleNodeIds.has(n.id));
+    if (visible.length === 0) return;
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (const n of visible) {
+      if (n.x < minX) minX = n.x;
+      if (n.x > maxX) maxX = n.x;
+      if (n.y < minY) minY = n.y;
+      if (n.y > maxY) maxY = n.y;
+    }
+
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const spanX = Math.max(120, maxX - minX + 120);
+    const spanY = Math.max(120, maxY - minY + 120);
+
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const width = rect?.width || 900;
+    const height = rect?.height || 650;
+
+    const zoom = Math.max(0.28, Math.min(2.2, Math.min(width / spanX, height / spanY) * 0.88));
+    targetCameraRef.current = { x: -cx, y: -cy, zoom };
+  }, [visibleNodeIds]);
+
+  // Center on currently selected node
+  const handleCenterSelected = useCallback(() => {
+    if (!selectedNodeId) {
+      handleFitView();
+      return;
+    }
+    const sn = nodeMapRef.current.get(selectedNodeId);
+    if (sn) {
+      targetCameraRef.current = {
+        x: -sn.x,
+        y: -sn.y,
+        zoom: Math.max(cameraRef.current.zoom, 1.25),
+      };
+    }
+  }, [selectedNodeId, handleFitView]);
+
+  // Re-heat physics simulation
+  const handleRelayout = useCallback(() => {
+    for (const n of simNodesRef.current) {
+      n.fx = null;
+      n.fy = null;
+    }
+    setIsPaused(false);
+    alphaRef.current = 0.9;
+  }, []);
+
+  // Main 2D Canvas Force Simulation + Render Loop
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    let animId: number;
-    let animOffset = 0;
-    let isDragging = false;
-    let draggedNode: any = null;
-    let startPos = { x: 0, y: 0 };
-    let didMove = false;
+    let animationFrameId: number;
 
-    const parent = canvas.parentElement;
-    const w = parent?.clientWidth || 800;
-    const h = parent?.clientHeight || 600;
-
-    const activeNode = selectedNode || topology.nodes[0];
-    if (!activeNode) return;
-
-    const centerId = activeNode.name;
-    const centerColor = activeNode.comm_color || '#38bdf8';
-
-    const nodesMap = new Map<string, any>();
-    const edgesList: Array<{ from: string; to: string; type: string; color: string }> = [];
-
-    // Center Node (Focus Target)
-    nodesMap.set(centerId, {
-      id: centerId,
-      name: activeNode.name,
-      kind: activeNode.kind || 'function',
-      filePath: activeNode.file_path || '',
-      x: w / 2,
-      y: h / 2,
-      vx: 0,
-      vy: 0,
-      radius: 20,
-      color: centerColor,
-      community: activeNode.comm_name || 'Core Subsystem',
-      isCenter: true,
-      isInbound: false,
-      isOutbound: false,
-      rawNode: activeNode,
-    });
-
-    // Inbound Callers (Arrayed to the Left)
-    const validCallers = (callers || []).slice(0, 7);
-    const cCount = validCallers.length;
-    validCallers.forEach((c, idx) => {
-      const cId = c.caller;
-      const targetY = h / 2 + (idx - (cCount - 1) / 2) * 58;
-      const targetX = Math.max(90, w / 2 - 240);
-      const raw = topology.nodes.find((n) => n.name === cId);
-      const col = raw?.comm_color || '#38bdf8';
-
-      nodesMap.set(cId, {
-        id: cId,
-        name: cId,
-        kind: raw?.kind || 'caller',
-        filePath: c.file_path || raw?.file_path || '',
-        x: targetX,
-        y: targetY,
-        vx: 0,
-        vy: 0,
-        radius: 14,
-        color: col,
-        community: raw?.comm_name || 'Inbound',
-        isCenter: false,
-        isInbound: true,
-        isOutbound: false,
-        rawNode: raw,
-      });
-
-      if (filterEdges.calls) {
-        edgesList.push({
-          from: cId,
-          to: centerId,
-          type: 'CALLS',
-          color: '#38bdf8',
-        });
+    const resizeCanvas = () => {
+      const parent = containerRef.current;
+      if (!parent || !canvas) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = parent.clientWidth;
+      const h = parent.clientHeight;
+      if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
       }
-    });
+    };
 
-    // Outbound Callees (Arrayed to the Right)
-    const validCallees = (callees || []).slice(0, 7);
-    const outCount = validCallees.length;
-    validCallees.forEach((c, idx) => {
-      const cId = c.callee;
-      const targetY = h / 2 + (idx - (outCount - 1) / 2) * 58;
-      const targetX = Math.min(w - 90, w / 2 + 240);
-      const raw = topology.nodes.find((n) => n.name === cId);
-      const col = raw?.comm_color || '#a855f7';
-
-      nodesMap.set(cId, {
-        id: cId,
-        name: cId,
-        kind: raw?.kind || 'callee',
-        filePath: c.file_path || raw?.file_path || '',
-        x: targetX,
-        y: targetY,
-        vx: 0,
-        vy: 0,
-        radius: 14,
-        color: col,
-        community: raw?.comm_name || 'Outbound',
-        isCenter: false,
-        isInbound: false,
-        isOutbound: true,
-        rawNode: raw,
-      });
-
-      if (filterEdges.calls) {
-        edgesList.push({
-          from: centerId,
-          to: cId,
-          type: 'CALLS',
-          color: '#a855f7',
-        });
-      }
-    });
-
-    // Extended Hop Neighbors (2-Hop / Full)
-    if (activeHop === 2 || activeHop === 3 || activeHop === 'full') {
-      const maxExtra = activeHop === 2 ? 6 : activeHop === 3 ? 12 : 20;
-      let added = 0;
-      for (const n of topology.nodes) {
-        if (added >= maxExtra) break;
-        if (nodesMap.has(n.name)) continue;
-        const isNeighbor = topology.edges.some(
-          (e) => (e.src === n.name && nodesMap.has(e.dst)) || (e.dst === n.name && nodesMap.has(e.src))
-        );
-        if (isNeighbor || n.comm === activeNode.comm) {
-          const angle = (added / maxExtra) * Math.PI * 2;
-          const dist = 320;
-          nodesMap.set(n.name, {
-            id: n.name,
-            name: n.name,
-            kind: n.kind,
-            filePath: n.file_path,
-            x: w / 2 + Math.cos(angle) * dist,
-            y: h / 2 + Math.sin(angle) * (dist * 0.7),
-            vx: 0,
-            vy: 0,
-            radius: 12,
-            color: n.comm_color || '#34d399',
-            community: n.comm_name,
-            isCenter: false,
-            isInbound: false,
-            isOutbound: false,
-            rawNode: n,
-          });
-          added++;
-        }
-      }
-
-      topology.edges.forEach((e) => {
-        if (nodesMap.has(e.src) && nodesMap.has(e.dst)) {
-          if (!edgesList.some((ex) => ex.from === e.src && ex.to === e.dst)) {
-            edgesList.push({
-              from: e.src,
-              to: e.dst,
-              type: e.type || 'CALLS',
-              color: e.type === 'IMPORTS' ? '#a855f7' : e.type === 'DEFINES' ? '#fbbf24' : '#38bdf8',
-            });
-          }
-        }
-      });
+    resizeCanvas();
+    const resizeObserver = new ResizeObserver(resizeCanvas);
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
     }
 
-    const currentNodes = Array.from(nodesMap.values());
-    simNodesRef.current = currentNodes;
+    const renderFrame = () => {
+      animationFrameId = requestAnimationFrame(renderFrame);
 
-    const resize = () => {
-      const p = canvas.parentElement;
-      if (!p) return;
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = p.clientWidth * dpr;
-      canvas.height = p.clientHeight * dpr;
-      ctx.resetTransform?.();
-      ctx.scale(dpr, dpr);
-    };
+      resizeCanvas();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const width = canvas.width / dpr;
+      const height = canvas.height / dpr;
 
-    resize();
-    window.addEventListener('resize', resize);
-
-    const onMouseDown = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      startPos = { x, y };
-      didMove = false;
-
-      for (const n of simNodesRef.current) {
-        const dx = n.x - x;
-        const dy = n.y - y;
-        if (Math.sqrt(dx * dx + dy * dy) <= n.radius + 6) {
-          isDragging = true;
-          draggedNode = n;
-          break;
+      // Smooth camera interpolation
+      if (targetCameraRef.current) {
+        const cam = cameraRef.current;
+        const tgt = targetCameraRef.current;
+        cam.x += (tgt.x - cam.x) * 0.14;
+        cam.y += (tgt.y - cam.y) * 0.14;
+        cam.zoom += (tgt.zoom - cam.zoom) * 0.14;
+        if (
+          Math.abs(tgt.x - cam.x) < 0.4 &&
+          Math.abs(tgt.y - cam.y) < 0.4 &&
+          Math.abs(tgt.zoom - cam.zoom) < 0.005
+        ) {
+          targetCameraRef.current = null;
         }
       }
-    };
 
-    const onMouseMove = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-
-      if (isDragging && draggedNode) {
-        const dx = x - startPos.x;
-        const dy = y - startPos.y;
-        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didMove = true;
-        draggedNode.x = Math.max(35, Math.min(rect.width - 35, x));
-        draggedNode.y = Math.max(35, Math.min(rect.height - 35, y));
-      } else {
-        const hovering = simNodesRef.current.some((n) => {
-          const dx = n.x - x;
-          const dy = n.y - y;
-          return Math.sqrt(dx * dx + dy * dy) <= n.radius + 6;
-        });
-        canvas.style.cursor = hovering ? 'pointer' : 'default';
+      // Physics step if not paused
+      const nodes = simNodesRef.current;
+      const edges = simEdgesRef.current;
+      if (!isPausedRef.current && nodes.length > 0 && alphaRef.current > 0.008) {
+        runForceSteps(
+          nodes,
+          edges,
+          nodeMapRef.current,
+          1,
+          alphaRef.current,
+          selectedNodeId,
+          oneHopIds
+        );
+        alphaRef.current *= 0.985;
       }
-    };
 
-    const onMouseUp = () => {
-      if (isDragging && draggedNode) {
-        if (!didMove) {
-          if (draggedNode.rawNode) {
-            setSelectedNode(draggedNode.rawNode);
-          } else {
-            const found = topology.nodes.find((n) => n.name === draggedNode?.name);
-            if (found) {
-              setSelectedNode(found);
-            } else {
-              setSelectedNode({
-                id: Math.floor(Math.random() * 10000),
-                idx: 0,
-                name: draggedNode.name,
-                kind: draggedNode.kind,
-                signature: `${draggedNode.kind} ${draggedNode.name}()`,
-                file_path: draggedNode.filePath,
-                start_line: 1,
-                end_line: 50,
-                comm: 0,
-                comm_name: draggedNode.community,
-                comm_color: draggedNode.color,
-                importance: 0.8,
-                lat: 0,
-                lon: 0,
-                active: true,
-              });
-            }
+      // Clear background (#080b11 CBM dark canvas)
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.fillStyle = '#080b11';
+      ctx.fillRect(0, 0, width, height);
+
+      const cam = cameraRef.current;
+      const centerX = width / 2 + cam.x * cam.zoom;
+      const centerY = height / 2 + cam.y * cam.zoom;
+
+      // Subtle architectural coordinate grid
+      const gridStep = 80 * cam.zoom;
+      if (gridStep >= 18) {
+        ctx.strokeStyle = 'rgba(30, 41, 59, 0.35)';
+        ctx.lineWidth = 1;
+        const startX = ((centerX % gridStep) + gridStep) % gridStep;
+        const startY = ((centerY % gridStep) + gridStep) % gridStep;
+        ctx.beginPath();
+        for (let x = startX; x < width; x += gridStep) {
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, height);
+        }
+        for (let y = startY; y < height; y += gridStep) {
+          ctx.moveTo(0, y);
+          ctx.lineTo(width, y);
+        }
+        ctx.stroke();
+      }
+
+      // Apply camera transform
+      ctx.translate(centerX, centerY);
+      ctx.scale(cam.zoom, cam.zoom);
+
+      const hasSelection = Boolean(selectedNodeId);
+
+      // 1. Draw Edges
+      for (const edge of visibleEdges) {
+        const src = nodeMapRef.current.get(edge.source);
+        const tgt = nodeMapRef.current.get(edge.target);
+        if (!src || !tgt) continue;
+
+        const isIncidentToSelected =
+          hasSelection &&
+          (edge.source === selectedNodeId || edge.target === selectedNodeId);
+        const isIncidentToHovered =
+          Boolean(hoveredNodeId) &&
+          (edge.source === hoveredNodeId || edge.target === hoveredNodeId);
+        const isTwoHopEdge =
+          hasSelection &&
+          oneHopIds.has(edge.source) &&
+          oneHopIds.has(edge.target);
+
+        const edgeType = (edge.type || 'CALLS').toUpperCase();
+        const baseColor = EDGE_COLORS[edgeType] || '#38bdf8';
+
+        ctx.beginPath();
+        ctx.moveTo(src.x, src.y);
+        ctx.lineTo(tgt.x, tgt.y);
+
+        if (isIncidentToSelected || isIncidentToHovered) {
+          ctx.strokeStyle = baseColor;
+          ctx.globalAlpha = 0.88;
+          ctx.lineWidth = Math.max(1.4, 2.0 / Math.sqrt(cam.zoom));
+        } else if (isTwoHopEdge) {
+          ctx.strokeStyle = baseColor;
+          ctx.globalAlpha = 0.38;
+          ctx.lineWidth = 1.1 / Math.sqrt(cam.zoom);
+        } else {
+          ctx.strokeStyle = baseColor;
+          ctx.globalAlpha = hasSelection ? 0.16 : 0.28;
+          ctx.lineWidth = 0.9 / Math.sqrt(cam.zoom);
+        }
+        ctx.stroke();
+
+        // Draw subtle directional arrow on incident CALLS edges
+        if ((isIncidentToSelected || isIncidentToHovered) && edgeType === 'CALLS') {
+          const dx = tgt.x - src.x;
+          const dy = tgt.y - src.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > tgt.radius + src.radius + 10) {
+            const ux = dx / dist;
+            const uy = dy / dist;
+            const tipX = tgt.x - ux * (tgt.radius + 3);
+            const tipY = tgt.y - uy * (tgt.radius + 3);
+            const arrowLen = 6 / Math.sqrt(cam.zoom);
+            const arrowWing = 3.2 / Math.sqrt(cam.zoom);
+
+            ctx.beginPath();
+            ctx.moveTo(tipX, tipY);
+            ctx.lineTo(
+              tipX - ux * arrowLen - uy * arrowWing,
+              tipY - uy * arrowLen + ux * arrowWing
+            );
+            ctx.lineTo(
+              tipX - ux * arrowLen + uy * arrowWing,
+              tipY - uy * arrowLen - ux * arrowWing
+            );
+            ctx.closePath();
+            ctx.fillStyle = baseColor;
+            ctx.globalAlpha = 0.92;
+            ctx.fill();
           }
         }
       }
-      isDragging = false;
-      draggedNode = null;
-    };
 
-    canvas.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+      // 2. Draw Nodes
+      for (const node of nodes) {
+        if (!visibleNodeIds.has(node.id)) continue;
 
-    const render = () => {
-      const rect = canvas.getBoundingClientRect();
-      const width = rect.width;
-      const height = rect.height;
+        const isSelected = node.id === selectedNodeId;
+        const isHovered = node.id === hoveredNodeId;
+        const isOneHop = oneHopIds.has(node.id);
+        const isTwoHop = twoHopIds.has(node.id);
 
-      ctx.clearRect(0, 0, width, height);
+        const color = getNodeColor(node, colorBy);
+        const r = isSelected ? node.radius * 1.25 : isHovered ? node.radius * 1.15 : node.radius;
 
-      // Subtle Background Grid
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
-      ctx.lineWidth = 1;
-      for (let x = 0; x < width; x += 44) {
+        ctx.globalAlpha =
+          !hasSelection || isSelected || isHovered || isOneHop
+            ? 1.0
+            : isTwoHop
+              ? 0.72
+              : 0.42;
+
+        // Selected node outer glow & double highlight ring (matches CBM reference screenshot)
+        if (isSelected) {
+          const glowRadius = r + 14 / Math.sqrt(cam.zoom);
+          const grad = ctx.createRadialGradient(
+            node.x,
+            node.y,
+            r * 0.5,
+            node.x,
+            node.y,
+            glowRadius
+          );
+          grad.addColorStop(0, 'rgba(56, 189, 248, 0.45)');
+          grad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Outer bright cyan ring
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, r + 5.5 / Math.sqrt(cam.zoom), 0, Math.PI * 2);
+          ctx.strokeStyle = '#38bdf8';
+          ctx.lineWidth = 2.2 / Math.sqrt(cam.zoom);
+          ctx.stroke();
+
+          // Inner crisp white ring
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, r + 2.2 / Math.sqrt(cam.zoom), 0, Math.PI * 2);
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.4 / Math.sqrt(cam.zoom);
+          ctx.stroke();
+        } else if (isHovered) {
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, r + 4 / Math.sqrt(cam.zoom), 0, Math.PI * 2);
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.6 / Math.sqrt(cam.zoom);
+          ctx.stroke();
+        } else if (hasSelection && isOneHop) {
+          // Subtle ring around direct connected callers/callees
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, r + 2.5 / Math.sqrt(cam.zoom), 0, Math.PI * 2);
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = 0.65;
+          ctx.lineWidth = 1.1 / Math.sqrt(cam.zoom);
+          ctx.stroke();
+          ctx.globalAlpha = 1.0;
+        }
+
+        // Main node circle
         ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-        ctx.stroke();
-      }
-      for (let y = 0; y < height; y += 44) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-      }
-
-      // Render Edges
-      edgesList.forEach((edge, idx) => {
-        const source = nodesMap.get(edge.from);
-        const target = nodesMap.get(edge.to);
-        if (!source || !target) return;
-
-        const isRelated = edge.from === activeNode.name || edge.to === activeNode.name;
-
-        ctx.strokeStyle = isRelated ? edge.color : 'rgba(100, 116, 139, 0.25)';
-        ctx.lineWidth = isRelated ? 2.2 : 1;
-
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-
-        // Arrowhead
-        const headlen = 7;
-        const angle = Math.atan2(target.y - source.y, target.x - source.x);
-        const arrowDist = target.radius + 3;
-        const arrowX = target.x - arrowDist * Math.cos(angle);
-        const arrowY = target.y - arrowDist * Math.sin(angle);
-
-        ctx.fillStyle = isRelated ? edge.color : 'rgba(100, 116, 139, 0.4)';
-        ctx.beginPath();
-        ctx.moveTo(arrowX, arrowY);
-        ctx.lineTo(
-          arrowX - headlen * Math.cos(angle - Math.PI / 7),
-          arrowY - headlen * Math.sin(angle - Math.PI / 7)
-        );
-        ctx.lineTo(
-          arrowX - headlen * Math.cos(angle + Math.PI / 7),
-          arrowY - headlen * Math.sin(angle + Math.PI / 7)
-        );
-        ctx.closePath();
+        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = color;
         ctx.fill();
 
-        // Directional pulse particle
-        if (animRunning2D && isRelated) {
-          const t = ((animOffset * 0.015) + idx * 0.28) % 1;
-          const px = source.x + (target.x - source.x) * t;
-          const py = source.y + (target.y - source.y) * t;
-          ctx.beginPath();
-          ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-          ctx.fillStyle = edge.color;
-          ctx.shadowColor = edge.color;
-          ctx.shadowBlur = 8;
-          ctx.fill();
-          ctx.shadowBlur = 0;
-        }
-      });
-
-      // Render Nodes
-      currentNodes.forEach((node) => {
-        const isCenter = node.isCenter;
-        const isNeighbor = node.isInbound || node.isOutbound;
-
-        if (isCenter) {
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, node.radius + 9, 0, Math.PI * 2);
-          ctx.fillStyle = `${node.color}33`;
-          ctx.fill();
-        }
-
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-        ctx.fillStyle = isCenter ? node.color : isNeighbor ? `${node.color}dd` : '#1e293b';
-        ctx.fill();
-
-        ctx.strokeStyle = isCenter ? '#ffffff' : node.color;
-        ctx.lineWidth = isCenter ? 2.5 : 1.8;
+        // Crisp dark border around node
+        ctx.lineWidth = 1.2 / Math.sqrt(cam.zoom);
+        ctx.strokeStyle = isSelected ? '#ffffff' : '#080b11';
         ctx.stroke();
-
-        ctx.font = isCenter ? 'bold 12px monospace' : '11px monospace';
-        ctx.fillStyle = isCenter ? '#ffffff' : isNeighbor ? '#f1f5f9' : '#94a3b8';
-        const label = node.name;
-        const textWidth = ctx.measureText(label).width;
-        ctx.fillText(label, node.x - textWidth / 2, node.y + node.radius + 15);
-
-        if (isCenter || isNeighbor) {
-          ctx.font = '9px sans-serif';
-          ctx.fillStyle = isCenter ? node.color : 'rgba(255, 255, 255, 0.6)';
-          const sub = isCenter ? 'ACTIVE FOCUS' : node.isInbound ? 'INBOUND' : 'OUTBOUND';
-          const subWidth = ctx.measureText(sub).width;
-          ctx.fillText(sub, node.x - subWidth / 2, node.y - node.radius - 6);
-        }
-      });
-
-      if (animRunning2D) {
-        animOffset += 1;
       }
-      animId = requestAnimationFrame(render);
+
+      // 3. Draw Visible Symbol Labels (CBM style monospace labels)
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+
+      for (const node of nodes) {
+        if (!visibleNodeIds.has(node.id)) continue;
+
+        const isSelected = node.id === selectedNodeId;
+        const isHovered = node.id === hoveredNodeId;
+        const isOneHop = oneHopIds.has(node.id);
+        const isHub = node.degree >= 5;
+
+        let shouldShowLabel = false;
+        if (isSelected || isHovered || isOneHop) {
+          shouldShowLabel = true;
+        } else if (labelMode === 'all') {
+          shouldShowLabel = cam.zoom >= 0.42 || isHub;
+        } else if (labelMode === 'smart') {
+          shouldShowLabel = cam.zoom >= 0.75 || isHub;
+        } else if (labelMode === 'focus') {
+          shouldShowLabel = isSelected || isHovered || isOneHop;
+        }
+
+        if (!shouldShowLabel) continue;
+
+        const fontSize =
+          (isSelected || isHovered ? 12.5 : isOneHop ? 11 : 10) /
+          Math.pow(cam.zoom, 0.35);
+        ctx.font = `${isSelected || isHovered ? '700' : '500'} ${fontSize.toFixed(1)}px "JetBrains Mono", monospace`;
+
+        const labelText =
+          node.name.length > 34 && !isSelected && !isHovered
+            ? `${node.name.slice(0, 32)}…`
+            : node.name;
+
+        const r = isSelected ? node.radius * 1.25 : node.radius;
+        const labelY = node.y + r + 4 / Math.sqrt(cam.zoom);
+
+        ctx.globalAlpha =
+          isSelected || isHovered
+            ? 1.0
+            : isOneHop
+              ? 0.95
+              : !hasSelection
+                ? 0.85
+                : 0.55;
+
+        // Pill background on selected / hovered / 1-hop labels for high legibility over edges
+        if (isSelected || isHovered || isOneHop) {
+          const textWidth = ctx.measureText(labelText).width;
+          const padX = 5 / Math.sqrt(cam.zoom);
+          const padY = 2 / Math.sqrt(cam.zoom);
+          const boxW = textWidth + padX * 2;
+          const boxH = fontSize + padY * 2;
+
+          ctx.fillStyle = isSelected
+            ? 'rgba(14, 22, 38, 0.94)'
+            : 'rgba(10, 14, 23, 0.84)';
+          ctx.beginPath();
+          ctx.roundRect(
+            node.x - boxW / 2,
+            labelY - padY,
+            boxW,
+            boxH,
+            4 / Math.sqrt(cam.zoom)
+          );
+          ctx.fill();
+
+          if (isSelected) {
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 1.1 / Math.sqrt(cam.zoom);
+            ctx.stroke();
+          }
+        } else {
+          // Subtle text halo for non-pill labels
+          ctx.strokeStyle = 'rgba(8, 11, 17, 0.9)';
+          ctx.lineWidth = 2.8 / Math.sqrt(cam.zoom);
+          ctx.strokeText(labelText, node.x, labelY);
+        }
+
+        ctx.fillStyle = isSelected
+          ? '#ffffff'
+          : isHovered
+            ? '#f8fafc'
+            : isOneHop
+              ? '#e2e8f0'
+              : '#94a3b8';
+        ctx.fillText(labelText, node.x, labelY);
+      }
+
+      ctx.restore();
     };
 
-    render();
-
+    animationFrameId = requestAnimationFrame(renderFrame);
     return () => {
-      cancelAnimationFrame(animId);
-      canvas.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      window.removeEventListener('resize', resize);
+      cancelAnimationFrame(animationFrameId);
+      resizeObserver.disconnect();
     };
-  }, [viewMode, topology, selectedNode, callers, callees, activeHop, filterEdges, animRunning2D]);
+  }, [
+    colorBy,
+    hoveredNodeId,
+    labelMode,
+    oneHopIds,
+    selectedNodeId,
+    twoHopIds,
+    visibleEdges,
+    visibleNodeIds,
+  ]);
 
-  const handleCopyBundle = () => {
-    if (!selectedNode) return;
-    const bundleText = JSON.stringify(
-      {
-        symbol: selectedNode.name,
-        kind: selectedNode.kind,
-        file: selectedNode.file_path,
-        signature: selectedNode.signature,
-        community: selectedNode.comm_name,
-        spherical_coordinates: { lat: selectedNode.lat, lon: selectedNode.lon },
-        in_degree: selectedNode.in_degree,
-        out_degree: selectedNode.out_degree,
-        callers: callers,
-        callees: callees,
-      },
-      null,
-      2
-    );
-    navigator.clipboard.writeText(bundleText);
-    setCopiedBundle(true);
-    setTimeout(() => setCopiedBundle(false), 2000);
+  // Convert screen coordinates to world simulation coordinates
+  const screenToWorld = useCallback((clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const sx = clientX - rect.left;
+    const sy = clientY - rect.top;
+    const cam = cameraRef.current;
+    const centerX = rect.width / 2 + cam.x * cam.zoom;
+    const centerY = rect.height / 2 + cam.y * cam.zoom;
+    return {
+      x: (sx - centerX) / cam.zoom,
+      y: (sy - centerY) / cam.zoom,
+    };
+  }, []);
+
+  // Find node under cursor
+  const findNodeAtWorldPos = useCallback(
+    (wx: number, wy: number): SimNode | null => {
+      const nodes = simNodesRef.current;
+      const hitPadding = 4 / Math.sqrt(cameraRef.current.zoom);
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const n = nodes[i];
+        if (!visibleNodeIds.has(n.id)) continue;
+        const dx = wx - n.x;
+        const dy = wy - n.y;
+        const hitR = n.radius + hitPadding;
+        if (dx * dx + dy * dy <= hitR * hitR) {
+          return n;
+        }
+      }
+      return null;
+    },
+    [visibleNodeIds]
+  );
+
+  // Canvas Pointer Handlers (Drag node, Pan canvas, Click node, Hover node)
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
+    targetCameraRef.current = null;
+    pointerDownPosRef.current = { x: e.clientX, y: e.clientY };
+    lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
+    didDragRef.current = false;
+
+    const world = screenToWorld(e.clientX, e.clientY);
+    const hitNode = findNodeAtWorldPos(world.x, world.y);
+
+    if (hitNode) {
+      dragNodeRef.current = hitNode;
+      hitNode.fx = hitNode.x;
+      hitNode.fy = hitNode.y;
+      alphaRef.current = Math.max(alphaRef.current, 0.3);
+    } else {
+      isPanningRef.current = true;
+    }
+    e.currentTarget.setPointerCapture(e.pointerId);
   };
 
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const dx = e.clientX - lastPointerPosRef.current.x;
+    const dy = e.clientY - lastPointerPosRef.current.y;
+    lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
+
+    const totalMove = Math.hypot(
+      e.clientX - pointerDownPosRef.current.x,
+      e.clientY - pointerDownPosRef.current.y
+    );
+    if (totalMove > 4) {
+      didDragRef.current = true;
+    }
+
+    if (dragNodeRef.current) {
+      const world = screenToWorld(e.clientX, e.clientY);
+      dragNodeRef.current.fx = world.x;
+      dragNodeRef.current.fy = world.y;
+      dragNodeRef.current.x = world.x;
+      dragNodeRef.current.y = world.y;
+      alphaRef.current = Math.max(alphaRef.current, 0.25);
+      return;
+    }
+
+    if (isPanningRef.current) {
+      cameraRef.current.x += dx / cameraRef.current.zoom;
+      cameraRef.current.y += dy / cameraRef.current.zoom;
+      return;
+    }
+
+    // Hover detection
+    const world = screenToWorld(e.clientX, e.clientY);
+    const hit = findNodeAtWorldPos(world.x, world.y);
+    setHoveredNodeId(hit ? hit.id : null);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const draggedNode = dragNodeRef.current;
+    dragNodeRef.current = null;
+    isPanningRef.current = false;
+
+    if (draggedNode) {
+      if (!e.shiftKey) {
+        draggedNode.fx = null;
+        draggedNode.fy = null;
+      }
+      if (!didDragRef.current) {
+        // Clicked node: select in shared space
+        setSelectedNodeId(draggedNode.id);
+        setSearchParams({ symbol: draggedNode.name }, { replace: true });
+        alphaRef.current = Math.max(alphaRef.current, 0.25);
+      }
+    }
+  };
+
+  const handleWheel = useCallback((e: WheelEvent) => {
+    e.preventDefault();
+    targetCameraRef.current = null;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left - rect.width / 2;
+    const mouseY = e.clientY - rect.top - rect.height / 2;
+
+    const cam = cameraRef.current;
+    const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
+    const nextZoom = Math.max(0.2, Math.min(4.0, cam.zoom * zoomFactor));
+
+    // Zoom toward cursor
+    const wx = mouseX / cam.zoom - cam.x;
+    const wy = mouseY / cam.zoom - cam.y;
+    cam.zoom = nextZoom;
+    cam.x = mouseX / nextZoom - wx;
+    cam.y = mouseY / nextZoom - wy;
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
+
   return (
-    <div className="globe-page-layout">
-      {/* 1. LEFT FILTER & SPHERICAL CONTROL PANEL (300px) */}
-      <aside className="globe-left-panel">
-        <div className="panel-header">
-          <div className="panel-title-wrap">
-            <span className="material-symbols-outlined text-primary">public</span>
-            <span className="panel-title">Spherical Filters</span>
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '270px 1fr 330px',
+        height: '100%',
+        width: '100%',
+        overflow: 'hidden',
+        background: 'var(--bg-base)',
+      }}
+    >
+      {/* LEFT PANEL: Connected Graph Controls & Filters */}
+      <aside
+        style={{
+          borderRight: '1px solid var(--border-subtle)',
+          background: 'var(--bg-panel)',
+          display: 'flex',
+          flexDirection: 'column',
+          overflowY: 'auto',
+          padding: '12px',
+          gap: '14px',
+        }}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+              CODEBASE GRAPH
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              Connected force-directed space
+            </div>
           </div>
-          <button
-            className="btn-reset"
-            onClick={() => {
-              setFilterTaxonomy({
-                functions: true,
-                classes: true,
-                types: true,
-                files: true,
-                communities: true,
-              });
-              setFilterEdges({
-                calls: true,
-                imports: true,
-                defines: true,
-                inherits: true,
-                similar: true,
-              });
-              controlsRef.current?.recenter();
+          <span className="badge badge-cyan" style={{ fontSize: '10px' }}>
+            {visibleNodeIds.size}N · {visibleEdges.length}E
+          </span>
+        </div>
+
+        {/* Symbol Search */}
+        <div style={{ position: 'relative' }}>
+          <div
+            style={{
+              fontSize: '10px',
+              fontWeight: 600,
+              color: 'var(--text-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              marginBottom: '6px',
             }}
           >
-            Reset All
-          </button>
-        </div>
-
-        <div className="panel-scrollable">
-          {/* Projection Scope Switcher */}
-          <div className="scope-switcher">
-            <button className="scope-btn scope-btn-active">Full Repo Globe</button>
-            <button className="scope-btn" onClick={() => setActiveHop(1)}>
-              Focused Sphere
-            </button>
+            Focus / Locate Symbol
           </div>
-
-          {/* Node Taxonomy Selection */}
-          <div className="filter-section">
-            <div className="filter-section-header">
-              <span className="filter-title">Node Taxonomy</span>
-              <span className="filter-meta">{topology?.nodes.length ?? 142} Active</span>
-            </div>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.functions}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, functions: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-cyan" />
-                <span className="kind-label">Functions & Methods</span>
-              </div>
-              <span className="kind-count">64</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.classes}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, classes: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-purple" />
-                <span className="kind-label">Classes & Structs</span>
-              </div>
-              <span className="kind-count">28</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.types}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, types: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-blue" />
-                <span className="kind-label">Types & Interfaces</span>
-              </div>
-              <span className="kind-count">24</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.files}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, files: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-gray" />
-                <span className="kind-label">Files & Modules</span>
-              </div>
-              <span className="kind-count">18</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.communities}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, communities: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-emerald" />
-                <span className="kind-label">Community Hubs</span>
-              </div>
-              <span className="kind-count text-tertiary">8</span>
-            </label>
-          </div>
-
-          {/* Relational Arcs Selection */}
-          <div className="filter-section">
-            <div className="filter-section-header">
-              <span className="filter-title">Relational Arcs</span>
-              <span className="filter-meta">{topology?.edges.length ?? 284} Total</span>
-            </div>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterEdges.calls}
-                  onChange={(e) => setFilterEdges({ ...filterEdges, calls: e.target.checked })}
-                />
-                <span className="arc-line arc-cyan" />
-                <span className="font-code text-xs">CALLS</span>
-              </div>
-              <span className="kind-count text-primary">142</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterEdges.imports}
-                  onChange={(e) => setFilterEdges({ ...filterEdges, imports: e.target.checked })}
-                />
-                <span className="arc-line arc-dashed" />
-                <span className="font-code text-xs">IMPORTS</span>
-              </div>
-              <span className="kind-count text-outline">68</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterEdges.defines}
-                  onChange={(e) => setFilterEdges({ ...filterEdges, defines: e.target.checked })}
-                />
-                <span className="arc-line arc-purple" />
-                <span className="font-code text-xs">DEFINES</span>
-              </div>
-              <span className="kind-count text-secondary">44</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterEdges.similar}
-                  onChange={(e) => setFilterEdges({ ...filterEdges, similar: e.target.checked })}
-                />
-                <span className="arc-line arc-dotted" />
-                <span className="font-code text-xs">SIMILAR_TO</span>
-              </div>
-              <span className="kind-count text-outline">32</span>
-            </label>
-          </div>
-
-          {/* Louvain Community Clusters */}
-          <div className="filter-section">
-            <div className="filter-section-header">
-              <span className="filter-title">Louvain Clusters (Q=0.82)</span>
-              <span className="material-symbols-outlined text-xs text-outline">bubble_chart</span>
-            </div>
-
-            <div className="community-list">
-              {(topology?.communities || []).slice(0, 5).map((comm) => (
-                <div
-                  key={comm.id}
-                  className="community-row"
-                  onClick={() => {
-                    const target = topology?.nodes.find((n) => n.comm === comm.id);
-                    if (target) {
-                      setSelectedNode(target);
-                      controlsRef.current?.focusNode(target);
-                    }
-                  }}
-                >
-                  <div className="community-row-left">
-                    <span
-                      className="comm-color-dot"
-                      style={{ backgroundColor: comm.color }}
-                    />
-                    <span className="comm-name truncate">{comm.name}</span>
-                  </div>
-                  <span className="comm-sym-count">{comm.member_count} sym</span>
+          <input
+            type="text"
+            className="input"
+            placeholder="Search symbol (e.g. get_call_graph)..."
+            value={symbolQuery}
+            onChange={(e) => setSymbolQuery(e.target.value)}
+            style={{ width: '100%', fontSize: '12px' }}
+          />
+          {symbolQuery.trim().length > 0 && (
+            <div
+              style={{
+                position: 'absolute',
+                top: '56px',
+                left: 0,
+                right: 0,
+                zIndex: 30,
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-strong)',
+                borderRadius: '6px',
+                maxHeight: '240px',
+                overflowY: 'auto',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.55)',
+              }}
+            >
+              {isSearching ? (
+                <div style={{ padding: '8px 10px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                  Searching symbols...
                 </div>
-              ))}
+              ) : searchResults.length === 0 ? (
+                <div style={{ padding: '8px 10px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                  No matching symbols
+                </div>
+              ) : (
+                searchResults.map((sym) => (
+                  <button
+                    key={`${sym.file_path}:${sym.name}:${sym.start_line}`}
+                    onClick={() => {
+                      setSymbolQuery('');
+                      setSearchResults([]);
+                      focusSymbolInSharedSpace(sym.name, sym.file_path);
+                    }}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'flex-start',
+                      width: '100%',
+                      padding: '7px 10px',
+                      border: 'none',
+                      borderBottom: '1px solid var(--border-subtle)',
+                      background: 'transparent',
+                      color: 'var(--text-primary)',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        width: '100%',
+                      }}
+                    >
+                      <span
+                        className="mono"
+                        style={{
+                          fontSize: '11.5px',
+                          fontWeight: 600,
+                          color: 'var(--accent-cyan)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {sym.name}
+                      </span>
+                      <span
+                        style={{
+                          marginLeft: 'auto',
+                          fontSize: '9.5px',
+                          color: 'var(--text-muted)',
+                        }}
+                      >
+                        {sym.kind}
+                      </span>
+                    </div>
+                    <span
+                      className="mono"
+                      style={{
+                        fontSize: '10px',
+                        color: 'var(--text-muted)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        maxWidth: '100%',
+                      }}
+                    >
+                      {sym.file_path}
+                    </span>
+                  </button>
+                ))
+              )}
             </div>
-          </div>
-
-          {/* Projection Controls */}
-          <div className="projection-controls">
-            <span className="filter-title">Projection Controls</span>
-            <div className="slider-row">
-              <div className="slider-label">
-                <span>Arc Curvature</span>
-                <span>{curvature}%</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={curvature}
-                onChange={(e) => setCurvature(Number(e.target.value))}
-                className="slider-input"
-              />
-            </div>
-
-            <div className="toggle-row">
-              <span className="toggle-label">Atmospheric Glow</span>
-              <button
-                className={`glow-toggle ${glowEnabled ? 'glow-toggle-on' : ''}`}
-                onClick={() => setGlowEnabled(!glowEnabled)}
-              >
-                <span className="glow-knob" />
-              </button>
-            </div>
-          </div>
+          )}
         </div>
-      </aside>
 
-      {/* 2. CENTER CANVAS (THE 2D / 3D GRAPH VIEWPORT) */}
-      <main className="globe-viewport">
-        {/* Subtle coordinate dot grid */}
-        <div className="cosmic-grid-overlay" />
-
-        {/* Viewport Canvas (2D Interactive Graph vs 3D Planet Globe) */}
-        {viewMode === '2d' ? (
-          <div className="graph-2d-container">
-            <canvas ref={canvas2dRef} className="graph-2d-canvas" />
-            <div className="graph-2d-hint">
-              <span className="material-symbols-outlined text-xs text-primary">touch_app</span>
-              <span>Click node to focus callers/callees • Drag to reposition • Pulses show call flow</span>
-            </div>
-          </div>
-        ) : (
-          <div ref={containerRef} className="threejs-canvas-wrapper" />
-        )}
-
-        {/* Top Canvas HUD Bar */}
-        <div className="top-hud-bar">
-          {/* View Mode Switcher: 2D Interactive Graph vs 3D Planet */}
-          <div className="hud-pill view-mode-switcher">
-            <button
-              className={`hop-btn ${viewMode === '2d' ? 'hop-btn-active' : ''}`}
-              onClick={() => setViewMode('2d')}
+        {/* Graph Scope (All Connected default vs Optional Hop Filter in Same Space) */}
+        <div>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '6px',
+            }}
+          >
+            <span
+              style={{
+                fontSize: '10px',
+                fontWeight: 600,
+                color: 'var(--text-muted)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+              }}
             >
-              <span className="material-symbols-outlined text-xs">hub</span>
-              <span>2D Interactive Graph</span>
-            </button>
-            <button
-              className={`hop-btn ${viewMode === '3d' ? 'hop-btn-active' : ''}`}
-              onClick={() => setViewMode('3d')}
-            >
-              <span className="material-symbols-outlined text-xs">public</span>
-              <span>3D Planet Globe</span>
-            </button>
-          </div>
-
-          {/* Topology Telemetry */}
-          <div className="hud-pill">
-            <div className="live-ping">
-              <span className="ping-dot" />
-              <span className="hud-heading">
-                {viewMode === '2d' ? 'AST Call Graph' : 'Planet Topology'}
-              </span>
-            </div>
-            <span className="hud-sub">
-              {topology?.total_nodes ?? 142} Nodes • {topology?.total_edges ?? 284} Arcs
+              Graph Scope (Shared Space)
             </span>
-            <span className="louvain-badge">Louvain Q=0.82</span>
           </div>
-
-          {/* Hop Depth Toggles */}
-          <div className="hud-pill hop-selector">
+          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr', gap: '4px' }}>
             <button
-              className={`hop-btn ${activeHop === 1 ? 'hop-btn-active' : ''}`}
-              onClick={() => setActiveHop(1)}
+              className={`btn btn-sm ${hopScope === 'all' ? 'btn-primary' : ''}`}
+              onClick={() => setHopScope('all')}
+              title="Show all connected symbols and files together in one shared space"
+              style={{ fontSize: '11px', padding: '5px 6px' }}
+            >
+              All Connected
+            </button>
+            <button
+              className={`btn btn-sm ${hopScope === 2 ? 'btn-primary' : ''}`}
+              onClick={() => setHopScope(2)}
+              title="Filter to 2-hop neighborhood around selected node in same space"
+              style={{ fontSize: '11px', padding: '5px 6px' }}
+            >
+              2 Hops
+            </button>
+            <button
+              className={`btn btn-sm ${hopScope === 1 ? 'btn-primary' : ''}`}
+              onClick={() => setHopScope(1)}
+              title="Filter to direct 1-hop callers/callees in same space"
+              style={{ fontSize: '11px', padding: '5px 6px' }}
             >
               1 Hop
             </button>
-            <button
-              className={`hop-btn ${activeHop === 2 ? 'hop-btn-active' : ''}`}
-              onClick={() => setActiveHop(2)}
-            >
-              2 Hops (Active)
-            </button>
-            <button
-              className={`hop-btn ${activeHop === 3 ? 'hop-btn-active' : ''}`}
-              onClick={() => setActiveHop(3)}
-            >
-              3 Hops
-            </button>
-            <button
-              className={`hop-btn ${activeHop === 'full' ? 'hop-btn-active' : ''}`}
-              onClick={() => setActiveHop('full')}
-            >
-              Full Graph
-            </button>
           </div>
+        </div>
 
-          {/* Camera / Animation Action Toggles */}
-          <div className="hud-actions">
-            {viewMode === '2d' ? (
-              <>
-                <button
-                  className={`hud-btn ${animRunning2D ? 'hud-btn-active' : ''}`}
-                  onClick={() => setAnimRunning2D(!animRunning2D)}
-                >
-                  <span className="material-symbols-outlined text-sm">
-                    {animRunning2D ? 'pause' : 'play_arrow'}
-                  </span>
-                  <span>{animRunning2D ? 'Pause Float' : 'Resume Float'}</span>
-                </button>
-                <button
-                  className="hud-btn"
-                  onClick={() => {
-                    if (selectedNode) {
-                      // Trigger re-center on selected node
-                      setSelectedNode({ ...selectedNode });
+        {/* Edge Type Filters */}
+        <div>
+          <div
+            style={{
+              fontSize: '10px',
+              fontWeight: 600,
+              color: 'var(--text-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              marginBottom: '6px',
+            }}
+          >
+            Edge Filters
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            {(
+              [
+                { key: 'CALLS', label: 'Calls', color: EDGE_COLORS.CALLS },
+                { key: 'IMPORTS', label: 'Imports', color: EDGE_COLORS.IMPORTS },
+                { key: 'DEFINES', label: 'Defines', color: EDGE_COLORS.DEFINES },
+                { key: 'INHERITS', label: 'Inherits', color: EDGE_COLORS.INHERITS },
+                { key: 'SIMILAR_TO', label: 'Similar', color: EDGE_COLORS.SIMILAR_TO },
+              ] as const
+            ).map((item) => (
+              <label
+                key={item.key}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '5px 8px',
+                  borderRadius: '5px',
+                  background: edgeFilters[item.key]
+                    ? 'rgba(255,255,255,0.03)'
+                    : 'transparent',
+                  border: '1px solid var(--border-subtle)',
+                  cursor: 'pointer',
+                  fontSize: '11.5px',
+                }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(edgeFilters[item.key])}
+                    onChange={(e) =>
+                      setEdgeFilters((prev) => ({
+                        ...prev,
+                        [item.key]: e.target.checked,
+                      }))
                     }
-                  }}
-                >
-                  <span className="material-symbols-outlined text-sm">center_focus_strong</span>
-                  <span>Recenter</span>
-                </button>
-              </>
-            ) : (
-              <>
+                  />
+                  <span
+                    style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '2px',
+                      background: item.color,
+                      display: 'inline-block',
+                    }}
+                  />
+                  <span>{item.label}</span>
+                </span>
+                <span className="mono" style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                  {edgeTypeCounts[item.key] || 0}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Node Kind Filters */}
+        <div>
+          <div
+            style={{
+              fontSize: '10px',
+              fontWeight: 600,
+              color: 'var(--text-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              marginBottom: '6px',
+            }}
+          >
+            Symbol Kinds
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            {(
+              [
+                { key: 'function', label: 'Functions', color: KIND_COLORS.function },
+                { key: 'method', label: 'Methods', color: KIND_COLORS.method },
+                { key: 'class', label: 'Classes & Types', color: KIND_COLORS.class },
+                { key: 'other', label: 'Files & Modules', color: KIND_COLORS.module },
+              ] as const
+            ).map((item) => (
+              <label
+                key={item.key}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '5px 8px',
+                  borderRadius: '5px',
+                  background: kindFilters[item.key]
+                    ? 'rgba(255,255,255,0.03)'
+                    : 'transparent',
+                  border: '1px solid var(--border-subtle)',
+                  cursor: 'pointer',
+                  fontSize: '11.5px',
+                }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(kindFilters[item.key])}
+                    onChange={(e) =>
+                      setKindFilters((prev) => ({
+                        ...prev,
+                        [item.key]: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span
+                    style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      background: item.color,
+                      display: 'inline-block',
+                    }}
+                  />
+                  <span>{item.label}</span>
+                </span>
+                <span className="mono" style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                  {kindCounts[item.key] || 0}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Visual & Density Settings */}
+        <div>
+          <div
+            style={{
+              fontSize: '10px',
+              fontWeight: 600,
+              color: 'var(--text-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              marginBottom: '6px',
+            }}
+          >
+            Display & Density
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+              <button
+                className={`btn btn-sm ${colorBy === 'kind' ? 'btn-primary' : ''}`}
+                onClick={() => setColorBy('kind')}
+                style={{ fontSize: '11px' }}
+              >
+                Color: Kind
+              </button>
+              <button
+                className={`btn btn-sm ${colorBy === 'community' ? 'btn-primary' : ''}`}
+                onClick={() => setColorBy('community')}
+                style={{ fontSize: '11px' }}
+              >
+                Color: Cluster
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px' }}>
+              <button
+                className={`btn btn-sm ${labelMode === 'all' ? 'btn-primary' : ''}`}
+                onClick={() => setLabelMode('all')}
+                style={{ fontSize: '10.5px', padding: '4px' }}
+              >
+                All Labels
+              </button>
+              <button
+                className={`btn btn-sm ${labelMode === 'smart' ? 'btn-primary' : ''}`}
+                onClick={() => setLabelMode('smart')}
+                style={{ fontSize: '10.5px', padding: '4px' }}
+              >
+                Auto Labels
+              </button>
+              <button
+                className={`btn btn-sm ${labelMode === 'focus' ? 'btn-primary' : ''}`}
+                onClick={() => setLabelMode('focus')}
+                style={{ fontSize: '10.5px', padding: '4px' }}
+              >
+                Focus Only
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px' }}>
+              {(
+                [
+                  { label: '140 Nodes', value: 140 },
+                  { label: '240 Nodes', value: 240 },
+                  { label: '380 Nodes', value: 380 },
+                ] as const
+              ).map((opt) => (
                 <button
-                  className={`hud-btn ${autoRotate ? 'hud-btn-active' : ''}`}
-                  onClick={() => controlsRef.current?.toggleOrbit()}
+                  key={opt.value}
+                  className={`btn btn-sm ${maxNodesLimit === opt.value ? 'btn-primary' : ''}`}
+                  onClick={() => setMaxNodesLimit(opt.value)}
+                  style={{ fontSize: '10.5px', padding: '4px' }}
                 >
-                  <span className="material-symbols-outlined text-sm">rotate_right</span>
-                  <span>Auto Orbit</span>
+                  {opt.label}
                 </button>
-                <button className="hud-btn" onClick={() => controlsRef.current?.viewPoles()}>
-                  <span className="material-symbols-outlined text-sm">explore</span>
-                  <span>Poles</span>
-                </button>
-                <button className="hud-btn" onClick={() => controlsRef.current?.recenter()}>
-                  <span className="material-symbols-outlined text-sm">center_focus_strong</span>
-                  <span>Recenter</span>
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* State Preview Switcher Pill */}
-        <div className="state-switcher-container">
-          <div className="state-switcher-pill">
-            <span className="state-label">State Preview:</span>
-            <button
-              className={`state-btn ${previewState === 'populated' ? 'state-btn-active' : ''}`}
-              onClick={() => setPreviewState('populated')}
-            >
-              <span className="dot dot-cyan" /> Populated
-            </button>
-            <button
-              className={`state-btn ${previewState === 'focused' ? 'state-btn-active' : ''}`}
-              onClick={() => {
-                setPreviewState('focused');
-                setActiveHop(1);
-              }}
-            >
-              <span className="dot dot-purple" /> Focused (1-Hop)
-            </button>
-            <button
-              className={`state-btn ${previewState === 'forming' ? 'state-btn-active' : ''}`}
-              onClick={() => setPreviewState('forming')}
-            >
-              <span className="material-symbols-outlined text-xs animate-spin">sync</span> Index Forming
-            </button>
-            <button
-              className={`state-btn ${previewState === 'preindex' ? 'state-btn-active' : ''}`}
-              onClick={() => setPreviewState('preindex')}
-            >
-              <span className="dot dot-red" /> Pre-index
-            </button>
-          </div>
-        </div>
-
-        {/* In-Canvas Floating Quick Action Bar */}
-        <div className="floating-actions-bar">
-          <button
-            className="canvas-action-btn"
-            onClick={() => {
-              if (selectedNode) controlsRef.current?.focusNode(selectedNode);
-            }}
-          >
-            <span className="material-symbols-outlined text-primary text-sm">scatter_plot</span>
-            <span>Expand 1-Hop Neighbors</span>
-          </button>
-          <button
-            className="canvas-action-btn"
-            onClick={() => {
-              if (selectedNode) controlsRef.current?.focusNode(selectedNode);
-            }}
-          >
-            <span className="material-symbols-outlined text-secondary text-sm">my_location</span>
-            <span>Recenter Selected</span>
-          </button>
-          <button className="canvas-action-btn btn-export" onClick={handleCopyBundle}>
-            <span className="material-symbols-outlined text-sm">dataset</span>
-            <span>{copiedBundle ? 'Copied Bundle!' : 'Export Evidence Slice'}</span>
-          </button>
-        </div>
-
-        {/* Floating Spherical Radar / Tilt Readout */}
-        <div className="floating-radar">
-          <div className="radar-circle">
-            <div className="radar-outer" />
-            <div className="radar-dashed" />
-            <div className="radar-center-dot" />
-          </div>
-          <div className="radar-readout">
-            <span className="radar-degrees">{azimuthText}</span>
-            <span className="radar-zoom">Zoom 1.00x • Equator</span>
-          </div>
-        </div>
-
-        {/* Bottom Legend Bar */}
-        <div className="bottom-legend-bar">
-          <div className="legend-group">
-            <span className="legend-title">Nodes:</span>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-cyan" />
-              <span>Function</span>
-            </div>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-purple" />
-              <span>Class</span>
-            </div>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-blue" />
-              <span>Type</span>
-            </div>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-gray" />
-              <span>File</span>
-            </div>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-emerald" />
-              <span>Community Hub</span>
-            </div>
-          </div>
-
-          <div className="legend-group">
-            <span className="legend-title">Arcs:</span>
-            <div className="legend-item">
-              <span className="arc-line arc-cyan" />
-              <span>CALLS</span>
-            </div>
-            <div className="legend-item">
-              <span className="arc-line arc-dashed" />
-              <span>IMPORTS</span>
-            </div>
-            <div className="legend-item">
-              <span className="arc-line arc-purple" />
-              <span>DEFINES</span>
-            </div>
-            <div className="legend-item">
-              <span className="arc-line arc-dotted" />
-              <span>SIMILAR_TO</span>
+              ))}
             </div>
           </div>
         </div>
-      </main>
-
-      {/* 3. RIGHT INSPECTOR PANEL (SELECTED NODE INSPECTOR - 320px) */}
-      <aside className="globe-right-panel">
-        <div className="panel-header">
-          <div className="panel-title-wrap">
-            <span className="material-symbols-outlined text-secondary">travel_explore</span>
-            <span className="panel-title">Spherical Inspector</span>
-          </div>
-          <div className="inspector-top-btns">
-            <button className="icon-btn" title="Bookmark">
-              <span className="material-symbols-outlined text-sm">bookmark_border</span>
-            </button>
-          </div>
-        </div>
-
-        {selectedNode ? (
-          <div className="panel-scrollable">
-            {/* Node Hero Card */}
-            <div className="hero-card">
-              <div className="hero-card-tags">
-                <span className="kind-badge">
-                  {selectedNode.kind.toUpperCase()} • Lines {selectedNode.start_line ?? 1}-
-                  {selectedNode.end_line || ((selectedNode.start_line ?? 1) + 25)}
-                </span>
-                <span className="access-tag">Public Async</span>
-              </div>
-
-              <div className="node-names">
-                <span className="node-symbol-name">{selectedNode.name}</span>
-                <span className="node-file-path">{selectedNode.file_path}</span>
-              </div>
-
-              <div className="metric-grid">
-                <div className="metric-box">
-                  <span className="metric-label">Spherical Pos</span>
-                  <span className="metric-val text-primary font-code">
-                    {selectedNode.lat > 0 ? `+${selectedNode.lat}` : selectedNode.lat}° | {selectedNode.lon}°
-                  </span>
-                </div>
-                <div className="metric-box">
-                  <span className="metric-label">Degree Centrality</span>
-                  <span className="metric-val text-tertiary font-code">
-                    {selectedNode.importance} (Top 5%)
-                  </span>
-                </div>
-              </div>
-
-              <div className="arc-count-pill">
-                <span>
-                  In/Out Arcs: <strong>{selectedNode.in_degree ?? 4} in / {selectedNode.out_degree ?? 3} out</strong>
-                </span>
-                <span>
-                  Cluster: <strong className="text-primary">{selectedNode.comm_name}</strong>
-                </span>
-              </div>
-            </div>
-
-            {/* Semantic Intent */}
-            <div className="section-card">
-              <div className="section-card-header">
-                <span className="section-card-title">Semantic Intent</span>
-                <span className="material-symbols-outlined text-xs text-tertiary">psychology</span>
-              </div>
-              <p className="intent-text">
-                {selectedNode.signature ||
-                  `Traverses outgoing AST edge references up to depth hops and computes neighborhood degree weights for semantic ranking in downstream evidence retrieval.`}
-              </p>
-            </div>
-
-            {/* Community Membership Context */}
-            <div className="community-context-card">
-              <div className="comm-ctx-left">
-                <span
-                  className="comm-ctx-dot"
-                  style={{ backgroundColor: selectedNode.comm_color }}
-                />
-                <div className="comm-ctx-text">
-                  <span className="comm-ctx-title">
-                    Community #{selectedNode.comm}: {selectedNode.comm_name}
-                  </span>
-                  <span className="comm-ctx-sub">Equatorial Dense Sector</span>
-                </div>
-              </div>
-              <button
-                className="icon-btn"
-                title="Filter by Community"
-                onClick={() => controlsRef.current?.focusNode(selectedNode)}
-              >
-                <span className="material-symbols-outlined text-sm">filter_center_focus</span>
-              </button>
-            </div>
-
-            {/* Inbound Callers on Planet */}
-            <div className="callers-section">
-              <div className="callers-header">
-                <span>Spherical Inbound Callers ({callers.length})</span>
-                <span className="text-outline">SQLite Edges</span>
-              </div>
-
-              {isLoadingCalls ? (
-                <div className="p-2 text-xs text-outline font-code">Loading callers...</div>
-              ) : callers.length > 0 ? (
-                callers.map((c, idx) => (
-                  <div
-                    key={idx}
-                    className="caller-item cursor-pointer hover:bg-surface-high transition-colors"
-                    onClick={() => {
-                      const found = topology?.nodes.find((n) => n.name === c.caller);
-                      if (found) {
-                        setSelectedNode(found);
-                        controlsRef.current?.focusNode(found);
-                      } else {
-                        onNavigateToExplore?.(c.caller, c.file_path);
-                      }
-                    }}
-                    title={`Focus ${c.caller} on globe or explore`}
-                  >
-                    <div className="caller-info">
-                      <span className="caller-name text-primary font-code truncate">{c.caller}</span>
-                      <span className="caller-sub">
-                        {c.file_path ? c.file_path.split('/').pop() : 'file'}:{c.line_number || 1}
-                      </span>
-                    </div>
-                    <span className="arc-deg-pill">CALLS</span>
-                  </div>
-                ))
-              ) : (
-                <div className="p-2 text-xs text-outline font-code">
-                  No inbound callers recorded in SQLite graph
-                </div>
-              )}
-            </div>
-
-            {/* Outbound Callees */}
-            <div className="callers-section">
-              <div className="callers-header">
-                <span>Spherical Outbound Callees ({callees.length})</span>
-                <span className="text-outline">SQLite Edges</span>
-              </div>
-
-              {isLoadingCalls ? (
-                <div className="p-2 text-xs text-outline font-code">Loading callees...</div>
-              ) : callees.length > 0 ? (
-                callees.map((c, idx) => (
-                  <div
-                    key={idx}
-                    className="caller-item cursor-pointer hover:bg-surface-high transition-colors"
-                    onClick={() => {
-                      const found = topology?.nodes.find((n) => n.name === c.callee);
-                      if (found) {
-                        setSelectedNode(found);
-                        controlsRef.current?.focusNode(found);
-                      } else {
-                        onNavigateToExplore?.(c.callee, c.file_path);
-                      }
-                    }}
-                    title={`Focus ${c.callee} on globe or explore`}
-                  >
-                    <div className="caller-info">
-                      <span className="caller-name text-secondary font-code truncate">{c.callee}</span>
-                      <span className="caller-sub">
-                        {c.file_path ? c.file_path.split('/').pop() : 'file'}:{c.line_number || 1}
-                      </span>
-                    </div>
-                    <span className="arc-deg-pill">INVOKES</span>
-                  </div>
-                ))
-              ) : (
-                <div className="p-2 text-xs text-outline font-code">
-                  No outbound invocations recorded in SQLite graph
-                </div>
-              )}
-            </div>
-
-            {/* Primary Action Buttons */}
-            <div className="action-buttons-wrap">
-              <button
-                className="btn-action btn-action-primary"
-                onClick={() => controlsRef.current?.focusNode(selectedNode)}
-              >
-                <span className="material-symbols-outlined text-sm">my_location</span>
-                <span>Center Globe on Node</span>
-              </button>
-
-              <button
-                className="btn-action btn-action-secondary"
-                onClick={() => onNavigateToExplore?.(selectedNode.name, selectedNode.file_path)}
-              >
-                <span className="material-symbols-outlined text-sm text-outline">account_tree</span>
-                <span>Open in Explore Tree</span>
-              </button>
-
-              <button className="btn-action btn-action-copy" onClick={handleCopyBundle}>
-                <span className="material-symbols-outlined text-sm">content_copy</span>
-                <span>{copiedBundle ? 'Copied to Clipboard!' : 'Copy Evidence Bundle (320 tok)'}</span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="empty-inspector">
-            <span className="material-symbols-outlined text-2xl text-outline mb-2">public</span>
-            <span>Click any node on the 3D globe to inspect relationships</span>
-          </div>
-        )}
       </aside>
 
-      <style>{`
-        .globe-page-layout {
-          position: relative;
-          width: 100%;
-          height: calc(100vh - 56px);
-          display: flex;
-          background: var(--surface-lowest);
-          overflow: hidden;
-        }
+      {/* CENTER CANVAS: Shared Force-Directed Graph Space */}
+      <main
+        ref={containerRef}
+        style={{
+          position: 'relative',
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden',
+          background: '#080b11',
+          userSelect: 'none',
+        }}
+      >
+        <canvas
+          ref={canvasRef}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          style={{
+            width: '100%',
+            height: '100%',
+            display: 'block',
+            cursor: dragNodeRef.current
+              ? 'grabbing'
+              : hoveredNodeId
+                ? 'pointer'
+                : 'grab',
+          }}
+        />
 
-        /* 1. Left Panel */
-        .globe-left-panel {
-          width: 300px;
-          flex-shrink: 0;
-          height: 100%;
-          background: var(--surface-low);
-          border-right: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          z-index: 20;
-          box-shadow: 2px 0 16px rgba(0, 0, 0, 0.4);
-        }
-        .panel-header {
-          height: 44px;
-          padding: 0 14px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          background: var(--surface);
-          border-bottom: 1px solid var(--hairline);
-        }
-        .panel-title-wrap {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .panel-title {
-          font-weight: 600;
-          font-size: 13px;
-          color: var(--on-surface);
-        }
-        .btn-reset {
-          background: transparent;
-          border: none;
-          color: var(--primary);
-          font-size: 11px;
-          cursor: pointer;
-          font-family: var(--font-body);
-        }
-        .btn-reset:hover {
-          text-decoration: underline;
-        }
-        .panel-scrollable {
-          flex: 1;
-          overflow-y: auto;
-          padding: 12px;
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-        }
-        .scope-switcher {
-          display: flex;
-          background: var(--surface-container);
-          padding: 3px;
-          border-radius: 4px;
-          gap: 3px;
-        }
-        .scope-btn {
-          flex: 1;
-          background: transparent;
-          border: none;
-          padding: 5px;
-          border-radius: 3px;
-          color: var(--outline);
-          font-size: 11px;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .scope-btn-active {
-          background: var(--surface-high);
-          color: var(--primary);
-          font-weight: 600;
-          box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
-        }
-        .filter-section {
-          display: flex;
-          flex-direction: column;
-          gap: 5px;
-        }
-        .filter-section-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 0 2px 4px;
-        }
-        .filter-title {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-        }
-        .filter-meta {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-        }
-        .filter-item {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 5px 8px;
-          border-radius: 4px;
-          background: rgba(30, 31, 38, 0.5);
-          cursor: pointer;
-          transition: background 0.15s;
-        }
-        .filter-item:hover {
-          background: var(--surface-container);
-        }
-        .filter-item-left {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .kind-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          display: inline-block;
-        }
-        .kind-dot-cyan { background: var(--primary); box-shadow: 0 0 6px rgba(56, 189, 248, 0.5); }
-        .kind-dot-purple { background: var(--secondary); border-radius: 2px; }
-        .kind-dot-blue { background: #818cf8; }
-        .kind-dot-gray { background: var(--outline); border-radius: 2px; }
-        .kind-dot-emerald { background: var(--tertiary-light); }
-        .kind-label {
-          font-size: 12px;
-          color: var(--on-surface);
-        }
-        .kind-count {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
-        }
-        .arc-line {
-          width: 14px;
-          height: 2px;
-          display: inline-block;
-        }
-        .arc-cyan { background: var(--primary); }
-        .arc-dashed { border-top: 2px dashed var(--outline); background: transparent; }
-        .arc-purple { background: var(--secondary); }
-        .arc-dotted { border-top: 2px dotted var(--outline); background: transparent; }
+        {/* Top-Left Floating Status & Active Symbol Pill */}
+        <div
+          style={{
+            position: 'absolute',
+            top: '12px',
+            left: '12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '6px 12px',
+            borderRadius: '6px',
+            background: 'rgba(13, 17, 26, 0.88)',
+            border: '1px solid var(--border-subtle)',
+            backdropFilter: 'blur(6px)',
+            pointerEvents: 'none',
+          }}
+        >
+          <span
+            style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              background: isPaused ? '#f59e0b' : '#10b981',
+            }}
+          />
+          <span style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--text-primary)' }}>
+            {hopScope === 'all'
+              ? 'Connected Graph (All)'
+              : `${hopScope}-Hop Subgraph`}
+          </span>
+          {selectedNode && (
+            <>
+              <span style={{ color: 'var(--text-muted)' }}>·</span>
+              <span
+                className="mono"
+                style={{ fontSize: '11.5px', color: 'var(--accent-cyan)', fontWeight: 600 }}
+              >
+                {selectedNode.name}
+              </span>
+              <span className="mono" style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                ({Math.max(0, oneHopIds.size - 1)} direct neighbors)
+              </span>
+            </>
+          )}
+        </div>
 
-        .community-list {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .community-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 6px 8px;
-          border-radius: 4px;
-          background: var(--surface-container);
-          cursor: pointer;
-          transition: background 0.15s;
-        }
-        .community-row:hover {
-          background: var(--surface-high);
-        }
-        .community-row-left {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          overflow: hidden;
-        }
-        .comm-color-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          flex-shrink: 0;
-        }
-        .comm-name {
-          font-size: 12px;
-          color: var(--on-surface);
-        }
-        .comm-sym-count {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-        }
+        {/* Top-Right Floating Simulation & Viewport Toolbar (Includes Pause Float) */}
+        <div
+          style={{
+            position: 'absolute',
+            top: '12px',
+            right: '12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '5px 8px',
+            borderRadius: '6px',
+            background: 'rgba(13, 17, 26, 0.9)',
+            border: '1px solid var(--border-subtle)',
+            backdropFilter: 'blur(6px)',
+          }}
+        >
+          <button
+            className={`btn btn-sm ${isPaused ? 'btn-primary' : ''}`}
+            onClick={() => {
+              const next = !isPaused;
+              setIsPaused(next);
+              if (!next) {
+                alphaRef.current = Math.max(alphaRef.current, 0.45);
+              }
+            }}
+            title={isPaused ? 'Resume force simulation' : 'Freeze / Pause floating motion'}
+            style={{ fontSize: '11px', padding: '4px 9px' }}
+          >
+            {isPaused ? '▶ Resume Float' : '⏸ Pause Float'}
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={handleRelayout}
+            title="Re-heat force simulation layout"
+            style={{ fontSize: '11px', padding: '4px 8px' }}
+          >
+            ↻ Re-layout
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={handleCenterSelected}
+            title="Center viewport on selected node"
+            style={{ fontSize: '11px', padding: '4px 8px' }}
+          >
+            ◎ Center Focus
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={handleFitView}
+            title="Fit entire visible graph in viewport"
+            style={{ fontSize: '11px', padding: '4px 8px' }}
+          >
+            ⊡ Fit All
+          </button>
+        </div>
 
-        .projection-controls {
-          margin-top: auto;
-          background: var(--surface-container);
-          padding: 10px;
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .slider-row {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .slider-label {
-          display: flex;
-          justify-content: space-between;
-          font-size: 11px;
-          color: var(--outline);
-        }
-        .slider-input {
-          width: 100%;
-          height: 4px;
-          accent-color: var(--primary);
-        }
-        .toggle-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding-top: 4px;
-        }
-        .toggle-label {
-          font-size: 12px;
-          color: var(--on-surface);
-        }
-        .glow-toggle {
-          width: 32px;
-          height: 18px;
-          border-radius: 9px;
-          background: var(--surface-high);
-          border: none;
-          cursor: pointer;
-          position: relative;
-          transition: background 0.2s;
-        }
-        .glow-toggle-on {
-          background: var(--primary);
-        }
-        .glow-knob {
-          width: 14px;
-          height: 14px;
-          border-radius: 50%;
-          background: var(--surface-lowest);
-          position: absolute;
-          top: 2px;
-          left: 2px;
-          transition: transform 0.2s;
-        }
-        .glow-toggle-on .glow-knob {
-          transform: translateX(14px);
-        }
+        {/* Bottom-Left Legend & Controls Hint */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '12px',
+            left: '12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '5px 10px',
+            borderRadius: '6px',
+            background: 'rgba(13, 17, 26, 0.84)',
+            border: '1px solid var(--border-subtle)',
+            fontSize: '10.5px',
+            color: 'var(--text-muted)',
+            pointerEvents: 'none',
+          }}
+        >
+          <span>Click node: Inspect & ring</span>
+          <span>·</span>
+          <span>Drag node: Reposition (Shift+Drag to pin)</span>
+          <span>·</span>
+          <span>Scroll: Zoom</span>
+        </div>
 
-        /* 2. Center Viewport */
-        .globe-viewport {
-          flex: 1;
-          position: relative;
-          height: 100%;
-          overflow: hidden;
-          background: var(--surface-lowest);
-        }
-        .cosmic-grid-overlay {
-          position: absolute;
-          inset: 0;
-          pointer-events: none;
-          opacity: 0.18;
-          background-image: radial-gradient(#38bdf8 1px, transparent 1px);
-          background-size: 24px 24px;
-        }
-        .threejs-canvas-wrapper {
-          position: absolute;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-        }
-        .graph-2d-container {
-          position: absolute;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-          overflow: hidden;
-          background: rgba(10, 14, 20, 0.4);
-        }
-        .graph-2d-canvas {
-          position: absolute;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-          touch-action: none;
-        }
-        .graph-2d-hint {
-          position: absolute;
-          bottom: 46px;
-          left: 18px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 6px 14px;
-          background: rgba(15, 23, 42, 0.85);
-          border: 1px solid var(--hairline);
-          border-radius: 6px;
-          font-size: 11px;
-          color: var(--on-surface-variant);
-          backdrop-filter: blur(10px);
-          z-index: 10;
-          pointer-events: none;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-        }
-        .view-mode-switcher {
-          border: 1px solid rgba(56, 189, 248, 0.4) !important;
-          background: rgba(56, 189, 248, 0.08) !important;
-          box-shadow: 0 0 16px rgba(56, 189, 248, 0.15);
-        }
+        {/* Loading / Error Overlays */}
+        {isLoading && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'rgba(8, 11, 17, 0.72)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '10px',
+              zIndex: 20,
+            }}
+          >
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+              Building connected codebase graph...
+            </div>
+            <div style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+              Computing force-directed layout across symbols & call edges
+            </div>
+          </div>
+        )}
 
-        .top-hud-bar {
-          position: absolute;
-          top: 14px;
-          left: 18px;
-          right: 18px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          pointer-events: none;
-          z-index: 10;
-        }
-        .hud-pill {
-          pointer-events: auto;
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 6px 14px;
-          border-radius: 8px;
-          background: rgba(30, 31, 38, 0.85);
-          backdrop-filter: blur(12px);
-          border: 1px solid var(--hairline);
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-        }
-        .live-ping {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .ping-dot {
-          width: 7px;
-          height: 7px;
-          border-radius: 50%;
-          background: var(--tertiary-light);
-          box-shadow: 0 0 8px var(--tertiary-light);
-          animation: pulseGlow 1.8s infinite;
-        }
-        .hud-heading {
-          font-weight: 600;
-          font-size: 13px;
-          color: var(--on-surface);
-        }
-        .hud-sub {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
-        }
-        .louvain-badge {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          padding: 2px 6px;
-          border-radius: 4px;
-          background: rgba(16, 185, 129, 0.15);
-          color: var(--tertiary-light);
-          font-weight: 600;
-        }
-        .hop-selector {
-          gap: 4px;
-          padding: 3px 6px;
-        }
-        .hop-btn {
-          background: transparent;
-          border: none;
-          padding: 4px 10px;
-          border-radius: 4px;
-          font-size: 11px;
-          color: var(--outline);
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .hop-btn-active {
-          background: var(--primary);
-          color: var(--surface-lowest);
-          font-weight: 600;
-        }
-        .hud-actions {
-          pointer-events: auto;
-          display: flex;
-          gap: 4px;
-          background: rgba(30, 31, 38, 0.85);
-          backdrop-filter: blur(12px);
-          padding: 3px 6px;
-          border-radius: 8px;
-          border: 1px solid var(--hairline);
-        }
-        .hud-btn {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          background: transparent;
-          border: none;
-          padding: 4px 8px;
-          border-radius: 4px;
-          color: var(--outline);
-          font-size: 11px;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .hud-btn:hover {
-          color: var(--on-surface);
-          background: var(--surface-high);
-        }
-        .hud-btn-active {
-          background: var(--surface-high);
-          color: var(--primary);
-        }
+        {apiError && !isLoading && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '60px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              background: 'rgba(127, 29, 29, 0.92)',
+              border: '1px solid #ef4444',
+              borderRadius: '6px',
+              padding: '10px 16px',
+              color: '#fee2e2',
+              fontSize: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              zIndex: 25,
+            }}
+          >
+            <span>{apiError}</span>
+            <button
+              className="btn btn-sm"
+              onClick={() => loadConnectedGraph(selectedNodeId, maxNodesLimit)}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </main>
 
-        .state-switcher-container {
-          position: absolute;
-          top: 64px;
-          left: 0;
-          right: 0;
-          display: flex;
-          justify-content: center;
-          pointer-events: none;
-          z-index: 10;
-        }
-        .state-switcher-pill {
-          pointer-events: auto;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 12px;
-          border-radius: 20px;
-          background: rgba(40, 42, 48, 0.9);
-          backdrop-filter: blur(12px);
-          border: 1px solid var(--hairline);
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-        }
-        .state-label {
-          font-size: 10px;
-          font-family: var(--font-mono);
-          color: var(--outline);
-          text-transform: uppercase;
-        }
-        .state-btn {
-          display: flex;
-          align-items: center;
-          gap: 5px;
-          background: transparent;
-          border: none;
-          padding: 3px 8px;
-          border-radius: 12px;
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .state-btn-active {
-          background: rgba(56, 189, 248, 0.2);
-          color: var(--primary);
-          font-weight: 500;
-        }
-        .dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-        }
-        .dot-cyan { background: var(--primary); }
-        .dot-purple { background: var(--secondary); }
-        .dot-red { background: var(--error); }
+      {/* RIGHT PANEL: Symbol Inspector with Callers, Callees, and Similar Symbols */}
+      <aside
+        style={{
+          borderLeft: '1px solid var(--border-subtle)',
+          background: 'var(--bg-panel)',
+          display: 'flex',
+          flexDirection: 'column',
+          overflowY: 'auto',
+          padding: '14px',
+          gap: '14px',
+        }}
+      >
+        {!selectedNode ? (
+          <div
+            style={{
+              padding: '24px 12px',
+              textAlign: 'center',
+              color: 'var(--text-muted)',
+              fontSize: '12px',
+            }}
+          >
+            Click any node in the connected graph to inspect its signature, callers, callees, and
+            similar symbols.
+          </div>
+        ) : (
+          <>
+            {/* Symbol Header */}
+            <div
+              style={{
+                borderBottom: '1px solid var(--border-subtle)',
+                paddingBottom: '12px',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  marginBottom: '6px',
+                }}
+              >
+                <span
+                  className="badge"
+                  style={{
+                    background: `${getNodeColor(selectedNode, 'kind')}22`,
+                    color: getNodeColor(selectedNode, 'kind'),
+                    border: `1px solid ${getNodeColor(selectedNode, 'kind')}55`,
+                    textTransform: 'uppercase',
+                    fontSize: '10px',
+                  }}
+                >
+                  {selectedNode.kind || 'symbol'}
+                </span>
+                {selectedNode.comm !== undefined && selectedNode.comm !== null && (
+                  <span className="badge" style={{ fontSize: '10px' }}>
+                    {selectedNode.comm_name || `Cluster #${selectedNode.comm}`}
+                  </span>
+                )}
+                <span
+                  className="mono"
+                  style={{ marginLeft: 'auto', fontSize: '10.5px', color: 'var(--text-muted)' }}
+                >
+                  {Math.max(0, oneHopIds.size - 1)} linked
+                </span>
+              </div>
 
-        .floating-actions-bar {
-          position: absolute;
-          bottom: 50px;
-          left: 50%;
-          transform: translateX(-50%);
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 6px;
-          background: rgba(40, 42, 48, 0.95);
-          backdrop-filter: blur(16px);
-          border-radius: 8px;
-          border: 1px solid var(--hairline);
-          box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
-          z-index: 10;
-        }
-        .canvas-action-btn {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          background: var(--surface-container);
-          border: 1px solid var(--hairline);
-          color: var(--on-surface);
-          padding: 5px 12px;
-          border-radius: 4px;
-          font-size: 11.5px;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .canvas-action-btn:hover {
-          background: var(--surface-bright);
-          color: #fff;
-        }
-        .btn-export {
-          background: var(--primary);
-          color: var(--surface-lowest);
-          font-weight: 600;
-          border-color: transparent;
-        }
-        .btn-export:hover {
-          background: var(--primary-light);
-          color: var(--surface-lowest);
-        }
+              <div
+                className="mono"
+                style={{
+                  fontSize: '15px',
+                  fontWeight: 700,
+                  color: 'var(--text-primary)',
+                  wordBreak: 'break-all',
+                  marginBottom: '4px',
+                }}
+              >
+                {selectedNode.name}
+              </div>
 
-        .floating-radar {
-          position: absolute;
-          bottom: 50px;
-          right: 20px;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          padding: 8px 12px;
-          border-radius: 8px;
-          background: rgba(30, 31, 38, 0.9);
-          backdrop-filter: blur(12px);
-          border: 1px solid var(--hairline);
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-          z-index: 10;
-        }
-        .radar-circle {
-          position: relative;
-          width: 32px;
-          height: 32px;
-          border-radius: 50%;
-          background: var(--surface-lowest);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        .radar-outer {
-          position: absolute;
-          inset: 0;
-          border-radius: 50%;
-          border: 1px solid rgba(56, 189, 248, 0.3);
-        }
-        .radar-dashed {
-          width: 20px;
-          height: 20px;
-          border-radius: 50%;
-          border: 1px dashed rgba(135, 146, 154, 0.4);
-        }
-        .radar-center-dot {
-          width: 5px;
-          height: 5px;
-          border-radius: 50%;
-          background: var(--primary);
-          box-shadow: 0 0 6px var(--primary);
-        }
-        .radar-readout {
-          display: flex;
-          flex-direction: column;
-        }
-        .radar-degrees {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--on-surface);
-        }
-        .radar-zoom {
-          font-size: 10px;
-          color: var(--outline);
-        }
+              <div
+                className="mono"
+                style={{
+                  fontSize: '11px',
+                  color: 'var(--text-secondary)',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {selectedNode.file_path}
+                {selectedNode.start_line ? `:${selectedNode.start_line}` : ''}
+                {selectedNode.end_line && selectedNode.end_line !== selectedNode.start_line
+                  ? `-${selectedNode.end_line}`
+                  : ''}
+              </div>
 
-        .bottom-legend-bar {
-          position: absolute;
-          bottom: 0;
-          left: 0;
-          right: 0;
-          height: 36px;
-          background: rgba(30, 31, 38, 0.92);
-          backdrop-filter: blur(12px);
-          border-top: 1px solid var(--hairline);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 0 20px;
-          z-index: 10;
-        }
-        .legend-group {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-        }
-        .legend-title {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          text-transform: uppercase;
-        }
-        .legend-item {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 11px;
-          color: var(--on-surface);
-        }
+              {selectedNode.signature && (
+                <pre
+                  className="mono"
+                  style={{
+                    marginTop: '8px',
+                    padding: '8px',
+                    borderRadius: '5px',
+                    background: 'var(--bg-base)',
+                    border: '1px solid var(--border-subtle)',
+                    fontSize: '10.5px',
+                    color: 'var(--text-secondary)',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    maxHeight: '88px',
+                    overflowY: 'auto',
+                  }}
+                >
+                  {selectedNode.signature}
+                </pre>
+              )}
 
-        /* 3. Right Inspector Panel */
-        .globe-right-panel {
-          width: 320px;
-          flex-shrink: 0;
-          height: 100%;
-          background: var(--surface-low);
-          border-left: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          z-index: 20;
-          box-shadow: -2px 0 16px rgba(0, 0, 0, 0.4);
-        }
-        .inspector-top-btns {
-          display: flex;
-          gap: 4px;
-        }
-        .icon-btn {
-          background: transparent;
-          border: none;
-          color: var(--outline);
-          padding: 4px;
-          border-radius: 4px;
-          cursor: pointer;
-        }
-        .icon-btn:hover {
-          color: var(--on-surface);
-          background: var(--surface-high);
-        }
+              {/* Action Buttons */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '6px',
+                  marginTop: '10px',
+                }}
+              >
+                <button
+                  className="btn btn-sm btn-primary"
+                  onClick={() => {
+                    if (onNavigateToExplore) {
+                      onNavigateToExplore(selectedNode.name, selectedNode.file_path);
+                    } else {
+                      navigate(
+                        `/explore?symbol=${encodeURIComponent(selectedNode.name)}&file=${encodeURIComponent(selectedNode.file_path || '')}`
+                      );
+                    }
+                  }}
+                  style={{ fontSize: '11px' }}
+                >
+                  Open in Explore
+                </button>
+                <button
+                  className="btn btn-sm"
+                  onClick={() =>
+                    navigate(`/evidence?q=${encodeURIComponent(selectedNode.name)}`)
+                  }
+                  style={{ fontSize: '11px' }}
+                >
+                  Build Evidence
+                </button>
+              </div>
+            </div>
 
-        .hero-card {
-          background: var(--surface-container);
-          padding: 12px;
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .hero-card-tags {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-        .kind-badge {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          background: rgba(56, 189, 248, 0.12);
-          color: var(--primary);
-          padding: 2px 6px;
-          border-radius: 3px;
-          font-weight: 600;
-        }
-        .access-tag {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--tertiary-light);
-        }
-        .node-names {
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-        .node-symbol-name {
-          font-size: 14px;
-          font-weight: 700;
-          color: var(--on-surface);
-          word-break: break-all;
-        }
-        .node-file-path {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
-        }
-        .metric-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 6px;
-          padding-top: 4px;
-        }
-        .metric-box {
-          background: var(--surface-lowest);
-          padding: 6px 8px;
-          border-radius: 4px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-        .metric-label {
-          font-size: 9px;
-          color: var(--outline);
-          text-transform: uppercase;
-        }
-        .metric-val {
-          font-size: 11px;
-          font-weight: 600;
-        }
-        .arc-count-pill {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 6px 8px;
-          border-radius: 4px;
-          background: var(--surface-low);
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
-        }
+            {/* Inbound Callers (Clicking focuses node in the SAME shared graph space) */}
+            <div>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '6px',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '10.5px',
+                    fontWeight: 700,
+                    color: 'var(--text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                  }}
+                >
+                  Inbound Callers
+                </span>
+                <span className="badge badge-cyan" style={{ fontSize: '10px' }}>
+                  {callers.length}
+                </span>
+              </div>
 
-        .section-card {
-          background: var(--surface-container);
-          padding: 10px 12px;
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .section-card-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-        .section-card-title {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-        }
-        .intent-text {
-          margin: 0;
-          font-size: 12px;
-          line-height: 1.5;
-          color: var(--on-surface-variant);
-        }
+              {isLoadingDetails ? (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  Loading callers...
+                </div>
+              ) : callers.length === 0 ? (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  No inbound callers recorded
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    maxHeight: '190px',
+                    overflowY: 'auto',
+                  }}
+                >
+                  {callers.map((caller, idx) => {
+                    const callerName = caller.caller || caller.callee || 'unknown';
+                    return (
+                      <button
+                        key={`caller-${callerName}-${caller.file_path}-${idx}`}
+                        onClick={() => focusSymbolInSharedSpace(callerName, caller.file_path)}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'flex-start',
+                          padding: '6px 8px',
+                          borderRadius: '5px',
+                          background: 'var(--bg-base)',
+                          border: '1px solid var(--border-subtle)',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          width: '100%',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            width: '100%',
+                          }}
+                        >
+                          <span style={{ color: '#38bdf8', fontSize: '10px' }}>←</span>
+                          <span
+                            className="mono"
+                            style={{
+                              fontSize: '11.5px',
+                              fontWeight: 600,
+                              color: 'var(--text-primary)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {callerName}
+                          </span>
+                        </div>
+                        {caller.file_path && (
+                          <span
+                            className="mono"
+                            style={{
+                              fontSize: '10px',
+                              color: 'var(--text-muted)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              maxWidth: '100%',
+                            }}
+                          >
+                            {caller.file_path}
+                            {caller.line_number ? `:${caller.line_number}` : ''}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
-        .community-context-card {
-          background: rgba(30, 31, 38, 0.7);
-          padding: 8px 10px;
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-        .comm-ctx-left {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .comm-ctx-dot {
-          width: 10px;
-          height: 10px;
-          border-radius: 50%;
-          box-shadow: 0 0 6px rgba(56, 189, 248, 0.5);
-        }
-        .comm-ctx-text {
-          display: flex;
-          flex-direction: column;
-        }
-        .comm-ctx-title {
-          font-size: 11.5px;
-          font-weight: 500;
-          color: var(--on-surface);
-        }
-        .comm-ctx-sub {
-          font-size: 10px;
-          color: var(--outline);
-        }
+            {/* Outbound Callees (Clicking focuses node in the SAME shared graph space) */}
+            <div>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '6px',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '10.5px',
+                    fontWeight: 700,
+                    color: 'var(--text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                  }}
+                >
+                  Outbound Callees
+                </span>
+                <span className="badge badge-cyan" style={{ fontSize: '10px' }}>
+                  {callees.length}
+                </span>
+              </div>
 
-        .callers-section {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .callers-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          text-transform: uppercase;
-          padding: 0 2px;
-        }
-        .caller-item {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 6px 8px;
-          border-radius: 4px;
-          background: var(--surface-container);
-          cursor: pointer;
-          transition: background 0.15s;
-        }
-        .caller-item:hover {
-          background: var(--surface-high);
-        }
-        .caller-info {
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-          padding-right: 6px;
-        }
-        .caller-name {
-          font-size: 11.5px;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .caller-sub {
-          font-size: 10px;
-          color: var(--outline);
-        }
-        .arc-deg-pill {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          background: var(--surface-lowest);
-          color: var(--on-surface);
-          padding: 2px 6px;
-          border-radius: 3px;
-          border: 1px solid var(--hairline);
-        }
+              {isLoadingDetails ? (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  Loading callees...
+                </div>
+              ) : callees.length === 0 ? (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  No outbound callees recorded
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    maxHeight: '190px',
+                    overflowY: 'auto',
+                  }}
+                >
+                  {callees.map((callee, idx) => {
+                    const calleeName = callee.callee || callee.caller || 'unknown';
+                    return (
+                      <button
+                        key={`callee-${calleeName}-${callee.file_path}-${idx}`}
+                        onClick={() => focusSymbolInSharedSpace(calleeName, callee.file_path)}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'flex-start',
+                          padding: '6px 8px',
+                          borderRadius: '5px',
+                          background: 'var(--bg-base)',
+                          border: '1px solid var(--border-subtle)',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          width: '100%',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            width: '100%',
+                          }}
+                        >
+                          <span style={{ color: '#10b981', fontSize: '10px' }}>→</span>
+                          <span
+                            className="mono"
+                            style={{
+                              fontSize: '11.5px',
+                              fontWeight: 600,
+                              color: 'var(--text-primary)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {calleeName}
+                          </span>
+                        </div>
+                        {callee.file_path && (
+                          <span
+                            className="mono"
+                            style={{
+                              fontSize: '10px',
+                              color: 'var(--text-muted)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              maxWidth: '100%',
+                            }}
+                          >
+                            {callee.file_path}
+                            {callee.line_number ? `:${callee.line_number}` : ''}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
-        .action-buttons-wrap {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-          margin-top: auto;
-          padding-top: 8px;
-        }
-        .btn-action {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
-          padding: 8px 12px;
-          border-radius: 4px;
-          font-size: 12px;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .btn-action-primary {
-          background: var(--primary);
-          color: var(--surface-lowest);
-          border: 1px solid transparent;
-        }
-        .btn-action-primary:hover {
-          background: var(--primary-light);
-          box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
-        }
-        .btn-action-secondary {
-          background: var(--surface-container);
-          border: 1px solid var(--hairline);
-          color: var(--on-surface);
-        }
-        .btn-action-secondary:hover {
-          background: var(--surface-high);
-        }
-        .btn-action-copy {
-          background: var(--secondary-container);
-          border: 1px solid rgba(168, 85, 247, 0.3);
-          color: var(--secondary-light);
-        }
-        .btn-action-copy:hover {
-          background: rgba(168, 85, 247, 0.25);
-        }
-
-        .empty-inspector {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          color: var(--outline);
-          text-align: center;
-          padding: 20px;
-        }
-      `}</style>
+            {/* Similar Symbols (MinHash/LSH) */}
+            {similarSymbols.length > 0 && (
+              <div>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginBottom: '6px',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: '10.5px',
+                      fontWeight: 700,
+                      color: 'var(--text-muted)',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                    }}
+                  >
+                    Similar Symbols
+                  </span>
+                  <span className="badge" style={{ fontSize: '10px' }}>
+                    {similarSymbols.length}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  {similarSymbols.map((sim, idx) => (
+                    <button
+                      key={`sim-${sim.name}-${idx}`}
+                      onClick={() => focusSymbolInSharedSpace(sim.name, sim.file_path)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '5px 8px',
+                        borderRadius: '5px',
+                        background: 'var(--bg-base)',
+                        border: '1px solid var(--border-subtle)',
+                        cursor: 'pointer',
+                        width: '100%',
+                      }}
+                    >
+                      <span
+                        className="mono"
+                        style={{
+                          fontSize: '11px',
+                          color: 'var(--text-primary)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {sim.name}
+                      </span>
+                      <span
+                        className="mono"
+                        style={{ fontSize: '10px', color: '#ec4899', fontWeight: 600 }}
+                      >
+                        {Math.round((sim.similarity || 0) * 100)}%
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </aside>
     </div>
   );
 };
+
+/**
+ * Fast 2D force-directed physics solver for connected codebase graphs.
+ * Combines many-body repulsion, spring edge attraction, community cohesion,
+ * and gentle radial organization around the currently selected symbol.
+ */
+function runForceSteps(
+  nodes: SimNode[],
+  edges: SimEdge[],
+  nodeMap: Map<string, SimNode>,
+  iterations: number,
+  initialAlpha: number,
+  selectedNodeId?: string,
+  oneHopIds?: Set<string>
+): void {
+  const nLen = nodes.length;
+  if (nLen === 0) return;
+
+  let alpha = initialAlpha;
+  const repulsionStrength = 950;
+  const idealEdgeDist = 72;
+
+  for (let iter = 0; iter < iterations; iter++) {
+    // 1. Pairwise repulsive force (charge)
+    for (let i = 0; i < nLen; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nLen; j++) {
+        const b = nodes[j];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let distSq = dx * dx + dy * dy;
+        if (distSq < 16) {
+          dx = (Math.random() - 0.5) * 4;
+          dy = (Math.random() - 0.5) * 4;
+          distSq = 16;
+        }
+        // Cutoff long-range repulsion beyond 520px to keep clusters cohesive
+        if (distSq > 270000) continue;
+
+        const minSep = a.radius + b.radius + 16;
+        const force = (repulsionStrength * alpha) / distSq;
+        const dist = Math.sqrt(distSq);
+        let fx = (dx / dist) * force;
+        let fy = (dy / dist) * force;
+
+        // Extra collision prevention so labels & nodes stay readable
+        if (dist < minSep) {
+          const push = ((minSep - dist) / minSep) * 1.8 * alpha;
+          fx += (dx / dist) * push;
+          fy += (dy / dist) * push;
+        }
+
+        a.vx -= fx;
+        a.vy -= fy;
+        b.vx += fx;
+        b.vy += fy;
+      }
+    }
+
+    // 2. Spring attraction along connected edges
+    for (let i = 0; i < edges.length; i++) {
+      const e = edges[i];
+      const src = nodeMap.get(e.source);
+      const tgt = nodeMap.get(e.target);
+      if (!src || !tgt) continue;
+
+      const dx = tgt.x - src.x;
+      const dy = tgt.y - src.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+      const targetDist =
+        e.type === 'DEFINES'
+          ? idealEdgeDist * 0.78
+          : e.type === 'CALLS'
+            ? idealEdgeDist
+            : idealEdgeDist * 1.15;
+
+      const strength = e.type === 'CALLS' ? 0.085 : 0.065;
+      const displacement = (dist - targetDist) * strength * alpha;
+      const fx = (dx / dist) * displacement;
+      const fy = (dy / dist) * displacement;
+
+      src.vx += fx;
+      src.vy += fy;
+      tgt.vx -= fx;
+      tgt.vy -= fy;
+    }
+
+    // 3. Gentle radial organization of 1-hop neighbors around selected node in shared space
+    const sel = selectedNodeId ? nodeMap.get(selectedNodeId) : undefined;
+    if (sel && oneHopIds && oneHopIds.size > 1) {
+      for (const id of oneHopIds) {
+        if (id === selectedNodeId) continue;
+        const nb = nodeMap.get(id);
+        if (!nb) continue;
+        const dx = nb.x - sel.x;
+        const dy = nb.y - sel.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const desiredOrbit = 92;
+        const pull = (desiredOrbit - dist) * 0.04 * alpha;
+        nb.vx += (dx / dist) * pull;
+        nb.vy += (dy / dist) * pull;
+      }
+    }
+
+    // 4. Weak center gravity & velocity integration
+    for (let i = 0; i < nLen; i++) {
+      const n = nodes[i];
+      if (n.fx !== null && n.fy !== null) {
+        n.x = n.fx;
+        n.y = n.fy;
+        n.vx = 0;
+        n.vy = 0;
+        continue;
+      }
+
+      // Weak center pull so disconnected sub-components don't drift off-screen
+      n.vx -= n.x * 0.004 * alpha;
+      n.vy -= n.y * 0.004 * alpha;
+
+      // Damping
+      n.vx *= 0.72;
+      n.vy *= 0.72;
+
+      // Clamp max step
+      const speed = Math.hypot(n.vx, n.vy);
+      if (speed > 18) {
+        n.vx = (n.vx / speed) * 18;
+        n.vy = (n.vy / speed) * 18;
+      }
+
+      n.x += n.vx;
+      n.y += n.vy;
+    }
+
+    alpha *= 0.98;
+  }
+}

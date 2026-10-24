@@ -1,189 +1,237 @@
-export type SymbolKind =
-  | 'function'
-  | 'async_function'
-  | 'class'
-  | 'method'
-  | 'struct'
-  | 'type'
-  | 'interface'
-  | 'file'
-  | 'module';
+// FastAST Lens Data Types & Engine Contracts
 
-export type EdgeType =
-  | 'CALLS'
-  | 'IMPORTS'
-  | 'DEFINES'
-  | 'INHERITS'
-  | 'SIMILAR_TO'
-  | string;
-
-export interface RepoStats {
-  files: number;
-  symbols: number;
-  imports: number;
-  calls: number;
-  edges: number;
-  languages: Record<string, number>;
-  categories: Record<string, number>;
-  error?: string | null;
+export interface HealthStatus {
+  ok: boolean;
+  status: 'healthy' | 'unindexed' | 'unreachable';
+  repo_path: string;
+  repo_name: string;
+  db_path: string;
+  db_exists: boolean;
+  symbol_count: number;
+  file_count: number;
+  edge_count: number;
+  call_count: number;
+  import_count: number;
+  last_index_time: string | null;
 }
 
-export interface SymbolItem {
+export interface RepoStats {
+  repo_name: string;
+  repo_path: string;
+  db_path?: string;
+  files: number;
+  symbols: number;
+  edges: number;
+  calls: number;
+  imports: number;
+  communities_count?: number;
+  languages: Record<string, number>;
+  categories?: Record<string, number>;
+  symbol_kinds?: Record<string, number>;
+  last_index_time?: string | null;
+}
+
+export interface FileRecord {
+  path: string;
+  language: string;
+  category: string;
+  lines: number;
+  tokens: number;
+  status?: string;
+  has_syntax_error?: boolean;
+  symbol_count?: number;
+}
+
+export interface SymbolRecord {
   id: number;
   name: string;
-  kind: SymbolKind | string;
+  kind: string;
   signature: string;
   start_line: number;
   end_line: number;
   file_path: string;
+  language: string;
+  docstring?: string;
+  parent_name?: string;
   confidence?: number;
-  docstring?: string | null;
-  community_id?: number;
 }
 
-export interface GlobeNode {
-  id: number | string;
-  idx: number;
+export interface CallGraphEntry {
+  caller?: string;
+  callee?: string;
+  file_path: string;
+  line_number: number;
+  kind?: string;
+}
+
+export interface CallGraphResponse {
+  symbol: string;
+  callers: CallGraphEntry[];
+  callees: CallGraphEntry[];
+}
+
+export interface GraphNode {
+  id: string;
   name: string;
-  kind: SymbolKind | string;
-  signature?: string;
+  kind: string;
   file_path?: string;
   start_line?: number;
   end_line?: number;
-  comm: number;
-  comm_name: string;
-  comm_color: string;
-  importance: number;
-  lat: number;
-  lon: number;
-  in_degree?: number;
-  out_degree?: number;
-  active?: boolean;
+  depth?: number;
 }
 
-export interface GlobeEdge {
-  from: number;
-  to: number;
+export interface GraphEdge {
   src: string;
   dst: string;
-  type: EdgeType;
-  color: string;
-  line?: number;
+  relation: 'calls' | 'imports' | 'defines' | 'inherits' | 'similar_to' | string;
+  confidence?: number;
+  line_number?: number;
+}
+
+export interface GraphNeighborhood {
+  symbol: string;
+  max_depth: number;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export interface EvidenceCandidate {
+  id?: number;
+  name: string;
+  kind: string;
+  file_path: string;
+  signature?: string;
+  score: number;
+  start_line: number;
+  end_line: number;
+  reasons?: string[];
+  neighbors?: Array<{
+    name?: string;
+    symbol?: string;
+    relation?: string;
+    direction?: string;
+    file_path?: string;
+  }>;
+}
+
+export interface EvidenceSnippet {
+  symbol_name: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  snippet: string;
+  token_count: number;
+  score?: number;
+  reasons?: string[];
+  neighbors?: Array<{
+    name?: string;
+    symbol?: string;
+    relation?: string;
+    direction?: string;
+    file_path?: string;
+  }>;
+  omitted_lines?: number;
+}
+
+export interface EvidenceBundle {
+  query: string;
+  ranking_method: string;
+  total_tokens_estimate: number;
+  max_tokens: number;
+  candidates: EvidenceCandidate[];
+  snippets: EvidenceSnippet[];
+}
+
+export interface CommunityMember {
+  id: number;
+  name: string;
+  kind: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  signature?: string;
 }
 
 export interface Community {
   id: number;
   name: string;
-  color: string;
   member_count: number;
-  modularity?: number;
-  sample_symbols?: string[];
-  sample_files?: string[];
-}
-
-export interface GlobeTopology {
-  nodes: GlobeNode[];
-  edges: GlobeEdge[];
-  communities: Community[];
-  file_nodes?: Array<{
-    id: string;
-    path: string;
-    name: string;
-    language: string;
-    lines: number;
-  }>;
-  total_nodes: number;
-  total_edges: number;
   modularity: number;
-}
-
-export interface FileItem {
-  id: number;
-  path: string;
-  language: string;
-  category: string;
-  total_lines: number;
-  total_tokens: number;
-  status: string;
-  symbol_count: number;
-}
-
-export interface FileOutlineSymbol {
-  name: string;
-  kind: string;
-  start_line: number;
-  end_line: number;
-  docstring?: string;
-  signature?: string;
-}
-
-export interface FileOutlineClass {
-  name: string;
-  start_line: number;
-  end_line: number;
-  methods: FileOutlineSymbol[];
-}
-
-export interface FileOutline {
-  file_path: string;
-  language: string;
-  total_lines: number;
-  classes: FileOutlineClass[];
-  functions: FileOutlineSymbol[];
-  other_symbols: FileOutlineSymbol[];
-}
-
-export interface EvidenceSnippet {
-  symbol_name?: string;
-  file_path: string;
-  start_line: number;
-  end_line: number;
-  snippet: string;
-  token_count?: number;
-  kind?: string;
-}
-
-export interface EvidenceBundle {
-  query: string;
-  total_tokens_estimate: number;
-  candidates: Array<{
-    name: string;
-    kind: string;
-    file_path: string;
-    score?: number;
-    start_line: number;
-    end_line: number;
-  }>;
-  snippets: EvidenceSnippet[];
-  files: string[];
-  relationships?: Array<{
-    src: string;
-    dst: string;
-    relation: string;
-  }>;
-}
-
-export interface CallGraphRelationship {
-  src: string;
-  dst: string;
-  relation: string;
-  file_path?: string;
-  line_number?: number;
-}
-
-export interface CallGraphData {
-  symbol: string;
-  caller_count: number;
-  callee_count: number;
-  callers: Array<{ caller: string; file_path: string; line_number: number }>;
-  callees: Array<{ callee: string; file_path: string; line_number: number }>;
-  relationships: CallGraphRelationship[];
+  color: string;
+  sample_symbols: string[];
+  sample_files: string[];
+  members?: CommunityMember[];
 }
 
 export interface SimilarSymbol {
-  symbol: string;
+  name: string;
+  kind: string;
   file_path: string;
   similarity: number;
-  kind?: string;
-  start_line?: number;
+  start_line: number;
+  end_line: number;
 }
+
+export interface GlobeNode {
+  id: string;
+  symbol_id?: number;
+  name: string;
+  kind: string;
+  signature: string;
+  start_line: number;
+  end_line: number;
+  file_path: string;
+  language: string;
+  in_degree: number;
+  out_degree: number;
+  importance: number;
+  comm: number;
+  comm_name: string;
+  comm_color: string;
+  hop?: number;
+  is_focus?: boolean;
+}
+
+export interface GlobeEdge {
+  source: string;
+  target: string;
+  type: 'CALLS' | 'DEFINES' | 'IMPORTS' | 'INHERITS' | 'SIMILAR_TO' | string;
+}
+
+export interface GlobeCommunity {
+  id: number;
+  name: string;
+  color: string;
+  count: number;
+}
+
+export interface GlobeHubSymbol {
+  id: number;
+  name: string;
+  kind: string;
+  file_path: string;
+  degree: number;
+}
+
+export interface GlobeTopology {
+  mode?: 'neighborhood' | 'full' | string;
+  depth?: number;
+  focus_symbol?: string | null;
+  nodes: GlobeNode[];
+  edges: GlobeEdge[];
+  communities: GlobeCommunity[];
+  hub_symbols?: GlobeHubSymbol[];
+  total_nodes: number;
+  total_edges: number;
+  repo_total_nodes?: number;
+  repo_total_edges?: number;
+}
+
+export type ActiveTab =
+  | 'globe'
+  | 'explore'
+  | 'architecture'
+  | 'evidence'
+  | 'coverage'
+  | 'communities'
+  | 'system';

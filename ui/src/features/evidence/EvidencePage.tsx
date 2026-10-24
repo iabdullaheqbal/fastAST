@@ -1,35 +1,72 @@
-import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { fastAstApi } from '../../services/api';
-import type { EvidenceBundle } from '../../types';
+import type { EvidenceBundle, EvidenceCandidate } from '../../types';
 
 export const EvidencePage: React.FC = () => {
-  const [searchParams] = useSearchParams();
-  const qParam = searchParams.get('q');
-  const [query, setQuery] = useState(qParam || 'traverse AST edges and compute degree centrality');
-  const [maxTokens, setMaxTokens] = useState(2048);
-  const [rankingMethod, setRankingMethod] = useState<'hybrid' | 'bm25' | 'semantic' | 'rrf'>('hybrid');
-  const [bundle, setBundle] = useState<EvidenceBundle | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const qParam = searchParams.get('q') || '';
 
-  const executeSearch = (q: string) => {
-    if (!q.trim()) return;
-    setIsLoading(true);
-    fastAstApi.getEvidence(q, maxTokens).then((data) => {
-      setBundle(data);
-      setIsLoading(false);
-    });
-  };
+  const [query, setQuery] = useState<string>(qParam || 'retrieve_context');
+  const [maxTokens, setMaxTokens] = useState<number>(2048);
+  const [rankingMethod, setRankingMethod] = useState<
+    'hybrid' | 'rrf' | 'bm25' | 'semantic' | 'heuristic'
+  >('hybrid');
+
+  const [bundle, setBundle] = useState<EvidenceBundle | null>(null);
+  const [selectedCandidate, setSelectedCandidate] = useState<EvidenceCandidate | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<boolean>(false);
+
+  const executeSearch = useCallback(
+    async (q: string, tok = maxTokens, rank = rankingMethod) => {
+      if (!q.trim()) {
+        setBundle({
+          query: '',
+          ranking_method: rank,
+          total_tokens_estimate: 0,
+          max_tokens: tok,
+          candidates: [],
+          snippets: [],
+        });
+        setSelectedCandidate(null);
+        return;
+      }
+
+      setIsLoading(true);
+      setApiError(null);
+      try {
+        const data = await fastAstApi.getEvidence(q.trim(), tok, rank);
+        setBundle(data);
+        if (data.candidates && data.candidates.length > 0) {
+          setSelectedCandidate(data.candidates[0]);
+        } else {
+          setSelectedCandidate(null);
+        }
+      } catch (err: any) {
+        setApiError(err?.message || 'Failed to retrieve evidence bundle.');
+        setBundle(null);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [maxTokens, rankingMethod]
+  );
 
   useEffect(() => {
-    if (qParam) {
+    const initialQ = qParam || query;
+    if (qParam && qParam !== query) {
       setQuery(qParam);
-      executeSearch(qParam);
-    } else {
-      executeSearch(query);
     }
-  }, [qParam]);
+    executeSearch(initialQ, maxTokens, rankingMethod);
+  }, [qParam, maxTokens, rankingMethod]);
+
+  const handleSearchSubmit = () => {
+    setSearchParams(query.trim() ? { q: query.trim() } : {});
+    executeSearch(query, maxTokens, rankingMethod);
+  };
 
   const handleCopyBundle = () => {
     if (!bundle) return;
@@ -38,48 +75,68 @@ export const EvidencePage: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const tokenUsage = bundle?.total_tokens_estimate ?? 340;
+  const tokenUsage = bundle?.total_tokens_estimate ?? 0;
   const tokenPercent = Math.min(100, Math.round((tokenUsage / maxTokens) * 100));
+
+  // Snippets to display: if a candidate is selected and has a matching snippet, put it first
+  const orderedSnippets = React.useMemo(() => {
+    if (!bundle?.snippets) return [];
+    if (!selectedCandidate) return bundle.snippets;
+    const match = bundle.snippets.filter((s) => s.symbol_name === selectedCandidate.name);
+    const rest = bundle.snippets.filter((s) => s.symbol_name !== selectedCandidate.name);
+    return [...match, ...rest];
+  }, [bundle, selectedCandidate]);
 
   return (
     <div className="evidence-page">
-      {/* Search Header Bar */}
+      {/* Top Query & Controls Bar */}
       <div className="evidence-header">
         <div className="search-row">
           <div className="search-input-group">
-            <span className="material-symbols-outlined search-icon">find_in_page</span>
+            <span className="material-symbols-outlined search-icon">manage_search</span>
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && executeSearch(query)}
-              placeholder="Describe concept, task, or symbol intent (e.g. 'traverse AST edges')..."
-              className="evidence-search-input"
+              onKeyDown={(e) => e.key === 'Enter' && handleSearchSubmit()}
+              placeholder="Query symbol name or concept (e.g. 'index_repository', 'Louvain community detection')..."
+              className="evidence-search-input font-code"
             />
+            {query && (
+              <button
+                className="clear-btn"
+                onClick={() => {
+                  setQuery('');
+                  executeSearch('', maxTokens, rankingMethod);
+                }}
+              >
+                ×
+              </button>
+            )}
           </div>
           <button
             className="btn-retrieve"
-            onClick={() => executeSearch(query)}
+            onClick={handleSearchSubmit}
             disabled={isLoading}
           >
-            <span className="material-symbols-outlined text-sm">
-              {isLoading ? 'sync' : 'psychology'}
+            <span className={`material-symbols-outlined text-sm ${isLoading ? 'spin-icon' : ''}`}>
+              {isLoading ? 'sync' : 'bolt'}
             </span>
             <span>{isLoading ? 'Retrieving...' : 'Retrieve Evidence'}</span>
           </button>
         </div>
 
-        {/* Controls & Token Budget Meter */}
+        {/* Ranking Mode & Token Budget Controls */}
         <div className="controls-row">
           <div className="ranking-selector">
-            <span className="ctrl-label">Ranking Mode:</span>
-            {(['hybrid', 'rrf', 'bm25', 'semantic'] as const).map((mode) => (
+            <span className="ctrl-label">Ranking:</span>
+            {(['hybrid', 'rrf', 'bm25', 'semantic', 'heuristic'] as const).map((m) => (
               <button
-                key={mode}
-                className={`mode-btn ${rankingMethod === mode ? 'mode-btn-active' : ''}`}
-                onClick={() => setRankingMethod(mode)}
+                key={m}
+                className={`mode-btn ${rankingMethod === m ? 'mode-btn-active' : ''}`}
+                onClick={() => setRankingMethod(m)}
               >
-                {mode.toUpperCase()}
+                {m.toUpperCase()}
               </button>
             ))}
           </div>
@@ -89,11 +146,11 @@ export const EvidencePage: React.FC = () => {
             <select
               value={maxTokens}
               onChange={(e) => setMaxTokens(Number(e.target.value))}
-              className="bg-surface-lowest text-on-surface font-code text-xs px-2 py-1 rounded border border-hairline"
+              className="budget-select font-code"
             >
-              <option value={1024}>1,024 tok</option>
-              <option value={2048}>2,048 tok</option>
-              <option value={4096}>4,096 tok</option>
+              <option value={1024}>1,024 tokens</option>
+              <option value={2048}>2,048 tokens</option>
+              <option value={4096}>4,096 tokens</option>
             </select>
             <div className="token-meter-bar">
               <div
@@ -102,146 +159,248 @@ export const EvidencePage: React.FC = () => {
               />
             </div>
             <span className="token-meter-text font-code">
-              {tokenUsage} / {maxTokens} tokens ({tokenPercent}%)
+              {tokenUsage.toLocaleString()} / {maxTokens.toLocaleString()} tok ({tokenPercent}%)
             </span>
           </div>
 
-          <button className="btn-copy-bundle" onClick={handleCopyBundle}>
+          <button
+            className="btn-copy-bundle font-code"
+            onClick={handleCopyBundle}
+            disabled={!bundle || bundle.candidates.length === 0}
+          >
             <span className="material-symbols-outlined text-sm">content_copy</span>
-            <span>{copied ? 'Copied Bundle!' : 'Copy Evidence Bundle'}</span>
+            <span>{copied ? 'Copied JSON!' : 'Copy JSON Bundle'}</span>
           </button>
         </div>
       </div>
 
-      {/* Results View */}
-      <div className="evidence-results-container">
-        {isLoading ? (
-          <div className="loading-state">
-            <span className="material-symbols-outlined spin-icon text-3xl text-primary">sync</span>
-            <span>Retrieving compact token-bounded evidence snippets...</span>
-          </div>
-        ) : (
-          <div className="evidence-cards-layout">
-            {/* Left: Ranked Candidates */}
-            <div className="candidates-col">
-              <span className="section-title">
-                Ranked Candidates ({bundle?.candidates.length || 3})
-              </span>
-
-              <div className="candidate-list">
-                {(bundle?.candidates.length ? bundle.candidates : [
-                  {
-                    name: 'traverseEdges',
-                    kind: 'function',
-                    file_path: 'src/parser/ast_visitor.ts',
-                    score: 0.94,
-                    start_line: 42,
-                    end_line: 68,
-                  },
-                  {
-                    name: 'executeGraphQuery',
-                    kind: 'function',
-                    file_path: 'python/fastast/graph.py',
-                    score: 0.88,
-                    start_line: 89,
-                    end_line: 134,
-                  },
-                  {
-                    name: 'retrieveContextSlice',
-                    kind: 'function',
-                    file_path: 'python/fastast/retrieval.py',
-                    score: 0.82,
-                    start_line: 142,
-                    end_line: 198,
-                  },
-                ]).map((cand, idx) => (
-                  <div key={idx} className="candidate-card">
-                    <div className="cand-top">
-                      <span className="cand-rank font-code">#{idx + 1}</span>
-                      <span className="cand-name font-code font-semibold text-primary truncate">
-                        {cand.name}
-                      </span>
-                      <span className="cand-score font-code text-tertiary">
-                        Score: {cand.score ?? 0.9}
-                      </span>
-                    </div>
-                    <div className="cand-bottom font-code text-xs text-outline">
-                      <span className="cand-file truncate">{cand.file_path}</span>
-                      <span>L{cand.start_line}-{cand.end_line}</span>
-                    </div>
-                  </div>
-                ))}
+      {/* Results Workspace */}
+      <div className="evidence-body">
+        {apiError && (
+          <div className="mb-3">
+            <div className="api-error-banner">
+              <div>
+                <strong>Evidence Query Error:</strong> {apiError}
               </div>
-            </div>
-
-            {/* Right: Bounded Snippets */}
-            <div className="snippets-col">
-              <span className="section-title">
-                Bounded Evidence Snippets (Token-Constrained)
-              </span>
-
-              <div className="snippets-list">
-                {(bundle?.snippets.length ? bundle.snippets : [
-                  {
-                    symbol_name: 'traverseEdges',
-                    file_path: 'src/parser/ast_visitor.ts',
-                    start_line: 42,
-                    end_line: 49,
-                    snippet: `public async traverseEdges(node: ASTNode, depth = 2): Promise<GraphEdge[]> {\n  const neighbors = await this.resolveSymbolDependencies(node);\n  const outboundEdges = neighbors.map(dep => dep.asEdgeRecord(depth));\n  return this.applySpectralRank(outboundEdges);\n}`,
-                    token_count: 85,
-                  },
-                  {
-                    symbol_name: 'executeGraphQuery',
-                    file_path: 'python/fastast/graph.py',
-                    start_line: 89,
-                    end_line: 96,
-                    snippet: `def executeGraphQuery(symbol: str, depth: int = 2) -> GraphContext:\n  """Traverse symbol relationships up to depth hops."""\n  with get_connection() as conn:\n    return db_get_graph_neighborhood(conn, symbol, max_depth=depth)`,
-                    token_count: 68,
-                  },
-                ]).map((snip, idx) => (
-                  <div key={idx} className="snippet-card">
-                    <div className="snippet-header">
-                      <div className="snippet-meta">
-                        <span className="snippet-sym font-code font-semibold text-primary">
-                          {snip.symbol_name}
-                        </span>
-                        <span className="snippet-path font-code text-xs text-outline">
-                          {snip.file_path} [Lines {snip.start_line}-{snip.end_line}]
-                        </span>
-                      </div>
-                      <span className="snippet-token-tag font-code">
-                        ~{snip.token_count || 75} tokens
-                      </span>
-                    </div>
-                    <pre className="snippet-code font-code">{snip.snippet}</pre>
-                  </div>
-                ))}
-              </div>
+              <button className="api-retry-btn" onClick={handleSearchSubmit}>
+                Retry
+              </button>
             </div>
           </div>
         )}
+
+        {isLoading ? (
+          <div className="state-box font-code">
+            <span className="material-symbols-outlined spin-icon text-2xl text-primary">
+              sync
+            </span>
+            <span>Ranking symbols and extracting token-bounded AST snippets...</span>
+          </div>
+        ) : !query.trim() ? (
+          <div className="state-box font-code">
+            <span className="material-symbols-outlined text-2xl text-outline">search</span>
+            <span>Enter a symbol or natural-language query above to retrieve bounded evidence.</span>
+          </div>
+        ) : bundle && bundle.candidates.length === 0 ? (
+          <div className="state-box font-code">
+            <span className="material-symbols-outlined text-2xl text-outline">search_off</span>
+            <span>No matching symbols or evidence found for "{bundle.query}".</span>
+          </div>
+        ) : bundle ? (
+          <div className="evidence-grid">
+            {/* Left Column: Ranked Candidates */}
+            <div className="candidates-col">
+              <div className="col-header font-code">
+                <span>Ranked Candidates ({bundle.candidates.length})</span>
+                <span className="text-primary">{bundle.ranking_method.toUpperCase()}</span>
+              </div>
+
+              <div className="candidates-scroll">
+                {bundle.candidates.map((cand, idx) => {
+                  const isSelected =
+                    selectedCandidate?.name === cand.name &&
+                    selectedCandidate?.file_path === cand.file_path;
+                  return (
+                    <div
+                      key={`${cand.name}-${cand.file_path}-${idx}`}
+                      className={`cand-card ${isSelected ? 'cand-card-selected' : ''}`}
+                      onClick={() => setSelectedCandidate(cand)}
+                    >
+                      <div className="cand-row-top font-code">
+                        <span className="cand-rank">#{idx + 1}</span>
+                        <span className="cand-kind">{cand.kind}</span>
+                        <span className="cand-name truncate">{cand.name}</span>
+                        <span className="cand-score">{cand.score.toFixed(3)}</span>
+                      </div>
+
+                      <div className="cand-row-file font-code">
+                        <span className="truncate">{cand.file_path}</span>
+                        <span>
+                          L{cand.start_line}–{cand.end_line}
+                        </span>
+                      </div>
+
+                      {/* Ranking Reasons */}
+                      {cand.reasons && cand.reasons.length > 0 && (
+                        <div className="reasons-row font-code">
+                          {cand.reasons.slice(0, 4).map((r, ri) => (
+                            <span key={ri} className="reason-tag">
+                              {r}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Quick Actions on Selected Candidate */}
+                      {isSelected && (
+                        <div className="cand-actions">
+                          <button
+                            className="mini-act-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(
+                                `/explore?file=${encodeURIComponent(
+                                  cand.file_path
+                                )}&symbol=${encodeURIComponent(cand.name)}`
+                              );
+                            }}
+                          >
+                            Explore
+                          </button>
+                          <button
+                            className="mini-act-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(`/globe?symbol=${encodeURIComponent(cand.name)}`);
+                            }}
+                          >
+                            Focus in Globe
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Right Column: Selected Candidate Details + Bounded Snippets */}
+            <div className="snippets-col">
+              {/* Selected Candidate Inspector Banner */}
+              {selectedCandidate && (
+                <div className="selected-cand-banner font-code">
+                  <div className="sel-banner-top">
+                    <div>
+                      <span className="text-primary font-bold text-sm">
+                        {selectedCandidate.name}
+                      </span>{' '}
+                      <span className="text-outline text-xs">
+                        ({selectedCandidate.file_path}:L{selectedCandidate.start_line}–
+                        {selectedCandidate.end_line})
+                      </span>
+                    </div>
+                    <span className="text-tertiary text-xs">
+                      Score: {selectedCandidate.score.toFixed(3)}
+                    </span>
+                  </div>
+
+                  {selectedCandidate.reasons && selectedCandidate.reasons.length > 0 && (
+                    <div className="sel-banner-sub">
+                      <span className="text-outline">Ranking Signals: </span>
+                      {selectedCandidate.reasons.join(' • ')}
+                    </div>
+                  )}
+
+                  {selectedCandidate.neighbors && selectedCandidate.neighbors.length > 0 && (
+                    <div className="sel-banner-sub">
+                      <span className="text-outline">Graph Neighbors: </span>
+                      {selectedCandidate.neighbors
+                        .slice(0, 6)
+                        .map((n) => `${n.name || n.symbol} (${n.relation || 'calls'})`)
+                        .join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="col-header font-code">
+                <span>Bounded Evidence Windows ({orderedSnippets.length})</span>
+                <span className="text-tertiary">
+                  Total ~{tokenUsage.toLocaleString()} tokens
+                </span>
+              </div>
+
+              <div className="snippets-scroll">
+                {orderedSnippets.map((snip, idx) => {
+                  const isHighlighted = selectedCandidate?.name === snip.symbol_name;
+                  return (
+                    <div
+                      key={`${snip.symbol_name}-${idx}`}
+                      className={`snippet-card ${
+                        isHighlighted ? 'snippet-card-highlighted' : ''
+                      }`}
+                    >
+                      <div className="snippet-header font-code">
+                        <div className="snippet-meta">
+                          <span className="text-primary font-bold">{snip.symbol_name}</span>
+                          <span className="text-outline text-xs">
+                            {snip.file_path} [L{snip.start_line}–{snip.end_line}]
+                          </span>
+                        </div>
+                        <div className="snippet-right">
+                          <span className="token-badge">~{snip.token_count} tok</span>
+                          <button
+                            className="mini-act-btn"
+                            onClick={() =>
+                              navigate(
+                                `/explore?file=${encodeURIComponent(
+                                  snip.file_path
+                                )}&symbol=${encodeURIComponent(snip.symbol_name)}`
+                              )
+                            }
+                          >
+                            Open File
+                          </button>
+                        </div>
+                      </div>
+
+                      {snip.reasons && snip.reasons.length > 0 && (
+                        <div className="snippet-reasons font-code">
+                          Signals: {snip.reasons.join(' · ')}
+                        </div>
+                      )}
+
+                      <pre className="snippet-code font-code">{snip.snippet}</pre>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <style>{`
         .evidence-page {
           width: 100%;
-          height: calc(100vh - 56px);
+          height: 100%;
           display: flex;
           flex-direction: column;
           background: var(--surface-lowest);
           overflow: hidden;
         }
         .evidence-header {
-          padding: 16px 24px;
+          padding: 12px 18px;
           background: var(--surface);
           border-bottom: 1px solid var(--hairline);
           display: flex;
           flex-direction: column;
-          gap: 12px;
+          gap: 10px;
+          flex-shrink: 0;
         }
         .search-row {
           display: flex;
-          gap: 12px;
+          gap: 10px;
         }
         .search-input-group {
           flex: 1;
@@ -249,176 +408,289 @@ export const EvidencePage: React.FC = () => {
           align-items: center;
           background: var(--surface-lowest);
           border: 1px solid var(--hairline);
-          border-radius: 6px;
-          padding: 8px 12px;
+          border-radius: 5px;
+          padding: 0 10px;
+          height: 36px;
+        }
+        .search-input-group:focus-within {
+          border-color: var(--primary);
         }
         .search-icon {
           color: var(--primary);
-          font-size: 20px;
-          margin-right: 10px;
+          margin-right: 8px;
         }
         .evidence-search-input {
           flex: 1;
           background: transparent;
           border: none;
           color: var(--on-surface);
-          font-size: 13px;
+          font-size: 12.5px;
           outline: none;
         }
-        .btn-retrieve {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 8px 18px;
-          background: var(--primary);
-          color: var(--surface-lowest);
+        .clear-btn {
+          background: transparent;
           border: none;
-          border-radius: 6px;
-          font-weight: 600;
+          color: var(--outline);
+          font-size: 16px;
           cursor: pointer;
+        }
+        .btn-retrieve {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 0 16px;
+          height: 36px;
+          background: var(--primary);
+          color: var(--on-primary);
+          border: none;
+          border-radius: 5px;
+          font-weight: 700;
+          font-size: 12px;
+          cursor: pointer;
+        }
+        .btn-retrieve:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
         }
         .controls-row {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          font-size: 11.5px;
+          gap: 12px;
+          flex-wrap: wrap;
         }
         .ctrl-label {
-          color: var(--outline);
           font-family: var(--font-mono);
-          text-transform: uppercase;
           font-size: 10px;
+          text-transform: uppercase;
+          color: var(--outline);
         }
         .ranking-selector {
           display: flex;
           align-items: center;
-          gap: 6px;
+          gap: 5px;
         }
         .mode-btn {
-          background: var(--surface-container);
+          background: var(--surface-low);
           border: 1px solid var(--hairline);
-          color: var(--outline);
+          color: var(--on-surface-variant);
+          font-family: var(--font-mono);
+          font-size: 10.5px;
           padding: 3px 8px;
           border-radius: 4px;
-          font-family: var(--font-mono);
-          font-size: 10px;
           cursor: pointer;
         }
         .mode-btn-active {
-          background: var(--surface-high);
-          color: var(--primary);
+          background: var(--primary-container);
           border-color: var(--primary);
-          font-weight: 600;
+          color: var(--primary);
+          font-weight: 700;
         }
         .token-meter-wrap {
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 8px;
+        }
+        .budget-select {
+          background: var(--surface-lowest);
+          color: var(--on-surface);
+          border: 1px solid var(--hairline);
+          border-radius: 4px;
+          padding: 3px 8px;
+          font-size: 11px;
         }
         .token-meter-bar {
-          width: 140px;
+          width: 110px;
           height: 6px;
+          background: var(--surface-low);
           border-radius: 3px;
-          background: var(--surface-container);
           overflow: hidden;
         }
         .token-meter-fill {
           height: 100%;
-          background: var(--tertiary-light);
-          border-radius: 3px;
-          transition: width 0.3s;
+          background: var(--tertiary);
+          transition: width 0.25s;
         }
         .token-meter-text {
           font-size: 11px;
           color: var(--tertiary-light);
         }
         .btn-copy-bundle {
-          display: flex;
+          display: inline-flex;
           align-items: center;
           gap: 6px;
-          padding: 5px 12px;
-          border-radius: 4px;
+          padding: 4px 10px;
           background: var(--surface-container);
           border: 1px solid var(--hairline);
+          border-radius: 4px;
           color: var(--on-surface);
+          font-size: 11px;
           cursor: pointer;
         }
-        .evidence-results-container {
-          flex: 1;
-          overflow-y: auto;
-          padding: 20px;
+        .btn-copy-bundle:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
-        .loading-state {
-          height: 300px;
+
+        .evidence-body {
+          flex: 1;
+          overflow: hidden;
+          padding: 14px 18px;
+          display: flex;
+          flex-direction: column;
+        }
+        .state-box {
+          flex: 1;
           display: flex;
           flex-direction: column;
           align-items: center;
           justify-content: center;
-          gap: 12px;
+          gap: 10px;
           color: var(--outline);
+          font-size: 12.5px;
         }
-        .evidence-cards-layout {
+        .evidence-grid {
+          flex: 1;
           display: grid;
-          grid-template-columns: 360px 1fr;
-          gap: 20px;
-          height: 100%;
+          grid-template-columns: 370px 1fr;
+          gap: 16px;
+          min-height: 0;
         }
         .candidates-col, .snippets-col {
           display: flex;
           flex-direction: column;
-          gap: 12px;
+          gap: 8px;
+          min-height: 0;
         }
-        .section-title {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
+        .col-header {
+          display: flex;
+          justify-content: space-between;
+          font-size: 10.5px;
           text-transform: uppercase;
+          color: var(--outline);
+          font-weight: 700;
         }
-        .candidate-list, .snippets-list {
+        .candidates-scroll, .snippets-scroll {
+          flex: 1;
+          overflow-y: auto;
           display: flex;
           flex-direction: column;
-          gap: 10px;
+          gap: 8px;
+          padding-right: 4px;
         }
-        .candidate-card {
+        .cand-card {
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          padding: 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          cursor: pointer;
+        }
+        .cand-card:hover {
+          background: var(--surface-container);
+        }
+        .cand-card-selected {
+          border-color: var(--primary);
+          background: var(--surface-container);
+          box-shadow: inset 2px 0 0 0 var(--primary);
+        }
+        .cand-row-top {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+        }
+        .cand-rank {
+          color: var(--outline);
+          font-size: 10.5px;
+        }
+        .cand-kind {
+          background: var(--surface-high);
+          color: var(--on-surface-variant);
+          font-size: 9.5px;
+          padding: 1px 5px;
+          border-radius: 3px;
+          text-transform: uppercase;
+        }
+        .cand-name {
+          flex: 1;
+          font-weight: 700;
+          color: var(--primary);
+        }
+        .cand-score {
+          color: var(--tertiary-light);
+          font-size: 11px;
+        }
+        .cand-row-file {
+          display: flex;
+          justify-content: space-between;
+          font-size: 11px;
+          color: var(--outline);
+        }
+        .reasons-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+        }
+        .reason-tag {
+          font-size: 9.5px;
+          background: var(--surface-low);
+          border: 1px solid var(--hairline);
+          color: var(--on-surface-variant);
+          padding: 1px 5px;
+          border-radius: 3px;
+        }
+        .cand-actions {
+          display: flex;
+          gap: 6px;
+          padding-top: 4px;
+        }
+        .mini-act-btn {
+          background: var(--surface-high);
+          border: 1px solid var(--hairline);
+          color: var(--on-surface);
+          font-family: var(--font-mono);
+          font-size: 10px;
+          padding: 2px 7px;
+          border-radius: 3px;
+          cursor: pointer;
+        }
+        .mini-act-btn:hover {
+          border-color: var(--primary);
+          color: var(--primary);
+        }
+
+        .selected-cand-banner {
           background: var(--surface);
           border: 1px solid var(--hairline);
           border-radius: 6px;
           padding: 10px 12px;
           display: flex;
           flex-direction: column;
-          gap: 6px;
-          cursor: pointer;
-          transition: all 0.15s;
+          gap: 4px;
+          flex-shrink: 0;
         }
-        .candidate-card:hover {
-          background: var(--surface-high);
-          border-color: var(--primary);
-        }
-        .cand-top {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .cand-rank {
-          font-size: 10px;
-          color: var(--outline);
-        }
-        .cand-name {
-          flex: 1;
-          font-size: 12.5px;
-        }
-        .cand-score {
-          font-size: 10px;
-        }
-        .cand-bottom {
+        .sel-banner-top {
           display: flex;
           justify-content: space-between;
+          align-items: center;
         }
+        .sel-banner-sub {
+          font-size: 11px;
+          color: var(--on-surface-variant);
+        }
+
         .snippet-card {
           background: var(--surface);
           border: 1px solid var(--hairline);
           border-radius: 6px;
           overflow: hidden;
+          flex-shrink: 0;
+        }
+        .snippet-card-highlighted {
+          border-color: var(--primary);
         }
         .snippet-header {
           padding: 8px 12px;
@@ -427,18 +699,32 @@ export const EvidencePage: React.FC = () => {
           display: flex;
           align-items: center;
           justify-content: space-between;
+          gap: 10px;
         }
         .snippet-meta {
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 8px;
+          font-size: 12px;
         }
-        .snippet-token-tag {
+        .snippet-right {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .token-badge {
           font-size: 10px;
           color: var(--tertiary-light);
-          background: rgba(16, 185, 129, 0.12);
+          background: rgba(16, 185, 129, 0.14);
           padding: 2px 6px;
           border-radius: 3px;
+        }
+        .snippet-reasons {
+          padding: 4px 12px;
+          background: var(--surface-container);
+          border-bottom: 1px solid var(--hairline);
+          font-size: 10.5px;
+          color: var(--outline);
         }
         .snippet-code {
           margin: 0;

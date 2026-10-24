@@ -1,325 +1,264 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import type { RepoStats } from '../types';
+import type { HealthStatus, RepoStats } from '../types';
 
 interface AppSidebarProps {
   stats: RepoStats | null;
+  health: HealthStatus | null;
+  apiError: string | null;
 }
 
-export const AppSidebar: React.FC<AppSidebarProps> = ({ stats }) => {
-  const fileCount = stats?.files ?? 142;
+export const AppSidebar: React.FC<AppSidebarProps> = ({ stats, health, apiError }) => {
+  const isOnline = Boolean(health?.ok && !apiError);
+  const symbolCount = stats?.symbols ?? health?.symbol_count;
+  const fileCount = stats?.files ?? health?.file_count;
+  const langCount = stats?.languages ? Object.keys(stats.languages).length : undefined;
+  const commCount = stats?.communities_count;
 
   const navItems = [
     {
       to: '/globe',
-      label: 'Code Graph',
       icon: 'hub',
+      label: 'Code Graph',
       badge: '2D / 3D',
-      badgeColor: 'badge-purple',
+      sub: 'Interactive 2D & 3D Graph',
     },
     {
       to: '/explore',
-      label: 'Explore',
       icon: 'account_tree',
-      badge: `${fileCount} files`,
-      badgeColor: 'badge-gray',
-    },
-    {
-      to: '/architecture',
-      label: 'Architecture',
-      icon: 'layers',
+      label: 'Code Explorer',
+      badge: fileCount !== undefined ? String(fileCount) : undefined,
+      sub: 'Files, Outlines & Snippets',
     },
     {
       to: '/evidence',
-      label: 'Evidence Retrieval',
-      icon: 'find_in_page',
-    },
-    {
-      to: '/coverage',
-      label: 'Index Coverage',
-      icon: 'verified',
-      badge: '98.2%',
-      badgeColor: 'badge-emerald',
+      icon: 'manage_search',
+      label: 'Evidence Bundle',
+      badge: 'RRF',
+      sub: 'Token-Bounded Retrieval',
     },
     {
       to: '/communities',
-      label: 'Louvain Clusters',
       icon: 'bubble_chart',
+      label: 'Communities',
+      badge: commCount !== undefined && commCount > 0 ? String(commCount) : undefined,
+      sub: 'Louvain Modularity Clusters',
+    },
+    {
+      to: '/coverage',
+      icon: 'fact_check',
+      label: 'Index Coverage',
+      badge: langCount !== undefined ? `${langCount} langs` : undefined,
+      sub: 'Language & File Breakdown',
+    },
+    {
+      to: '/architecture',
+      icon: 'layers',
+      label: 'Architecture',
+      sub: 'Subsystems & Hotspots',
     },
     {
       to: '/system',
-      label: 'System & Engine',
-      icon: 'settings_input_component',
+      icon: 'dns',
+      label: 'System & Health',
+      badge: isOnline ? 'OK' : 'ERR',
+      sub: 'API, SQLite WAL & Doctor',
     },
   ];
 
   return (
     <aside className="app-sidebar">
-      <div className="sidebar-top">
-        {/* Brand Banner */}
-        <div className="sidebar-brand">
-          <div className="brand-logo-wrap">
-            <span className="material-symbols-outlined brand-icon">hub</span>
-            <div className="brand-titles">
-              <span className="brand-title">FastAST Lens</span>
-              <span className="brand-subtitle">Codebase Memory</span>
-            </div>
-          </div>
-          <span className="version-chip">v0.2.0</span>
-        </div>
-
-        {/* Navigation list */}
+      <div className="sidebar-section">
+        <div className="sidebar-heading">Navigation</div>
         <nav className="sidebar-nav">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
-              className={({ isActive }) => `nav-link ${isActive ? 'nav-link-active' : ''}`}
+              className={({ isActive }) =>
+                `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`
+              }
             >
-              <div className="nav-link-content">
-                <span className="material-symbols-outlined nav-icon">{item.icon}</span>
-                <span className="nav-label">{item.label}</span>
+              <span className="material-symbols-outlined sidebar-icon">{item.icon}</span>
+              <div className="sidebar-link-text">
+                <div className="sidebar-link-row">
+                  <span className="sidebar-label">{item.label}</span>
+                  {item.badge && (
+                    <span
+                      className={`sidebar-badge ${
+                        item.badge === 'ERR' ? 'sidebar-badge-err' : ''
+                      }`}
+                    >
+                      {item.badge}
+                    </span>
+                  )}
+                </div>
+                <span className="sidebar-sub">{item.sub}</span>
               </div>
-              {item.badge && <span className={`nav-badge ${item.badgeColor || ''}`}>{item.badge}</span>}
             </NavLink>
           ))}
         </nav>
       </div>
 
-      {/* Bottom Telemetry Card */}
-      <div className="sidebar-bottom">
-        <div className="telemetry-box">
-          <div className="telemetry-row">
-            <div className="status-live">
-              <span className="pulse-dot" />
-              <span className="live-label">FastAST API</span>
-            </div>
-            <span className="port-tag">port 4200</span>
+      {/* Bottom Connection Status Card */}
+      <div className="sidebar-footer">
+        <div className="conn-card">
+          <div className="conn-row">
+            <span className={`conn-dot ${isOnline ? 'conn-dot-ok' : 'conn-dot-err'}`} />
+            <span className="conn-title">
+              {isOnline ? 'FastAST API Connected' : 'API Unreachable'}
+            </span>
           </div>
-
-          <div className="telemetry-stats">
-            <span>RAM: ~180MB</span>
-            <span>SQLite: WAL Mode</span>
-          </div>
-
-          <div className="workspace-badge">
-            <div className="workspace-info">
-              <span className="material-symbols-outlined ws-icon">terminal</span>
-              <div className="ws-text">
-                <span className="ws-name">fastast-engine</span>
-                <span className="ws-sub">Local AST Graph</span>
-              </div>
+          <div className="conn-meta font-code">
+            <div>Endpoint: 127.0.0.1:4200</div>
+            <div>
+              DB: {health?.db_exists ? '.fastast.db (WAL)' : 'Not initialized'}
             </div>
-            <span className="material-symbols-outlined check-icon">check_circle</span>
           </div>
         </div>
       </div>
 
       <style>{`
         .app-sidebar {
-          position: fixed;
-          left: 0;
-          top: 0;
-          bottom: 0;
-          width: 256px;
-          background: var(--surface-lowest);
+          width: 220px;
+          flex-shrink: 0;
+          height: calc(100vh - 52px);
+          background: var(--surface-low);
           border-right: 1px solid var(--hairline);
           display: flex;
           flex-direction: column;
           justify-content: space-between;
-          z-index: 50;
-          box-shadow: 2px 0 16px rgba(0, 0, 0, 0.4);
+          padding: 12px 10px;
+          z-index: 30;
+          user-select: none;
         }
-        .sidebar-top {
+        .sidebar-section {
           display: flex;
           flex-direction: column;
+          gap: 6px;
         }
-        .sidebar-brand {
-          height: 56px;
-          padding: 0 16px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          background: var(--surface-low);
-          border-bottom: 1px solid var(--hairline);
-        }
-        .brand-logo-wrap {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        .brand-icon {
-          color: var(--primary);
-          font-size: 26px;
-          filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.5));
-        }
-        .brand-titles {
-          display: flex;
-          flex-direction: column;
-        }
-        .brand-title {
+        .sidebar-heading {
+          font-family: var(--font-mono);
+          font-size: 10px;
           font-weight: 600;
-          font-size: 14px;
-          color: var(--on-surface);
-          letter-spacing: -0.01em;
-        }
-        .brand-subtitle {
-          font-family: var(--font-mono);
-          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
           color: var(--outline);
-        }
-        .version-chip {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          padding: 2px 6px;
-          background: var(--surface-container);
-          color: var(--primary);
-          border-radius: 4px;
-          border: 1px solid rgba(56, 189, 248, 0.2);
+          padding: 2px 8px;
         }
         .sidebar-nav {
           display: flex;
           flex-direction: column;
           gap: 3px;
-          padding: 12px 10px;
         }
-        .nav-link {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 7px 10px;
-          border-radius: 4px;
-          color: var(--on-surface-variant);
-          text-decoration: none;
-          font-size: 12.5px;
-          font-weight: 500;
-          transition: all 0.15s ease;
-        }
-        .nav-link:hover {
-          background: var(--surface-container);
-          color: var(--on-surface);
-        }
-        .nav-link-active {
-          background: var(--surface-high);
-          color: var(--primary);
-          font-weight: 600;
-          box-shadow: inset 2px 0 0 0 var(--primary);
-        }
-        .nav-link-content {
+        .sidebar-link {
           display: flex;
           align-items: center;
           gap: 10px;
+          padding: 8px 10px;
+          border-radius: 6px;
+          text-decoration: none;
+          color: var(--on-surface-variant);
+          border: 1px solid transparent;
+          transition: all 0.12s ease;
         }
-        .nav-icon {
-          font-size: 18px;
-          opacity: 0.85;
+        .sidebar-link:hover {
+          background: var(--surface);
+          color: var(--on-surface);
         }
-        .nav-badge {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          padding: 1px 5px;
-          border-radius: 3px;
-        }
-        .badge-purple {
-          background: var(--secondary-container);
-          color: var(--secondary-light);
-        }
-        .badge-gray {
+        .sidebar-link-active {
           background: var(--surface-container);
+          color: var(--on-surface);
+          border-color: var(--hairline);
+          box-shadow: inset 2px 0 0 0 var(--primary);
+        }
+        .sidebar-link-active .sidebar-icon {
+          color: var(--primary);
+        }
+        .sidebar-icon {
+          font-size: 18px;
           color: var(--outline);
+          flex-shrink: 0;
         }
-        .badge-emerald {
-          background: var(--tertiary-container);
-          color: var(--tertiary-light);
-        }
-        .sidebar-bottom {
-          padding: 12px;
-          background: var(--surface-low);
-          border-top: 1px solid var(--hairline);
-        }
-        .telemetry-box {
+        .sidebar-link-text {
+          flex: 1;
+          min-width: 0;
           display: flex;
           flex-direction: column;
-          gap: 8px;
+          gap: 1px;
         }
-        .telemetry-row {
+        .sidebar-link-row {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          background: var(--surface-lowest);
-          padding: 5px 8px;
-          border-radius: 4px;
-          border: 1px solid var(--hairline);
+          gap: 4px;
         }
-        .status-live {
+        .sidebar-label {
+          font-size: 12.5px;
+          font-weight: 600;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .sidebar-badge {
+          font-family: var(--font-mono);
+          font-size: 9.5px;
+          padding: 1px 5px;
+          border-radius: 3px;
+          background: var(--surface-high);
+          color: var(--on-surface-variant);
+          font-weight: 600;
+        }
+        .sidebar-badge-err {
+          background: rgba(244, 63, 94, 0.2);
+          color: var(--error-light);
+        }
+        .sidebar-sub {
+          font-size: 10.5px;
+          color: var(--outline);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .sidebar-footer {
+          padding-top: 10px;
+          border-top: 1px solid var(--hairline);
+        }
+        .conn-card {
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          padding: 9px 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+        .conn-row {
           display: flex;
           align-items: center;
-          gap: 6px;
+          gap: 7px;
         }
-        .pulse-dot {
+        .conn-dot {
           width: 7px;
           height: 7px;
           border-radius: 50%;
-          background: var(--tertiary-light);
-          box-shadow: 0 0 6px var(--tertiary-light);
-          animation: pulseGlow 2s infinite;
+          flex-shrink: 0;
         }
-        .live-label {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--tertiary-light);
-          font-weight: 500;
+        .conn-dot-ok {
+          background: var(--tertiary);
         }
-        .port-tag {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
+        .conn-dot-err {
+          background: var(--error);
         }
-        .telemetry-stats {
-          display: flex;
-          justify-content: space-between;
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          padding: 0 4px;
-        }
-        .workspace-badge {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          background: var(--surface-container);
-          padding: 6px 8px;
-          border-radius: 4px;
-          border: 1px solid var(--hairline);
-        }
-        .workspace-info {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          overflow: hidden;
-        }
-        .ws-icon {
-          font-size: 16px;
-          color: var(--outline);
-        }
-        .ws-text {
-          display: flex;
-          flex-direction: column;
-          truncate: true;
-        }
-        .ws-name {
-          font-size: 11px;
+        .conn-title {
+          font-size: 11.5px;
+          font-weight: 600;
           color: var(--on-surface);
-          font-weight: 500;
         }
-        .ws-sub {
-          font-family: var(--font-mono);
-          font-size: 9px;
+        .conn-meta {
+          font-size: 10px;
           color: var(--outline);
-        }
-        .check-icon {
-          color: var(--tertiary-light);
-          font-size: 15px;
+          line-height: 1.4;
         }
       `}</style>
     </aside>

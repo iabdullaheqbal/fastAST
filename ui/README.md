@@ -50,7 +50,7 @@ From the repository root:
 ```
 
 This will automatically:
-- Start the FastAST Python HTTP API server on `http://127.0.0.1:5174`
+- Start the FastAST Python HTTP API server on `http://127.0.0.1:4200`
 - Start the Vite dev server on `http://localhost:5173`
 
 ### 2. Run UI Independently
@@ -73,5 +73,7 @@ npm run preview
 To run just the Python API server:
 
 ```bash
-PYTHONPATH=python python3 python/fastast/api_server.py --port 5174
+fastast serve --port 4200
+# or:
+PYTHONPATH=python python3 python/fastast/api_server.py --port 4200
 ```

@@ -1,142 +1,234 @@
 import React, { useEffect, useState } from 'react';
 import { fastAstApi } from '../../services/api';
-import type { RepoStats } from '../../types';
+import type { FileRecord, RepoStats } from '../../types';
 
 export const CoveragePage: React.FC = () => {
   const [stats, setStats] = useState<RepoStats | null>(null);
+  const [diag, setDiag] = useState<any>(null);
+  const [files, setFiles] = useState<FileRecord[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [apiError, setApiError] = useState<string | null>(null);
+
+  const loadCoverage = async () => {
+    setIsLoading(true);
+    setApiError(null);
+    try {
+      const [s, d, f] = await Promise.all([
+        fastAstApi.getStats(),
+        fastAstApi.getDiagnostics(),
+        fastAstApi.getFiles(),
+      ]);
+      setStats(s);
+      setDiag(d);
+      setFiles(f);
+    } catch (err: any) {
+      setApiError(err?.message || 'Failed to load index coverage data.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
-    fastAstApi.getStats().then(setStats);
+    loadCoverage();
   }, []);
 
   const colors: Record<string, string> = {
     python: '#38bdf8',
-    markdown: '#94a3b8',
     rust: '#f97316',
-    json: '#fbbf24',
     typescript: '#3b82f6',
     javascript: '#eab308',
+    markdown: '#94a3b8',
+    json: '#fbbf24',
     html: '#f43f5e',
     css: '#06b6d4',
     toml: '#a855f7',
-    yaml: '#f59e0b',
     java: '#ef4444',
   };
 
-  const languagesList = stats?.languages && Object.keys(stats.languages).length > 0
-    ? Object.entries(stats.languages).map(([lang, count]) => ({
+  const totalFiles = stats?.files ?? 0;
+  const diskFiles = diag?.coverage?.disk_files_count ?? totalFiles;
+  const syntaxErrorFiles = files.filter((f) => f.has_syntax_error).length;
+  const unindexedFiles = Math.max(0, diskFiles - totalFiles);
+
+  const languagesList = React.useMemo(() => {
+    if (!stats?.languages) return [];
+    return Object.entries(stats.languages)
+      .sort((a, b) => b[1] - a[1])
+      .map(([lang, count]) => ({
         name: lang.charAt(0).toUpperCase() + lang.slice(1),
-        ext: `.${lang.slice(0, 3)}`,
+        key: lang,
         count,
         color: colors[lang.toLowerCase()] || '#a855f7',
-      }))
-    : [
-        { name: 'Python', ext: '.py', count: 47, color: '#38bdf8' },
-        { name: 'Markdown', ext: '.md', count: 42, color: '#94a3b8' },
-        { name: 'Rust', ext: '.rs', count: 22, color: '#f97316' },
-        { name: 'JSON', ext: '.json', count: 7, color: '#fbbf24' },
-        { name: 'TypeScript', ext: '.ts, .tsx', count: 5, color: '#3b82f6' },
-        { name: 'JavaScript', ext: '.js, .jsx', count: 3, color: '#eab308' },
-        { name: 'HTML', ext: '.html', count: 3, color: '#f43f5e' },
-        { name: 'CSS', ext: '.css', count: 3, color: '#06b6d4' },
-        { name: 'TOML', ext: '.toml', count: 3, color: '#a855f7' },
-      ];
+      }));
+  }, [stats]);
 
-  const totalFiles = stats?.files || 126;
+  const categoriesList = React.useMemo(() => {
+    if (!stats?.categories) return [];
+    return Object.entries(stats.categories).sort((a, b) => b[1] - a[1]);
+  }, [stats]);
+
+  const symbolKindsList = React.useMemo(() => {
+    if (!stats?.symbol_kinds) return [];
+    return Object.entries(stats.symbol_kinds).sort((a, b) => b[1] - a[1]);
+  }, [stats]);
 
   return (
     <div className="coverage-page">
       <div className="coverage-header">
         <div>
-          <h1 className="coverage-title">Multi-Language Index Coverage</h1>
+          <h1 className="coverage-title">Repository Index Coverage</h1>
           <p className="coverage-subtitle">
-            9 native AST parsers unified into SQLite memory graph (.fastast.db)
+            Live file admission, language distribution, symbol kinds, and parse health from .fastast.db
           </p>
         </div>
-        <div className="coverage-stat-chip">
-          <span className="material-symbols-outlined text-sm text-tertiary">verified</span>
-          <span>100% Parsing Success • 0 Stale</span>
-        </div>
+        <button className="refresh-btn font-code" onClick={loadCoverage} disabled={isLoading}>
+          <span className={`material-symbols-outlined text-xs ${isLoading ? 'spin-icon' : ''}`}>
+            refresh
+          </span>
+          <span>Refresh</span>
+        </button>
       </div>
 
       <div className="coverage-body">
-        {/* Top Summary Cards */}
+        {apiError && (
+          <div className="api-error-banner">
+            <div>{apiError}</div>
+            <button className="api-retry-btn" onClick={loadCoverage}>
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* Top Real Telemetry Cards */}
         <div className="summary-cards-row">
           <div className="summary-card">
-            <span className="card-label">Total Files Scanned</span>
-            <span className="card-val font-code text-primary">{totalFiles}</span>
-            <span className="card-sub text-tertiary">{totalFiles} indexed, 0 errors</span>
+            <span className="card-label">Admitted & Indexed Files</span>
+            <span className="card-val font-code text-primary">
+              {totalFiles.toLocaleString()}
+            </span>
+            <span className="card-sub font-code">
+              {diskFiles} on disk • {unindexedFiles} pending • {syntaxErrorFiles} syntax errors
+            </span>
           </div>
 
           <div className="summary-card">
-            <span className="card-label">AST Symbols Extracted</span>
+            <span className="card-label">Extracted AST Symbols</span>
             <span className="card-val font-code text-secondary">
-              {(stats?.symbols || 1330).toLocaleString()}
+              {(stats?.symbols ?? 0).toLocaleString()}
             </span>
-            <span className="card-sub text-outline">Functions, classes, methods</span>
+            <span className="card-sub font-code">
+              {symbolKindsList
+                .slice(0, 3)
+                .map(([k, v]) => `${v} ${k}s`)
+                .join(', ') || 'No symbols'}
+            </span>
           </div>
 
           <div className="summary-card">
-            <span className="card-label">Relational Edges</span>
+            <span className="card-label">Graph Relationships</span>
             <span className="card-val font-code text-tertiary">
-              {(stats?.edges || 13503).toLocaleString()}
+              {(stats?.edges ?? 0).toLocaleString()}
             </span>
-            <span className="card-sub text-outline">CALLS, IMPORTS, DEFINES</span>
+            <span className="card-sub font-code">
+              {(stats?.calls ?? 0).toLocaleString()} calls • {(stats?.imports ?? 0).toLocaleString()}{' '}
+              imports
+            </span>
           </div>
 
           <div className="summary-card">
-            <span className="card-label">Scan & Index Latency</span>
-            <span className="card-val font-code text-primary">3,680 ms</span>
-            <span className="card-sub text-outline">Native Rust tree-sitter</span>
+            <span className="card-label">File Categories</span>
+            <div className="cat-chips font-code">
+              {categoriesList.map(([cat, cnt]) => (
+                <span key={cat} className="cat-chip">
+                  <strong>{cnt}</strong> {cat}
+                </span>
+              ))}
+            </div>
+            <span className="card-sub font-code">
+              {languagesList.length} active languages
+            </span>
           </div>
         </div>
 
-        {/* Languages Breakdown Table */}
-        <div className="languages-table-card">
-          <span className="table-title font-code">Supported Language Breakdown</span>
+        {/* Language Distribution */}
+        <div className="section-card">
+          <span className="table-title font-code">
+            Indexed Language Distribution ({languagesList.length} Languages)
+          </span>
 
-          <div className="languages-grid">
-            {languagesList.map((lang) => {
-              const pct = Math.round((lang.count / totalFiles) * 100);
-              return (
-                <div key={lang.name} className="lang-box">
-                  <div className="lang-box-top">
-                    <div className="flex items-center gap-2">
-                      <span className="lang-dot" style={{ backgroundColor: lang.color }} />
-                      <span className="lang-name font-semibold">{lang.name}</span>
+          {languagesList.length > 0 ? (
+            <div className="languages-grid">
+              {languagesList.map((lang) => {
+                const pct =
+                  totalFiles > 0 ? Math.round((lang.count / totalFiles) * 1000) / 10 : 0;
+                return (
+                  <div key={lang.key} className="lang-box">
+                    <div className="lang-box-top">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="lang-dot"
+                          style={{ backgroundColor: lang.color }}
+                        />
+                        <span className="font-semibold">{lang.name}</span>
+                      </div>
+                      <span className="font-code text-xs text-outline">
+                        {lang.count} files
+                      </span>
                     </div>
-                    <span className="lang-ext font-code text-xs text-outline">{lang.ext}</span>
-                  </div>
 
-                  <div className="lang-meter">
-                    <div
-                      className="lang-meter-bar"
-                      style={{ width: `${pct}%`, backgroundColor: lang.color }}
-                    />
-                  </div>
+                    <div className="lang-meter">
+                      <div
+                        className="lang-meter-bar"
+                        style={{
+                          width: `${Math.max(2, pct)}%`,
+                          backgroundColor: lang.color,
+                        }}
+                      />
+                    </div>
 
-                  <div className="lang-box-bottom font-code text-xs">
-                    <span className="text-on-surface">{lang.count} files</span>
-                    <span className="text-outline">{pct}% of codebase</span>
+                    <div className="lang-box-bottom font-code text-xs">
+                      <span className="text-on-surface-variant">{pct}% of indexed files</span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="p-6 text-outline font-code text-center">
+              {isLoading ? 'Loading language metrics...' : 'No indexed files found.'}
+            </div>
+          )}
         </div>
+
+        {/* Symbol Kinds Breakdown */}
+        {symbolKindsList.length > 0 && (
+          <div className="section-card">
+            <span className="table-title font-code">AST Symbol Kinds Breakdown</span>
+            <div className="kinds-grid font-code">
+              {symbolKindsList.map(([kind, count]) => (
+                <div key={kind} className="kind-stat-box">
+                  <span className="text-outline uppercase text-xs">{kind}</span>
+                  <strong className="text-lg text-on-surface">
+                    {count.toLocaleString()}
+                  </strong>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <style>{`
         .coverage-page {
           width: 100%;
-          height: calc(100vh - 56px);
+          height: 100%;
           display: flex;
           flex-direction: column;
           background: var(--surface-lowest);
           overflow-y: auto;
         }
         .coverage-header {
-          padding: 16px 24px;
+          padding: 14px 20px;
           background: var(--surface);
           border-bottom: 1px solid var(--hairline);
           display: flex;
@@ -144,7 +236,7 @@ export const CoveragePage: React.FC = () => {
           justify-content: space-between;
         }
         .coverage-title {
-          font-size: 16px;
+          font-size: 15px;
           font-weight: 700;
           color: var(--on-surface);
           margin: 0;
@@ -152,39 +244,39 @@ export const CoveragePage: React.FC = () => {
         .coverage-subtitle {
           font-size: 12px;
           color: var(--outline);
-          margin: 0;
-          padding-top: 2px;
+          margin: 2px 0 0 0;
         }
-        .coverage-stat-chip {
-          display: flex;
+        .refresh-btn {
+          display: inline-flex;
           align-items: center;
           gap: 6px;
-          background: var(--surface-low);
           padding: 6px 12px;
-          border-radius: 4px;
+          background: var(--surface-container);
           border: 1px solid var(--hairline);
-          font-size: 12px;
+          border-radius: 5px;
           color: var(--on-surface);
+          font-size: 11.5px;
+          cursor: pointer;
         }
         .coverage-body {
-          padding: 24px;
+          padding: 20px;
           display: flex;
           flex-direction: column;
-          gap: 20px;
-          max-width: 1400px;
-          margin: 0 auto;
+          gap: 16px;
+          max-width: 1320px;
           width: 100%;
+          margin: 0 auto;
         }
         .summary-cards-row {
           display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          gap: 16px;
+          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          gap: 12px;
         }
         .summary-card {
           background: var(--surface);
           border: 1px solid var(--hairline);
-          border-radius: 8px;
-          padding: 16px;
+          border-radius: 6px;
+          padding: 14px;
           display: flex;
           flex-direction: column;
           gap: 6px;
@@ -201,30 +293,46 @@ export const CoveragePage: React.FC = () => {
         }
         .card-sub {
           font-size: 11px;
+          color: var(--outline);
         }
-        .languages-table-card {
+        .cat-chips {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin: 2px 0;
+        }
+        .cat-chip {
+          background: var(--surface-low);
+          border: 1px solid var(--hairline);
+          padding: 2px 7px;
+          border-radius: 4px;
+          font-size: 11.5px;
+          color: var(--on-surface-variant);
+        }
+        .section-card {
           background: var(--surface);
           border: 1px solid var(--hairline);
-          border-radius: 8px;
-          padding: 20px;
+          border-radius: 6px;
+          padding: 16px;
           display: flex;
           flex-direction: column;
-          gap: 16px;
+          gap: 14px;
         }
         .table-title {
           font-size: 11px;
           color: var(--outline);
           text-transform: uppercase;
+          font-weight: 600;
         }
         .languages-grid {
           display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 14px;
+          grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+          gap: 12px;
         }
         .lang-box {
-          background: var(--surface-container);
+          background: var(--surface-low);
           border: 1px solid var(--hairline);
-          border-radius: 6px;
+          border-radius: 5px;
           padding: 12px;
           display: flex;
           flex-direction: column;
@@ -242,18 +350,32 @@ export const CoveragePage: React.FC = () => {
         }
         .lang-meter {
           width: 100%;
-          height: 4px;
+          height: 5px;
           background: var(--surface-lowest);
-          border-radius: 2px;
+          border-radius: 3px;
           overflow: hidden;
         }
         .lang-meter-bar {
           height: 100%;
-          border-radius: 2px;
+          border-radius: 3px;
         }
         .lang-box-bottom {
           display: flex;
           justify-content: space-between;
+        }
+        .kinds-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+          gap: 10px;
+        }
+        .kind-stat-box {
+          background: var(--surface-low);
+          border: 1px solid var(--hairline);
+          border-radius: 5px;
+          padding: 10px 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
         }
       `}</style>
     </div>
