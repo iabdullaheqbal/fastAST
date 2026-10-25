@@ -121,5 +121,76 @@ CREATE TABLE IF NOT EXISTS edges (
 );
 ```
 
+## Where It Runs and How Someone Tries It
+
+### Runtime & Requirements
+- **Runtime:** Python >= 3.10, Rust >= 1.70 (or pre-built wheels via `pip install fastast`).
+- **Dependencies:** Embedded SQLite (built-in, zero cloud dependencies or external database processes).
+- **Environment:** Linux, macOS, or Windows. Zero API keys or secrets required for indexing and local MCP operations.
+
+### Quick Start & Verification
+```bash
+# 1. Install or build package
+pip install .
+
+# 2. Run repository indexer
+fastast index .
+
+# 3. Search symbols and trace call graphs
+fastast symbols python/fastast/indexer.py --query RepositoryIndexer
+fastast calls index_repository --direction both
+
+# 4. Launch interactive Graph Explorer
+fastast ui
+
+# 5. Start FastMCP server for AI coding agents
+fastast-mcp --transport stdio
+```
+
+## File Structure
+
+```text
+fastAST/
+├── src/                          # Native Rust Tree-Sitter core
+│   ├── lib.rs                    # PyO3 module bindings & entrypoint
+│   ├── model.rs                  # Rust domain structs & records
+│   └── languages/                # 9 Tree-Sitter language grammars
+├── python/fastast/               # Python engine & MCP server
+│   ├── __init__.py               # Public API exports
+│   ├── cli.py                    # Developer terminal CLI
+│   ├── db.py                     # SQLite schema, WAL mode & edge manager
+│   ├── indexer.py                # Repository walker & incremental hasher
+│   ├── model.py                  # Pydantic/dataclass domain models
+│   └── server.py                 # FastMCP Model Context Protocol server
+├── devpost/                      # Devpost Learn Hackathon workspace
+│   ├── scope.md                  # Approved scope & kernel
+│   ├── prd.md                    # Approved product requirements document
+│   ├── spec.md                   # Approved technical blueprint
+│   ├── checklist.md              # Build checklist & verification record
+│   ├── submission.md             # Devpost submission form answers & links
+│   └── app-map.html              # Interactive app map & architectural tour
+├── tests/                        # Comprehensive unit & multi-language tests
+├── README.md                     # Documentation & setup guide
+├── pyproject.toml                # Build system configuration
+└── Cargo.toml                    # Rust workspace manifest
+```
+
+## What Was Simplified and Why
+
+- **Embedded SQLite WAL instead of External Graph DBs (Neo4j / Memgraph):** Keeping all symbol nodes, calls, and typed edges inside local SQLite eliminates heavy infrastructure, Docker overhead, and complex credentials.
+- **AST-bounded Evidence Slices instead of Full File Ingestion:** Coding agents receive line-bounded symbol slices and 1-hop neighborhood bundles rather than multi-thousand-token full-file dumps.
+- **Pure-Python Fallback:** When a compiled Rust binary is absent, FastAST provides graceful degradation for basic Python indexing.
+
+## Sharing and Submission Instructions
+
+- **Public Repository:** Publicly available on GitHub at [https://github.com/iabdullaheqbal/fastAST](https://github.com/iabdullaheqbal/fastAST).
+- **Demo Video:** Short 1-to-3 minute screen recording demonstrating:
+  1. Instant multi-language repository indexing via CLI (`fastast index .`).
+  2. Symbol search and signature extraction (`fastast symbols`).
+  3. Call graph tracing (`fastast calls`).
+  4. 2D Graph Explorer UI (`fastast ui`).
+  5. Live MCP tool interaction with an AI agent.
+- **Submission Requirements:** Complies with Devpost "Build With AI: Basics" hackathon rules (new project from empty folder, built with skills, planning docs in repo).
+
 ## Complete Algorithm Stack
 Detailed design and formulas documented in `docs/ARCHITECTURE.md`.

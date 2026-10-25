@@ -53,3 +53,23 @@ Build mode: fast
 ## Final Review
 
 - [x] Final review complete — pruning fully dropped; FastAST is 100% focused on AST repository indexing for coding agents.
+
+## Code Tour and App Map
+
+- [x] Learning activity complete — guided code tour of Rust AST parser, SQLite graph store, and MCP retrieval tools.
+- [x] Optional edit and transfer reflection addressed — verified incremental hash caching and token-bounded evidence materialization.
+- [x] `devpost/app-map.html` generated from finished code, checked, and shown, highlighting architecture and reusable patterns.
+
+Activity and evidence: Verified Rust AST engine (`src/`), SQLite WAL graph (`python/fastast/db.py`), FastMCP agent server (`python/fastast/server.py`), and CLI (`python/fastast/cli.py`).
+Route and stops: `src/lib.rs` -> `python/fastast/indexer.py` -> `python/fastast/db.py` -> `python/fastast/server.py` -> `python/fastast/cli.py`.
+Edit outcome: Clean builds, unit test suites passing across all 9 languages.
+Activity mode: Live local execution, CLI verification, and interactive map in `devpost/app-map.html`.
+
+## Submission Requirements Checklist
+
+- [x] **New project:** Started from an empty folder during the Devpost "Build With AI: Basics" submission period.
+- [x] **Built with skills:** Built using the Devpost Learn Skill Pack (`challengepost/learn-ai-basics`) inside the AI coding agent.
+- [x] **Planning docs in repo:** Includes approved `scope.md`, `prd.md`, and `spec.md` in the `devpost/` directory.
+- [x] **Public repository URL:** Verified and accessible at `https://github.com/iabdullaheqbal/fastAST`.
+- [x] **Demo video:** 1-to-3 minute video walkthrough showing working indexing, symbol navigation, and call graph queries.
+- [x] **Submission details:** Project name, short description, what it does, who it's for, and what was learned prepared in `devpost/submission.md`.
