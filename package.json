@@ -6,6 +6,7 @@
   "scripts": {
     "ui": "npm --prefix ui run dev",
     "ui:build": "npm --prefix ui run build",
+    "bundle:ui": "npm --prefix ui run build && mkdir -p python/fastast/ui_dist && cp -r ui/dist/* python/fastast/ui_dist/",
     "serve": "fastast serve"
   },
   "dependencies": {

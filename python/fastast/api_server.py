@@ -180,6 +180,86 @@ class FastASTAPIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _serve_static(self, path: str) -> None:
+        """Serve bundled static UI files for Graph Explorer."""
+        ui_dirs = [
+            Path(__file__).parent / "ui_dist",
+            REPO_PATH / "python" / "fastast" / "ui_dist",
+            REPO_PATH / "ui" / "dist",
+        ]
+        target_dir = None
+        for d in ui_dirs:
+            if d.exists() and (d / "index.html").exists():
+                target_dir = d
+                break
+
+        if not target_dir:
+            self._send_json(
+                {
+                    "error": f"FastAST UI assets not found. (Requested: {path})",
+                    "hint": "Build UI assets with 'cd ui && npm run build' or reinstall fastast package.",
+                },
+                status=404,
+            )
+            return
+
+        clean_path = path.lstrip("/")
+        if "?" in clean_path:
+            clean_path = clean_path.split("?")[0]
+
+        file_path = (target_dir / clean_path).resolve()
+
+        # Security check: prevent directory traversal
+        try:
+            file_path.relative_to(target_dir.resolve())
+        except ValueError:
+            self._send_json({"error": "Forbidden"}, status=403)
+            return
+
+        # If requesting root or client-side SPA route, fallback to index.html
+        if not clean_path or not file_path.exists() or file_path.is_dir():
+            file_path = target_dir / "index.html"
+
+        if not file_path.exists():
+            self._send_json({"error": "File not found"}, status=404)
+            return
+
+        ext = file_path.suffix.lower()
+        content_types = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".mjs": "application/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".json": "application/json",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".ico": "image/x-icon",
+            ".woff": "font/woff",
+            ".woff2": "font/woff2",
+            ".ttf": "font/ttf",
+        }
+        content_type = content_types.get(ext, "application/octet-stream")
+
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            if "/assets/" in path:
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            else:
+                self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            logger.error("Error serving static file %s: %s", file_path, e)
+            self._send_json({"error": str(e)}, status=500)
+
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -650,8 +730,11 @@ class FastASTAPIHandler(BaseHTTPRequestHandler):
                 finally:
                     conn.close()
 
+            elif path.startswith("/api/"):
+                self._send_json({"error": f"Unknown API endpoint: {path}"}, status=404)
+
             else:
-                self._send_json({"error": f"Unknown endpoint: {path}"}, status=404)
+                self._serve_static(path)
 
         except Exception as e:
             logger.error("API error on %s: %s", path, e)
@@ -1077,7 +1160,7 @@ class FastASTHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def run_api_server(port: int = 4200, host: str = "127.0.0.1") -> None:
+def run_api_server(port: int = 4200, host: str = "127.0.0.1", open_browser: bool = False) -> None:
     server = None
     try:
         server = FastASTHTTPServer((host, port), FastASTAPIHandler)
@@ -1134,7 +1217,21 @@ def run_api_server(port: int = 4200, host: str = "127.0.0.1") -> None:
         else:
             raise
 
-    print(f"FastAST API Server listening on http://{host}:{port}")
+    print(f"FastAST Graph Explorer listening on http://{host}:{port}")
+    if open_browser:
+        import threading
+        import webbrowser
+        import time
+
+        def _open() -> None:
+            time.sleep(0.4)
+            try:
+                webbrowser.open(f"http://{host}:{port}")
+            except Exception:
+                pass
+
+        threading.Thread(target=_open, daemon=True).start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

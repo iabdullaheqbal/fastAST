@@ -22,34 +22,40 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Codex**, **Winds
 
 ## Install
 
-Requires **Python >= 3.10** (and **Rust >= 1.70** when building from source):
+### Install from PyPI
+
+```bash
+pip install fastast
+```
+
+Or install from source with **Python >= 3.10** and **Rust >= 1.70**:
 
 ```bash
 git clone https://github.com/iabdullaheqbal/fastAST.git
 cd fastAST
-
-# Install with pip or uv
 pip install .
-# or:
-uv pip install .
+```
 
-# Verify CLI and MCP entrypoints
+Verify the installation:
+
+```bash
 fastast --version
 fastast-mcp --version
 ```
 
-### FastAST Lens (3D Globe Graph & Web UI)
+### Interactive Graph Explorer Web UI
 
-Launch the interactive 3D Globe Graph & Codebase Explorer:
+Launch the interactive 2D/3D Architecture Graph Explorer in any codebase with a single command:
 
 ```bash
-# Start backend API (:4200) and frontend UI (:5173) together
-./start_ui.sh
+# Starts local engine and automatically opens the Graph Explorer in your browser:
+fastast ui
 
-# Or run backend API and frontend separately
-fastast serve --port 4200
-cd ui && npm install && npm run dev
+# Or specify a custom port:
+fastast ui --port 4200
 ```
+
+> **Note:** The compiled Graph Explorer frontend is pre-bundled directly inside the package. End users do not need Node.js or npm installed. For frontend development, run `./start_ui.sh` or `cd ui && npm run dev`.
 
 For editable local development:
 

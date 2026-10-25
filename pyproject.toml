@@ -70,4 +70,10 @@ python-source = "python"
 module-name = "fastast._core"
 features = ["pyo3/extension-module", "pyo3/abi3-py310"]
 strip = true
-include = ["LICENSE", "README.md", "python/fastast/py.typed", "python/fastast/_core.pyi"]
+include = [
+    "LICENSE",
+    "README.md",
+    "python/fastast/py.typed",
+    "python/fastast/_core.pyi",
+    "python/fastast/ui_dist/**/*"
+]

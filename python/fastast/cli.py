@@ -1731,11 +1731,30 @@ def main() -> None:
         epilog=(
             "examples:\n"
             "  fastast serve\n"
-            "  fastast serve --port 4200 --host 127.0.0.1"
+            "  fastast serve --port 4200 --host 127.0.0.1\n"
+            "  fastast serve --open"
         ),
     )
     serve_parser.add_argument("-p", "--port", type=int, default=4200, help="Port to listen on (default: 4200)")
     serve_parser.add_argument("-H", "--host", default="127.0.0.1", help="Host address to bind (default: 127.0.0.1)")
+    serve_parser.add_argument("--open", action="store_true", help="Open browser automatically after server start")
+
+    # `ui` subcommand (Interactive Graph Explorer in Browser)
+    ui_parser = subparsers.add_parser(
+        "ui",
+        help="Launch the interactive Graph Explorer web UI in your browser",
+        description="Starts the local FastAST engine and opens the 2D/3D Graph Explorer in your default browser.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  fastast ui\n"
+            "  fastast ui --port 4200 --host 127.0.0.1\n"
+            "  fastast ui --no-open"
+        ),
+    )
+    ui_parser.add_argument("-p", "--port", type=int, default=4200, help="Port to listen on (default: 4200)")
+    ui_parser.add_argument("-H", "--host", default="127.0.0.1", help="Host address to bind (default: 127.0.0.1)")
+    ui_parser.add_argument("--no-open", action="store_true", help="Do not open browser automatically")
 
     # `mcp` subcommand
     mcp_parser = subparsers.add_parser(
@@ -1921,9 +1940,12 @@ def main() -> None:
                 force=getattr(args, "force", False),
             )
         )
-    elif args.command == "serve":
+    elif args.command in ("serve", "ui"):
         from fastast.api_server import run_api_server
-        run_api_server(port=args.port, host=args.host)
+        open_browser = args.command == "ui" or getattr(args, "open", False)
+        if getattr(args, "no_open", False):
+            open_browser = False
+        run_api_server(port=args.port, host=args.host, open_browser=open_browser)
         sys.exit(0)
     elif args.command == "mcp":
         from fastast.mcp import run_sse_server, run_stdio_server
