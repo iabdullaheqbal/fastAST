@@ -1,0 +1,316 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="100%" height="100%">
+  <defs>
+    <!-- Dark UI gradients & glows -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#070a10" />
+      <stop offset="100%" stop-color="#0c111c" />
+    </linearGradient>
+    <linearGradient id="panelGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0d1322" />
+      <stop offset="100%" stop-color="#0a0e18" />
+    </linearGradient>
+    <filter id="glowCyan" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <filter id="glowGreen" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <filter id="glowPurple" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <!-- Arrowhead markers -->
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#10b981" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#a855f7" />
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#38bdf8" opacity="0.6" />
+    </marker>
+  </defs>
+
+  <!-- Frame Background & Border -->
+  <rect width="1200" height="700" rx="12" fill="url(#bgGrad)" stroke="#1e293b" stroke-width="2" />
+
+  <!-- 1. Top Navigation Bar (Header) -->
+  <rect x="0" y="0" width="1200" height="52" fill="#0d1322" border-bottom="1px solid #1e293b" />
+  <line x1="0" y1="52" x2="1200" y2="52" stroke="#1e293b" stroke-width="1" />
+
+  <!-- Window Controls -->
+  <circle cx="22" cy="26" r="5.5" fill="#ef4444" opacity="0.8" />
+  <circle cx="40" cy="26" r="5.5" fill="#f59e0b" opacity="0.8" />
+  <circle cx="58" cy="26" r="5.5" fill="#10b981" opacity="0.8" />
+
+  <!-- Brand Title -->
+  <text x="82" y="31" fill="#38bdf8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="bold">⚡ FastAST</text>
+  <text x="145" y="31" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">Graph Explorer</text>
+  <rect x="250" y="16" width="130" height="20" rx="10" fill="#10b981" fill-opacity="0.15" stroke="#10b981" stroke-opacity="0.4" />
+  <circle cx="262" cy="26" r="3" fill="#10b981" />
+  <text x="272" y="30" fill="#34d399" font-family="monospace" font-size="10" font-weight="600">2D Architecture</text>
+
+  <!-- Metric Badges in Header -->
+  <rect x="860" y="15" width="220" height="22" rx="11" fill="#131b2e" stroke="#334155" />
+  <circle cx="875" cy="26" r="3" fill="#38bdf8" />
+  <text x="886" y="30" fill="#cbd5e1" font-family="monospace" font-size="11">120 Nodes • 85 Edges</text>
+  <rect x="1090" y="15" width="94" height="22" rx="4" fill="#38bdf8" fill-opacity="0.15" stroke="#38bdf8" stroke-opacity="0.4" />
+  <text x="1108" y="30" fill="#38bdf8" font-family="-apple-system, sans-serif" font-size="11" font-weight="600">Local Engine</text>
+
+  <!-- 2. LEFT SIDEBAR: FILTERS (Width 270) -->
+  <rect x="0" y="52" width="270" height="648" fill="url(#panelGrad)" />
+  <line x1="270" y1="52" x2="270" y2="700" stroke="#1e293b" stroke-width="1" />
+
+  <!-- Sidebar Header -->
+  <text x="18" y="78" fill="#94a3b8" font-family="-apple-system, sans-serif" font-size="11" font-weight="700" letter-spacing="0.5">FILTERS (AND LOGIC)</text>
+  <rect x="200" y="67" width="54" height="16" rx="3" fill="#1e293b" />
+  <text x="207" y="79" fill="#38bdf8" font-family="monospace" font-size="9">Active (8)</text>
+
+  <!-- Search Input -->
+  <rect x="16" y="92" width="238" height="28" rx="6" fill="#131a2b" stroke="#334155" />
+  <text x="28" y="110" fill="#64748b" font-family="-apple-system, sans-serif" font-size="11">🔍 Filter symbols or paths...</text>
+
+  <!-- Filter Card 1: Node Types -->
+  <rect x="16" y="132" width="238" height="110" rx="6" fill="#0f1626" stroke="#1e293b" />
+  <text x="26" y="150" fill="#cbd5e1" font-family="-apple-system, sans-serif" font-size="11" font-weight="bold">Node Types</text>
+  <circle cx="32" cy="168" r="4.5" fill="#38bdf8" />
+  <text x="44" y="172" fill="#e2e8f0" font-family="-apple-system, sans-serif" font-size="11">Functions</text>
+  <text x="228" y="172" fill="#38bdf8" font-family="monospace" font-size="10">48</text>
+
+  <circle cx="32" cy="188" r="4.5" fill="#60a5fa" />
+  <text x="44" y="192" fill="#e2e8f0" font-family="-apple-system, sans-serif" font-size="11">Methods</text>
+  <text x="228" y="192" fill="#60a5fa" font-family="monospace" font-size="10">35</text>
+
+  <circle cx="32" cy="208" r="4.5" fill="#a855f7" />
+  <text x="44" y="212" fill="#e2e8f0" font-family="-apple-system, sans-serif" font-size="11">Classes / Structs</text>
+  <text x="228" y="212" fill="#a855f7" font-family="monospace" font-size="10">18</text>
+
+  <circle cx="32" cy="228" r="4.5" fill="#10b981" />
+  <text x="44" y="232" fill="#e2e8f0" font-family="-apple-system, sans-serif" font-size="11">Files / Modules</text>
+  <text x="228" y="232" fill="#10b981" font-family="monospace" font-size="10">19</text>
+
+  <!-- Filter Card 2: Architectural Roles -->
+  <rect x="16" y="252" width="238" height="96" rx="6" fill="#0f1626" stroke="#1e293b" />
+  <text x="26" y="270" fill="#cbd5e1" font-family="-apple-system, sans-serif" font-size="11" font-weight="bold">Architectural Roles</text>
+  <text x="28" y="290" fill="#10b981" font-family="monospace" font-size="10">▶</text>
+  <text x="44" y="290" fill="#cbd5e1" font-family="-apple-system, sans-serif" font-size="11">Root Drivers (In=0)</text>
+  <text x="228" y="290" fill="#10b981" font-family="monospace" font-size="10">12</text>
+
+  <text x="28" y="310" fill="#f43f5e" font-family="monospace" font-size="10">●</text>
+  <text x="44" y="310" fill="#cbd5e1" font-family="-apple-system, sans-serif" font-size="11">Core Hubs (In≥2)</text>
+  <text x="228" y="310" fill="#f43f5e" font-family="monospace" font-size="10">16</text>
+
+  <text x="28" y="330" fill="#a855f7" font-family="monospace" font-size="10">⌥</text>
+  <text x="44" y="330" fill="#cbd5e1" font-family="-apple-system, sans-serif" font-size="11">Orchestrators (Out≥2)</text>
+  <text x="228" y="330" fill="#a855f7" font-family="monospace" font-size="10">21</text>
+
+  <!-- Filter Card 3: Edge Filters -->
+  <rect x="16" y="358" width="238" height="88" rx="6" fill="#0f1626" stroke="#1e293b" />
+  <text x="26" y="376" fill="#cbd5e1" font-family="-apple-system, sans-serif" font-size="11" font-weight="bold">Edge Filters</text>
+  <line x1="26" y1="392" x2="38" y2="392" stroke="#10b981" stroke-width="2.5" stroke-dasharray="3,2" />
+  <text x="44" y="396" fill="#10b981" font-family="-apple-system, sans-serif" font-size="11" font-weight="600">Imports (Primary)</text>
+  <text x="228" y="396" fill="#10b981" font-family="monospace" font-size="10">34</text>
+
+  <line x1="26" y1="412" x2="38" y2="412" stroke="#a855f7" stroke-width="2.5" />
+  <text x="44" y="416" fill="#a855f7" font-family="-apple-system, sans-serif" font-size="11" font-weight="600">Defines (Primary)</text>
+  <text x="228" y="416" fill="#a855f7" font-family="monospace" font-size="10">38</text>
+
+  <line x1="26" y1="432" x2="38" y2="432" stroke="#38bdf8" stroke-width="1.2" opacity="0.6" />
+  <text x="44" y="436" fill="#64748b" font-family="-apple-system, sans-serif" font-size="11">Calls (Secondary)</text>
+  <text x="228" y="436" fill="#64748b" font-family="monospace" font-size="10">13</text>
+
+  <!-- Filter Card 4: Layout & Coloring -->
+  <rect x="16" y="456" width="238" height="110" rx="6" fill="#0f1626" stroke="#1e293b" />
+  <text x="26" y="474" fill="#cbd5e1" font-family="-apple-system, sans-serif" font-size="11" font-weight="bold">Layout &amp; Styling</text>
+
+  <!-- Segmented buttons -->
+  <rect x="24" y="484" width="222" height="24" rx="4" fill="#090d16" stroke="#334155" />
+  <rect x="26" y="486" width="70" height="20" rx="3" fill="#38bdf8" />
+  <text x="44" y="500" fill="#070a10" font-family="-apple-system, sans-serif" font-size="10" font-weight="bold">Radial</text>
+  <text x="114" y="500" fill="#94a3b8" font-family="-apple-system, sans-serif" font-size="10">Tiered</text>
+  <text x="180" y="500" fill="#94a3b8" font-family="-apple-system, sans-serif" font-size="10">Force</text>
+
+  <text x="26" y="526" fill="#94a3b8" font-family="-apple-system, sans-serif" font-size="10">Color Mode:</text>
+  <rect x="24" y="534" width="222" height="22" rx="4" fill="#090d16" stroke="#334155" />
+  <rect x="26" y="536" width="55" height="18" rx="2" fill="#38bdf8" />
+  <text x="32" y="549" fill="#070a10" font-family="-apple-system, sans-serif" font-size="9" font-weight="bold">Subsystem</text>
+  <text x="92" y="549" fill="#94a3b8" font-family="-apple-system, sans-serif" font-size="9">Kind</text>
+  <text x="136" y="549" fill="#94a3b8" font-family="-apple-system, sans-serif" font-size="9">Lang</text>
+  <text x="182" y="549" fill="#94a3b8" font-family="-apple-system, sans-serif" font-size="9">Degree</text>
+
+  <!-- Reset Button -->
+  <rect x="16" y="578" width="238" height="30" rx="6" fill="#1e293b" />
+  <text x="96" y="597" fill="#cbd5e1" font-family="-apple-system, sans-serif" font-size="11" font-weight="600">↺ Reset All Filters</text>
+
+  <!-- 3. CENTER CANVAS: 2D ARCHITECTURE GRAPH (x: 270 to 890, width: 620) -->
+  <g opacity="0.15">
+    <!-- Grid -->
+    <line x1="270" y1="120" x2="890" y2="120" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="4,4" />
+    <line x1="270" y1="220" x2="890" y2="220" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="4,4" />
+    <line x1="270" y1="320" x2="890" y2="320" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="4,4" />
+    <line x1="270" y1="420" x2="890" y2="420" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="4,4" />
+    <line x1="270" y1="520" x2="890" y2="520" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="4,4" />
+    <line x1="390" y1="52" x2="390" y2="700" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="4,4" />
+    <line x1="530" y1="52" x2="530" y2="700" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="4,4" />
+    <line x1="670" y1="52" x2="670" y2="700" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="4,4" />
+    <line x1="810" y1="52" x2="810" y2="700" stroke="#38bdf8" stroke-width="0.5" stroke-dasharray="4,4" />
+  </g>
+
+  <!-- Subsystem Cluster 1: Database & Storage (Top-Left, Center at 440, 240) -->
+  <circle cx="440" cy="240" r="115" fill="#38bdf8" fill-opacity="0.03" stroke="#38bdf8" stroke-opacity="0.2" stroke-dasharray="6,4" />
+  <text x="360" y="145" fill="#38bdf8" font-family="monospace" font-size="10" font-weight="bold" opacity="0.8">SUBSYSTEM: DATABASE &amp; STORAGE</text>
+
+  <!-- Subsystem Cluster 2: API Server (Top-Right, Center at 720, 240) -->
+  <circle cx="720" cy="240" r="110" fill="#10b981" fill-opacity="0.03" stroke="#10b981" stroke-opacity="0.2" stroke-dasharray="6,4" />
+  <text x="650" y="145" fill="#10b981" font-family="monospace" font-size="10" font-weight="bold" opacity="0.8">SUBSYSTEM: API SERVER</text>
+
+  <!-- Subsystem Cluster 3: AST Parser (Bottom-Center, Center at 580, 520) -->
+  <circle cx="580" cy="520" r="110" fill="#a855f7" fill-opacity="0.03" stroke="#a855f7" stroke-opacity="0.2" stroke-dasharray="6,4" />
+  <text x="500" y="645" fill="#a855f7" font-family="monospace" font-size="10" font-weight="bold" opacity="0.8">SUBSYSTEM: RUST AST PARSER</text>
+
+  <!-- Cross-Cluster Edges (Imports, Defines, Calls) -->
+  <!-- Defines edges in Cluster 1 -->
+  <line x1="440" y1="200" x2="390" y2="250" stroke="#a855f7" stroke-width="2" marker-end="url(#arrowPurple)" />
+  <line x1="440" y1="200" x2="480" y2="270" stroke="#a855f7" stroke-width="2" marker-end="url(#arrowPurple)" />
+
+  <!-- Defines edges in Cluster 2 -->
+  <line x1="720" y1="190" x2="680" y2="245" stroke="#a855f7" stroke-width="2" marker-end="url(#arrowPurple)" />
+  <line x1="720" y1="190" x2="765" y2="250" stroke="#a855f7" stroke-width="2" marker-end="url(#arrowPurple)" />
+
+  <!-- Cross-Cluster IMPORTS (Emerald Dashed) -->
+  <path d="M 440 240 Q 580 180 720 240" fill="none" stroke="#10b981" stroke-width="2.2" stroke-dasharray="5,4" marker-end="url(#arrowGreen)" />
+  <path d="M 440 240 Q 480 400 580 500" fill="none" stroke="#10b981" stroke-width="2.2" stroke-dasharray="5,4" marker-end="url(#arrowGreen)" />
+  <path d="M 720 240 Q 680 400 620 480" fill="none" stroke="#10b981" stroke-width="2.2" stroke-dasharray="5,4" marker-end="url(#arrowGreen)" />
+
+  <!-- Dimmed CALLS edge -->
+  <path d="M 680 245 Q 560 230 440 240" fill="none" stroke="#38bdf8" stroke-width="1.2" opacity="0.45" marker-end="url(#arrowBlue)" />
+
+  <!-- Nodes in Cluster 1 -->
+  <!-- Node: CodeGraph (Class) -->
+  <circle cx="440" cy="200" r="14" fill="#a855f7" filter="url(#glowPurple)" />
+  <circle cx="440" cy="200" r="10" fill="#0d1322" />
+  <text x="440" y="224" fill="#f8fafc" font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle">CodeGraph</text>
+
+  <!-- Focused Node: get_call_graph (Target Symbol) -->
+  <circle cx="440" cy="240" r="22" fill="#38bdf8" fill-opacity="0.2" stroke="#38bdf8" stroke-width="2" />
+  <circle cx="440" cy="240" r="16" fill="#38bdf8" filter="url(#glowCyan)" />
+  <circle cx="440" cy="240" r="11" fill="#070a10" />
+  <text x="440" y="272" fill="#38bdf8" font-family="monospace" font-size="11" font-weight="bold" text-anchor="middle">get_call_graph</text>
+
+  <!-- Node: format_edges -->
+  <circle cx="390" cy="250" r="11" fill="#38bdf8" />
+  <circle cx="390" cy="250" r="8" fill="#0d1322" />
+  <text x="390" y="271" fill="#cbd5e1" font-family="monospace" font-size="9" text-anchor="middle">format_edges</text>
+
+  <!-- Node: sqlite.cursor -->
+  <circle cx="480" cy="270" r="10" fill="#60a5fa" />
+  <circle cx="480" cy="270" r="7" fill="#0d1322" />
+  <text x="480" y="291" fill="#cbd5e1" font-family="monospace" font-size="9" text-anchor="middle">sqlite.cursor</text>
+
+  <!-- Nodes in Cluster 2 -->
+  <!-- Node: FastASTAPIHandler (Class) -->
+  <circle cx="720" cy="190" r="15" fill="#a855f7" filter="url(#glowPurple)" />
+  <circle cx="720" cy="190" r="11" fill="#0d1322" />
+  <text x="720" y="214" fill="#f8fafc" font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle">FastASTAPIHandler</text>
+
+  <!-- Node: handle_graph -->
+  <circle cx="680" cy="245" r="12" fill="#10b981" filter="url(#glowGreen)" />
+  <circle cx="680" cy="245" r="9" fill="#0d1322" />
+  <text x="680" y="268" fill="#cbd5e1" font-family="monospace" font-size="9" text-anchor="middle">handle_graph</text>
+
+  <!-- Node: do_GET -->
+  <circle cx="765" cy="250" r="11" fill="#60a5fa" />
+  <circle cx="765" cy="250" r="8" fill="#0d1322" />
+  <text x="765" y="272" fill="#cbd5e1" font-family="monospace" font-size="9" text-anchor="middle">do_GET</text>
+
+  <!-- Nodes in Cluster 3 (AST Parser) -->
+  <!-- Node: ASTParser (Class) -->
+  <circle cx="580" cy="500" r="14" fill="#a855f7" filter="url(#glowPurple)" />
+  <circle cx="580" cy="500" r="10" fill="#0d1322" />
+  <text x="580" y="524" fill="#f8fafc" font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle">ASTParser</text>
+
+  <!-- Node: extract_symbols -->
+  <circle cx="530" cy="545" r="11" fill="#38bdf8" />
+  <circle cx="530" cy="545" r="8" fill="#0d1322" />
+  <text x="530" y="567" fill="#cbd5e1" font-family="monospace" font-size="9" text-anchor="middle">extract_symbols</text>
+
+  <!-- Node: parse_edge_kind -->
+  <circle cx="630" cy="545" r="11" fill="#38bdf8" />
+  <circle cx="630" cy="545" r="8" fill="#0d1322" />
+  <text x="630" y="567" fill="#cbd5e1" font-family="monospace" font-size="9" text-anchor="middle">parse_edge_kind</text>
+
+  <!-- Center Floating HUD Pill -->
+  <rect x="440" y="72" width="280" height="28" rx="14" fill="#090d16" fill-opacity="0.9" stroke="#334155" />
+  <circle cx="455" cy="86" r="3.5" fill="#10b981" />
+  <text x="466" y="90" fill="#ffffff" font-family="-apple-system, sans-serif" font-size="11" font-weight="bold">Focused:</text>
+  <text x="520" y="90" fill="#38bdf8" font-family="monospace" font-size="11">get_call_graph</text>
+  <rect x="640" y="78" width="70" height="16" rx="8" fill="#38bdf8" fill-opacity="0.15" />
+  <text x="648" y="90" fill="#38bdf8" font-family="monospace" font-size="9">In:3 Out:3</text>
+
+  <!-- 4. RIGHT INSPECTOR PANEL (x: 890 to 1200, width: 310) -->
+  <rect x="890" y="52" width="310" height="648" fill="url(#panelGrad)" />
+  <line x1="890" y1="52" x2="890" y2="700" stroke="#1e293b" stroke-width="1" />
+
+  <!-- Panel Header -->
+  <text x="910" y="78" fill="#cbd5e1" font-family="-apple-system, sans-serif" font-size="12" font-weight="bold">Symbol Inspector</text>
+  <rect x="1115" y="67" width="65" height="18" rx="4" fill="#38bdf8" fill-opacity="0.15" stroke="#38bdf8" stroke-opacity="0.4" />
+  <text x="1124" y="80" fill="#38bdf8" font-family="monospace" font-size="9" font-weight="bold">FUNCTION</text>
+
+  <!-- Target Symbol Card -->
+  <rect x="906" y="95" width="278" height="105" rx="6" fill="#111827" stroke="#1e293b" />
+  <text x="918" y="118" fill="#ffffff" font-family="monospace" font-size="13" font-weight="bold">get_call_graph</text>
+  <text x="918" y="136" fill="#64748b" font-family="monospace" font-size="10">python/fastast/db.py:120</text>
+
+  <!-- Metrics sub-box -->
+  <rect x="918" y="148" width="120" height="40" rx="4" fill="#090d16" />
+  <text x="926" y="162" fill="#64748b" font-family="-apple-system, sans-serif" font-size="9">IN-DEGREE</text>
+  <text x="926" y="180" fill="#38bdf8" font-family="monospace" font-size="14" font-weight="bold">3</text>
+
+  <rect x="1050" y="148" width="122" height="40" rx="4" fill="#090d16" />
+  <text x="1058" y="162" fill="#64748b" font-family="-apple-system, sans-serif" font-size="9">OUT-DEGREE</text>
+  <text x="1058" y="180" fill="#a855f7" font-family="monospace" font-size="14" font-weight="bold">3</text>
+
+  <!-- Section 1: Imported Dependencies -->
+  <text x="910" y="222" fill="#10b981" font-family="-apple-system, sans-serif" font-size="11" font-weight="bold">Imported Dependencies (3)</text>
+  <rect x="906" y="232" width="278" height="30" rx="4" fill="#0f172a" stroke="#1e293b" />
+  <text x="918" y="252" fill="#34d399" font-family="monospace" font-size="10">⇲ sqlite3</text>
+  <text x="1090" y="252" fill="#64748b" font-family="monospace" font-size="9">external</text>
+
+  <rect x="906" y="268" width="278" height="30" rx="4" fill="#0f172a" stroke="#1e293b" />
+  <text x="918" y="288" fill="#34d399" font-family="monospace" font-size="10">⇲ fastast.model</text>
+  <text x="1070" y="288" fill="#64748b" font-family="monospace" font-size="9">model.py:10</text>
+
+  <rect x="906" y="304" width="278" height="30" rx="4" fill="#0f172a" stroke="#1e293b" />
+  <text x="918" y="324" fill="#34d399" font-family="monospace" font-size="10">⇲ typing.Dict</text>
+  <text x="1080" y="324" fill="#64748b" font-family="monospace" font-size="9">stdlib:7</text>
+
+  <!-- Section 2: Inbound Callers -->
+  <text x="910" y="358" fill="#38bdf8" font-family="-apple-system, sans-serif" font-size="11" font-weight="bold">Inbound Callers (2)</text>
+  <rect x="906" y="368" width="278" height="30" rx="4" fill="#0f172a" stroke="#1e293b" />
+  <text x="918" y="388" fill="#7dd3fc" font-family="monospace" font-size="10">← handle_graph</text>
+  <text x="1055" y="388" fill="#64748b" font-family="monospace" font-size="9">api_server:84</text>
+
+  <rect x="906" y="404" width="278" height="30" rx="4" fill="#0f172a" stroke="#1e293b" />
+  <text x="918" y="424" fill="#7dd3fc" font-family="monospace" font-size="10">← test_get_call_graph</text>
+  <text x="1065" y="424" fill="#64748b" font-family="monospace" font-size="9">test_db:32</text>
+
+  <!-- Section 3: Outbound Callees -->
+  <text x="910" y="458" fill="#c084fc" font-family="-apple-system, sans-serif" font-size="11" font-weight="bold">Outbound Callees (2)</text>
+  <rect x="906" y="468" width="278" height="30" rx="4" fill="#0f172a" stroke="#1e293b" />
+  <text x="918" y="488" fill="#d8b4fe" font-family="monospace" font-size="10">→ sqlite.cursor</text>
+  <text x="1080" y="488" fill="#64748b" font-family="monospace" font-size="9">db.py:55</text>
+
+  <rect x="906" y="504" width="278" height="30" rx="4" fill="#0f172a" stroke="#1e293b" />
+  <text x="918" y="524" fill="#d8b4fe" font-family="monospace" font-size="10">→ format_edges</text>
+  <text x="1075" y="524" fill="#64748b" font-family="monospace" font-size="9">db.py:165</text>
+
+  <!-- Action Buttons -->
+  <rect x="906" y="555" width="278" height="34" rx="6" fill="#38bdf8" />
+  <text x="975" y="577" fill="#070a10" font-family="-apple-system, sans-serif" font-size="11" font-weight="bold">Open in Code Explorer</text>
+
+  <rect x="906" y="598" width="278" height="34" rx="6" fill="#131a2b" stroke="#334155" />
+  <text x="960" y="620" fill="#e2e8f0" font-family="-apple-system, sans-serif" font-size="11" font-weight="600">📋 Copy LLM Evidence Bundle</text>
+</svg>
+
