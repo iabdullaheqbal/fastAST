@@ -53,7 +53,21 @@ echo "Starting FastAST API Server on http://127.0.0.1:4200..."
 PYTHONPATH=python "$PYTHON_BIN" -m fastast.cli serve --port 4200 --host 127.0.0.1 &
 API_PID=$!
 
-sleep 1
+# Wait for FastAST API Server to become ready
+echo "Waiting for FastAST API Server to become ready..."
+SERVER_READY=false
+for i in {1..30}; do
+    if curl -s http://127.0.0.1:4200/api/health >/dev/null 2>&1; then
+        echo "✓ FastAST API Server is ready on http://127.0.0.1:4200"
+        SERVER_READY=true
+        break
+    fi
+    sleep 0.25
+done
+
+if [ "$SERVER_READY" = false ]; then
+    echo "Notice: FastAST API server is still starting, launching UI..."
+fi
 
 # 2. Start Vite UI on port 5173
 echo "Starting Vite Frontend UI on http://localhost:5173..."

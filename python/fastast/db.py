@@ -1305,12 +1305,51 @@ def get_call_graph(conn: sqlite3.Connection, symbol_name: str) -> Dict[str, Any]
         for row in cur.fetchall()
     ]
 
+    # Imports: Where this symbol's file imports modules or external dependencies
+    cur.execute(
+        """
+        SELECT DISTINCT i.module, i.name, i.alias, i.line_number, f.path as file_path
+        FROM imports i
+        JOIN files f ON i.file_id = f.id
+        JOIN symbols s ON s.file_id = f.id
+        WHERE s.name = ?
+        ORDER BY i.line_number ASC
+        """,
+        (symbol_name,),
+    )
+    raw_imports = cur.fetchall()
+    if not raw_imports:
+        cur.execute(
+            """
+            SELECT DISTINCT i.module, i.name, i.alias, i.line_number, f.path as file_path
+            FROM imports i
+            JOIN files f ON i.file_id = f.id
+            WHERE f.path = ? OR f.path LIKE ?
+            ORDER BY i.line_number ASC
+            """,
+            (symbol_name, f"%{symbol_name}%"),
+        )
+        raw_imports = cur.fetchall()
+
+    imports = [
+        {
+            "module": row["module"] or "",
+            "name": row["name"],
+            "alias": row["alias"],
+            "line_number": row["line_number"],
+            "file_path": row["file_path"],
+        }
+        for row in raw_imports
+    ]
+
     return {
         "symbol": symbol_name,
         "caller_count": len(callers),
         "callers": callers,
         "callee_count": len(callees),
         "callees": callees,
+        "imports_count": len(imports),
+        "imports": imports,
     }
 
 

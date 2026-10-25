@@ -64,10 +64,22 @@ export interface CallGraphEntry {
   kind?: string;
 }
 
+export interface ImportEntry {
+  module: string;
+  name?: string | null;
+  alias?: string | null;
+  file_path?: string;
+  line_number?: number;
+}
+
 export interface CallGraphResponse {
   symbol: string;
   callers: CallGraphEntry[];
   callees: CallGraphEntry[];
+  imports?: ImportEntry[];
+  caller_count?: number;
+  callee_count?: number;
+  imports_count?: number;
 }
 
 export interface GraphNode {

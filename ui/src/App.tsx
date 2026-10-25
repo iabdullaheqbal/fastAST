@@ -18,8 +18,11 @@ const AppWorkspace: React.FC = () => {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [isReindexing, setIsReindexing] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [connectionVersion, setConnectionVersion] = useState(0);
 
   const loadBackendState = useCallback(async () => {
+    setIsRetrying(true);
     try {
       const [healthRes, statsRes] = await Promise.all([
         fastAstApi.getHealth(),
@@ -28,17 +31,38 @@ const AppWorkspace: React.FC = () => {
       setHealth(healthRes);
       setStats(statsRes);
       setApiError(null);
+      setConnectionVersion((v) => v + 1);
     } catch (err: any) {
       setApiError(
         err?.message ||
           'Cannot connect to FastAST API Server on http://127.0.0.1:4200.'
       );
+    } finally {
+      setIsRetrying(false);
     }
   }, []);
 
   useEffect(() => {
     loadBackendState();
   }, [loadBackendState]);
+
+  // Automatic background reconnect polling when offline (detects server boot immediately)
+  useEffect(() => {
+    if (!apiError && health) return;
+
+    const interval = setInterval(() => {
+      fastAstApi
+        .getHealth()
+        .then(() => {
+          loadBackendState();
+        })
+        .catch(() => {
+          // Still waiting for server
+        });
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [apiError, health, loadBackendState]);
 
   const handleSearchSubmit = (query: string) => {
     navigate(`/evidence?q=${encodeURIComponent(query)}`);
@@ -73,6 +97,7 @@ const AppWorkspace: React.FC = () => {
         onReindex={handleReindex}
         onRetryConnection={loadBackendState}
         isReindexing={isReindexing}
+        isRetrying={isRetrying}
       />
 
       <div className="app-body">
@@ -90,8 +115,16 @@ const AppWorkspace: React.FC = () => {
                     repository root.
                   </div>
                 </div>
-                <button className="api-retry-btn" onClick={loadBackendState}>
-                  Retry Connection
+                <button
+                  className="api-retry-btn"
+                  onClick={loadBackendState}
+                  disabled={isRetrying}
+                  title="Retry connection to FastAST API server"
+                >
+                  <span className={`material-symbols-outlined text-xs ${isRetrying ? 'animate-spin' : ''}`}>
+                    {isRetrying ? 'sync' : 'refresh'}
+                  </span>
+                  <span>{isRetrying ? 'Connecting...' : 'Retry Connection'}</span>
                 </button>
               </div>
             </div>
@@ -104,6 +137,7 @@ const AppWorkspace: React.FC = () => {
               element={
                 <GlobePage
                   stats={stats}
+                  connectionVersion={connectionVersion}
                   onNavigateToExplore={handleNavigateToExplore}
                 />
               }

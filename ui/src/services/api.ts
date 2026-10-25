@@ -12,6 +12,7 @@ import type {
 } from '../types';
 
 const API_BASE = '/api';
+const DIRECT_API_BASE = 'http://127.0.0.1:4200/api';
 const REQUEST_TIMEOUT_MS = 10000;
 
 export class ApiConnectionError extends Error {
@@ -31,21 +32,53 @@ async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T>
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
-    const res = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      let errMsg = `HTTP ${res.status} on ${endpoint}`;
+    let res: Response | null = null;
+    let primaryErr: any = null;
+
+    try {
+      res = await fetch(`${API_BASE}${endpoint}`, {
+        ...options,
+        signal: controller.signal,
+      });
+      // If Vite proxy returned 502/504 Bad Gateway or 500, attempt direct fallback to port 4200
+      if (!res.ok && (res.status === 502 || res.status === 504 || res.status === 500)) {
+        try {
+          const directRes = await fetch(`${DIRECT_API_BASE}${endpoint}`, {
+            ...options,
+            signal: controller.signal,
+          });
+          if (directRes.ok) {
+            res = directRes;
+          }
+        } catch {
+          // Direct fallback failed, keep proxy response
+        }
+      }
+    } catch (err: any) {
+      primaryErr = err;
+      // Network failure on proxy route, attempt direct connect
       try {
-        const errBody = await res.json();
+        res = await fetch(`${DIRECT_API_BASE}${endpoint}`, {
+          ...options,
+          signal: controller.signal,
+        });
+      } catch {
+        throw primaryErr;
+      }
+    }
+
+    if (!res || !res.ok) {
+      const status = res?.status;
+      let errMsg = status ? `HTTP ${status} on ${endpoint}` : `Failed request on ${endpoint}`;
+      try {
+        const errBody = await res?.json();
         if (errBody?.error) {
           errMsg = errBody.error;
         }
       } catch {
         // ignore non-json error body
       }
-      throw new ApiConnectionError(errMsg, endpoint, res.status);
+      throw new ApiConnectionError(errMsg, endpoint, status);
     }
     return await res.json();
   } catch (err: any) {

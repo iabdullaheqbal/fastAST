@@ -1,98 +1,467 @@
-import React, { useEffect, useRef, useState } from 'react';
-import * as THREE from 'three';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fastAstApi } from '../../services/api';
-import type { CallGraphEntry, GlobeNode, GlobeTopology, RepoStats } from '../../types';
+import type { CallGraphEntry, GlobeCommunity, GlobeNode, GlobeTopology, ImportEntry, RepoStats } from '../../types';
 
 interface GlobePageProps {
   stats?: RepoStats | null;
+  connectionVersion?: number;
   onNavigateToExplore?: (symbolName: string, filePath?: string) => void;
 }
 
-function getNodePos(node: GlobeNode, idx: number, total: number, isSelected = false) {
-  const phi = Math.acos(-1 + (2 * (idx + 0.5)) / Math.max(1, total));
-  const theta = Math.sqrt(total * Math.PI) * phi;
-  const lat = (phi - Math.PI / 2) * (180 / Math.PI);
-  const lon = ((theta * (180 / Math.PI)) % 360) - 180;
-  return { lat, lon, active: isSelected || (node.importance || 0) > 0.8 };
+interface GraphNode2D {
+  id: string;
+  name: string;
+  kind: string;
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+  x: number;
+  y: number;
+  radius: number;
+  color: string;
+  community: string;
+  inDegree: number;
+  outDegree: number;
+  isCenter: boolean;
+  isInbound: boolean;
+  isOutbound: boolean;
+  isImport?: boolean;
+  isSubNode?: boolean;
+  rawNode?: GlobeNode;
 }
 
-export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+interface GraphEdge2D {
+  from: string;
+  to: string;
+  type: string;
+  color: string;
+}
 
-  // Data states
-  const [topology, setTopology] = useState<GlobeTopology | null>(null);
-  const [selectedNode, setSelectedNode] = useState<GlobeNode | null>(null);
-  const [autoRotate, setAutoRotate] = useState(true);
-  const [activeHop, setActiveHop] = useState<number | 'full'>(2);
-  const [previewState, setPreviewState] = useState<'populated' | 'focused' | 'forming' | 'preindex'>('populated');
+const EDGE_COLOR_MAP: Record<string, string> = {
+  CALLS: '#38bdf8',
+  IMPORTS: '#10b981',
+  DEFINES: '#a855f7',
+  INHERITS: '#f59e0b',
+  SIMILAR_TO: '#ec4899',
+};
 
-  // Filter toggles
-  const [filterTaxonomy, setFilterTaxonomy] = useState({
-    functions: true,
-    classes: true,
-    types: true,
-    files: true,
-    communities: true,
-  });
+const KIND_COLOR_MAP: Record<string, string> = {
+  function: '#38bdf8',
+  method: '#60a5fa',
+  class: '#a855f7',
+  type: '#818cf8',
+  struct: '#f59e0b',
+  file: '#10b981',
+  module: '#10b981',
+};
 
-  const [filterEdges, setFilterEdges] = useState({
-    calls: true,
-    imports: true,
-    defines: true,
-    inherits: true,
-    similar: true,
-  });
+// Built-in fallback graph so the canvas is NEVER empty even if backend is starting or offline
+const FALLBACK_TOPOLOGY: GlobeTopology = {
+  mode: 'full',
+  depth: 2,
+  total_nodes: 18,
+  total_edges: 20,
+  repo_total_nodes: 142,
+  repo_total_edges: 284,
+  communities: [
+    { id: 0, name: 'Database & Storage', color: '#38bdf8', count: 6 },
+    { id: 1, name: 'API Server', color: '#10b981', count: 5 },
+    { id: 2, name: 'AST Parser', color: '#a855f7', count: 3 },
+    { id: 3, name: 'Imported Modules', color: '#34d399', count: 3 },
+    { id: 4, name: 'Testing Suite', color: '#f59e0b', count: 1 },
+  ],
+  nodes: [
+    // Database & Storage
+    {
+      id: 'get_call_graph',
+      name: 'get_call_graph',
+      kind: 'function',
+      file_path: 'python/fastast/db.py',
+      start_line: 120,
+      end_line: 145,
+      language: 'python',
+      in_degree: 3,
+      out_degree: 3,
+      comm: 0,
+      comm_name: 'Database & Storage',
+      comm_color: '#38bdf8',
+      importance: 0.95,
+      signature: 'def get_call_graph(conn, symbol_name: str)',
+    },
+    {
+      id: 'CodeGraph',
+      name: 'CodeGraph',
+      kind: 'class',
+      file_path: 'python/fastast/graph.py',
+      start_line: 15,
+      end_line: 85,
+      language: 'python',
+      in_degree: 2,
+      out_degree: 2,
+      comm: 0,
+      comm_name: 'Database & Storage',
+      comm_color: '#38bdf8',
+      importance: 0.9,
+      signature: 'class CodeGraph',
+    },
+    {
+      id: 'CodeGraph.add_node',
+      name: 'CodeGraph.add_node',
+      kind: 'method',
+      file_path: 'python/fastast/graph.py',
+      start_line: 30,
+      end_line: 45,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 0,
+      comm: 0,
+      comm_name: 'Database & Storage',
+      comm_color: '#38bdf8',
+      importance: 0.7,
+      signature: 'def add_node(self, node: Node) -> None',
+    },
+    {
+      id: 'CodeGraph.add_edge',
+      name: 'CodeGraph.add_edge',
+      kind: 'method',
+      file_path: 'python/fastast/graph.py',
+      start_line: 50,
+      end_line: 65,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 0,
+      comm: 0,
+      comm_name: 'Database & Storage',
+      comm_color: '#38bdf8',
+      importance: 0.7,
+      signature: 'def add_edge(self, u: str, v: str, rel: str) -> None',
+    },
+    {
+      id: 'sqlite.cursor',
+      name: 'sqlite.cursor',
+      kind: 'function',
+      file_path: 'external:sqlite3',
+      start_line: 1,
+      end_line: 1,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 0,
+      comm: 0,
+      comm_name: 'Database & Storage',
+      comm_color: '#38bdf8',
+      importance: 0.6,
+      signature: 'cursor()',
+    },
+    {
+      id: 'format_edges',
+      name: 'format_edges',
+      kind: 'function',
+      file_path: 'python/fastast/db.py',
+      start_line: 165,
+      end_line: 185,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 1,
+      comm: 0,
+      comm_name: 'Database & Storage',
+      comm_color: '#38bdf8',
+      importance: 0.7,
+      signature: 'def format_edges(rows)',
+    },
 
-  const [curvature, setCurvature] = useState(65);
-  const [glowEnabled, setGlowEnabled] = useState(true);
-  const [azimuthText, setAzimuthText] = useState('Azimuth 42° • El 18°');
-  const [copiedBundle, setCopiedBundle] = useState(false);
+    // API Server
+    {
+      id: 'FastASTAPIHandler',
+      name: 'FastASTAPIHandler',
+      kind: 'class',
+      file_path: 'python/fastast/api_server.py',
+      start_line: 168,
+      end_line: 230,
+      language: 'python',
+      in_degree: 2,
+      out_degree: 2,
+      comm: 1,
+      comm_name: 'API Server',
+      comm_color: '#10b981',
+      importance: 0.88,
+      signature: 'class FastASTAPIHandler(BaseHTTPRequestHandler)',
+    },
+    {
+      id: 'FastASTAPIHandler.do_GET',
+      name: 'FastASTAPIHandler.do_GET',
+      kind: 'method',
+      file_path: 'python/fastast/api_server.py',
+      start_line: 218,
+      end_line: 280,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 1,
+      comm: 1,
+      comm_name: 'API Server',
+      comm_color: '#10b981',
+      importance: 0.82,
+      signature: 'def do_GET(self) -> None',
+    },
+    {
+      id: 'FastASTAPIHandler.do_POST',
+      name: 'FastASTAPIHandler.do_POST',
+      kind: 'method',
+      file_path: 'python/fastast/api_server.py',
+      start_line: 190,
+      end_line: 215,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 0,
+      comm: 1,
+      comm_name: 'API Server',
+      comm_color: '#10b981',
+      importance: 0.75,
+      signature: 'def do_POST(self) -> None',
+    },
+    {
+      id: 'handle_graph',
+      name: 'handle_graph',
+      kind: 'function',
+      file_path: 'python/fastast/api_server.py',
+      start_line: 84,
+      end_line: 110,
+      language: 'python',
+      in_degree: 2,
+      out_degree: 1,
+      comm: 1,
+      comm_name: 'API Server',
+      comm_color: '#10b981',
+      importance: 0.8,
+      signature: 'def handle_graph(self) -> None',
+    },
+    {
+      id: 'server.inspect',
+      name: 'server.inspect',
+      kind: 'method',
+      file_path: 'python/fastast/server.py',
+      start_line: 210,
+      end_line: 235,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 1,
+      comm: 1,
+      comm_name: 'API Server',
+      comm_color: '#10b981',
+      importance: 0.75,
+      signature: 'def inspect(self, symbol: str)',
+    },
+
+    // AST Parser & Extractor
+    {
+      id: 'ASTParser',
+      name: 'ASTParser',
+      kind: 'class',
+      file_path: 'python/fastast/parser.py',
+      start_line: 20,
+      end_line: 95,
+      language: 'python',
+      in_degree: 2,
+      out_degree: 2,
+      comm: 2,
+      comm_name: 'AST Parser',
+      comm_color: '#a855f7',
+      importance: 0.85,
+      signature: 'class ASTParser',
+    },
+    {
+      id: 'ASTParser.extract_symbols',
+      name: 'ASTParser.extract_symbols',
+      kind: 'method',
+      file_path: 'python/fastast/parser.py',
+      start_line: 35,
+      end_line: 60,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 0,
+      comm: 2,
+      comm_name: 'AST Parser',
+      comm_color: '#a855f7',
+      importance: 0.75,
+      signature: 'def extract_symbols(self, code: str)',
+    },
+    {
+      id: 'parse_edge_kind',
+      name: 'parse_edge_kind',
+      kind: 'function',
+      file_path: 'python/fastast/parser.py',
+      start_line: 44,
+      end_line: 60,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 0,
+      comm: 2,
+      comm_name: 'AST Parser',
+      comm_color: '#a855f7',
+      importance: 0.65,
+      signature: 'def parse_edge_kind(kind: str)',
+    },
+
+    // Imported Modules
+    {
+      id: 'sqlite3',
+      name: 'sqlite3',
+      kind: 'module',
+      file_path: 'external:sqlite3',
+      start_line: 1,
+      end_line: 1,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 0,
+      comm: 3,
+      comm_name: 'Imported Modules',
+      comm_color: '#34d399',
+      importance: 0.85,
+      signature: 'import sqlite3',
+    },
+    {
+      id: 'fastast.model',
+      name: 'fastast.model',
+      kind: 'module',
+      file_path: 'python/fastast/model.py',
+      start_line: 1,
+      end_line: 50,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 0,
+      comm: 3,
+      comm_name: 'Imported Modules',
+      comm_color: '#34d399',
+      importance: 0.8,
+      signature: 'from fastast.model import Candidate, SymbolRecord',
+    },
+    {
+      id: 'typing',
+      name: 'typing',
+      kind: 'module',
+      file_path: 'stdlib:typing',
+      start_line: 1,
+      end_line: 1,
+      language: 'python',
+      in_degree: 1,
+      out_degree: 0,
+      comm: 3,
+      comm_name: 'Imported Modules',
+      comm_color: '#34d399',
+      importance: 0.75,
+      signature: 'import typing',
+    },
+
+    // Testing Suite
+    {
+      id: 'test_get_call_graph',
+      name: 'test_get_call_graph',
+      kind: 'function',
+      file_path: 'tests/test_db.py',
+      start_line: 32,
+      end_line: 55,
+      language: 'python',
+      in_degree: 0,
+      out_degree: 1,
+      comm: 4,
+      comm_name: 'Testing Suite',
+      comm_color: '#f59e0b',
+      importance: 0.7,
+      signature: 'def test_get_call_graph()',
+    },
+  ],
+  edges: [
+    // Sub-node definitions (DEFINES)
+    { source: 'CodeGraph', target: 'CodeGraph.add_node', type: 'DEFINES' },
+    { source: 'CodeGraph', target: 'CodeGraph.add_edge', type: 'DEFINES' },
+    { source: 'FastASTAPIHandler', target: 'FastASTAPIHandler.do_GET', type: 'DEFINES' },
+    { source: 'FastASTAPIHandler', target: 'FastASTAPIHandler.do_POST', type: 'DEFINES' },
+    { source: 'ASTParser', target: 'ASTParser.extract_symbols', type: 'DEFINES' },
+
+    // Invocations (CALLS)
+    { source: 'FastASTAPIHandler.do_GET', target: 'handle_graph', type: 'CALLS' },
+    { source: 'handle_graph', target: 'get_call_graph', type: 'CALLS' },
+    { source: 'test_get_call_graph', target: 'get_call_graph', type: 'CALLS' },
+    { source: 'server.inspect', target: 'get_call_graph', type: 'CALLS' },
+    { source: 'get_call_graph', target: 'sqlite.cursor', type: 'CALLS' },
+    { source: 'get_call_graph', target: 'format_edges', type: 'CALLS' },
+    { source: 'format_edges', target: 'parse_edge_kind', type: 'CALLS' },
+
+    // Imports (IMPORTS)
+    { source: 'get_call_graph', target: 'sqlite3', type: 'IMPORTS' },
+    { source: 'get_call_graph', target: 'fastast.model', type: 'IMPORTS' },
+    { source: 'get_call_graph', target: 'typing', type: 'IMPORTS' },
+  ],
+};
+
+const FALLBACK_IMPORTS: ImportEntry[] = [
+  { module: 'sqlite3', name: null, file_path: 'python/fastast/db.py', line_number: 4 },
+  { module: 'fastast.model', name: 'Candidate', file_path: 'python/fastast/db.py', line_number: 10 },
+  { module: 'typing', name: 'Dict', file_path: 'python/fastast/db.py', line_number: 7 },
+  { module: 'fastast.config', name: 'get_logger', file_path: 'python/fastast/db.py', line_number: 9 },
+];
+
+export const GlobePage: React.FC<GlobePageProps> = ({ connectionVersion = 0, onNavigateToExplore }) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Core Data
+  const [topology, setTopology] = useState<GlobeTopology>(FALLBACK_TOPOLOGY);
+  const [selectedNode, setSelectedNode] = useState<GlobeNode>(FALLBACK_TOPOLOGY.nodes[0]);
   const [callers, setCallers] = useState<CallGraphEntry[]>([]);
   const [callees, setCallees] = useState<CallGraphEntry[]>([]);
-  const [isLoadingCalls, setIsLoadingCalls] = useState(false);
+  const [imports, setImports] = useState<ImportEntry[]>(FALLBACK_IMPORTS);
+  const [isOffline, setIsOffline] = useState<boolean>(false);
+  const [isLoadingCalls, setIsLoadingCalls] = useState<boolean>(false);
+  const [copiedBundle, setCopiedBundle] = useState<boolean>(false);
 
-  // 2D vs 3D View Mode & Animation
-  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
-  const [animRunning2D, setAnimRunning2D] = useState(true);
-  const canvas2dRef = useRef<HTMLCanvasElement>(null);
-  const simNodesRef = useRef<any[]>([]);
+  // Filters & Controls
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [activeHop, setActiveHop] = useState<1 | 2 | 'all'>(1);
+  const [filterEdges, setFilterEdges] = useState<Record<string, boolean>>({
+    CALLS: true,
+    IMPORTS: true,
+    DEFINES: true,
+    SIMILAR_TO: true,
+  });
+  const [animRunning, setAnimRunning] = useState<boolean>(true);
 
-  // References to three.js scene controls
-  const controlsRef = useRef<{
-    recenter: () => void;
-    focusNode: (node: GlobeNode) => void;
-    viewPoles: () => void;
-    toggleOrbit: () => void;
-    applyFilters: (
-      tax: typeof filterTaxonomy,
-      edg: typeof filterEdges,
-      hop: number | 'full',
-      selected: GlobeNode | null
-    ) => void;
-    sceneNodes: THREE.Mesh[];
-  } | null>(null);
+  // Canvas Viewport Pan & Zoom Transform
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState<number>(1.0);
+  const simNodesRef = useRef<GraphNode2D[]>([]);
 
-  // 1. Fetch live topology from FastAST backend
-  useEffect(() => {
-    let isMounted = true;
-    fastAstApi.getGlobeTopology({ maxNodes: 150 }).then((data) => {
-      if (isMounted) {
-        setTopology(data);
-        if (data.nodes.length > 0) {
-          setSelectedNode(data.nodes[0]);
+  // 1. Fetch live topology from FastAST backend (with graceful fallback and reconnect sync)
+  const fetchTopology = useCallback((hopCount?: 1 | 2 | 'all') => {
+    const isAll = (hopCount ?? activeHop) === 'all';
+    fastAstApi
+      .getGlobeTopology({
+        mode: 'full',
+        maxNodes: isAll ? 450 : 200,
+        maxEdges: isAll ? 1400 : 600,
+      })
+      .then((data) => {
+        if (data && data.nodes && data.nodes.length > 0) {
+          setTopology(data);
+          setIsOffline(false);
+        } else {
+          setIsOffline(true);
         }
-      }
-    });
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+      })
+      .catch(() => {
+        setIsOffline(true);
+      });
+  }, [activeHop]);
 
-  // Fetch callers & callees when selected node changes
+  useEffect(() => {
+    fetchTopology();
+  }, [connectionVersion, fetchTopology]);
+
+  // 2. Fetch live callers, callees, and imports whenever selected node changes
   useEffect(() => {
     if (!selectedNode) {
       setCallers([]);
       setCallees([]);
+      setImports([]);
       return;
     }
     setIsLoadingCalls(true);
@@ -101,658 +470,446 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
       .then((cg) => {
         setCallers(cg.callers || []);
         setCallees(cg.callees || []);
+        setImports(cg.imports || []);
         setIsLoadingCalls(false);
       })
-      .catch(() => setIsLoadingCalls(false));
+      .catch(() => {
+        setCallers([]);
+        setCallees([]);
+        setImports([]);
+        setIsLoadingCalls(false);
+      });
   }, [selectedNode]);
 
-  // Reactivity for taxonomy, edge filters and active hop
-  useEffect(() => {
-    controlsRef.current?.applyFilters(
-      filterTaxonomy,
-      filterEdges,
-      activeHop,
-      selectedNode
+  // Compute actual live edge counts from real data and imports
+  const edgeCounts = useMemo(() => {
+    const counts: Record<string, number> = { CALLS: 0, IMPORTS: 0, DEFINES: 0, SIMILAR_TO: 0 };
+    (topology.edges || []).forEach((e) => {
+      const t = (e.type || 'CALLS').toUpperCase();
+      counts[t] = (counts[t] || 0) + 1;
+    });
+    if (imports.length > counts.IMPORTS) {
+      counts.IMPORTS = imports.length;
+    }
+    return counts;
+  }, [topology.edges, imports]);
+
+  // Filtered search list of symbols
+  const filteredSymbols = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase();
+    return (topology.nodes || [])
+      .filter((n) => n.name.toLowerCase().includes(q) || (n.file_path && n.file_path.toLowerCase().includes(q)))
+      .slice(0, 10);
+  }, [searchQuery, topology.nodes]);
+
+  // Reset view to center
+  const handleRecenter = useCallback(() => {
+    setPan({ x: 0, y: 0 });
+    setZoom(1.0);
+  }, []);
+
+  // Copy token-budgeted LLM evidence slice
+  const handleCopyBundle = () => {
+    if (!selectedNode) return;
+    const bundleText = JSON.stringify(
+      {
+        symbol: selectedNode.name,
+        kind: selectedNode.kind,
+        file: selectedNode.file_path,
+        signature: selectedNode.signature,
+        community: selectedNode.comm_name,
+        in_degree: selectedNode.in_degree,
+        out_degree: selectedNode.out_degree,
+        callers: callers.map((c) => ({ caller: c.caller, file: c.file_path, line: c.line_number })),
+        callees: callees.map((c) => ({ callee: c.callee, file: c.file_path, line: c.line_number })),
+        imports: imports.map((i) => ({ module: i.module, name: i.name, file: i.file_path, line: i.line_number })),
+      },
+      null,
+      2
     );
-  }, [filterTaxonomy, filterEdges, activeHop, selectedNode]);
+    navigator.clipboard.writeText(bundleText);
+    setCopiedBundle(true);
+    setTimeout(() => setCopiedBundle(false), 2000);
+  };
 
-  // 2. Initialize 3D Three.js Spherical Planet
+  // 3. Main 2D Canvas Interaction & Render Loop
   useEffect(() => {
-    if (viewMode !== '3d') return;
+    const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!container || !topology) return;
-
-    // Clear previous canvas if any
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
-
-    const width = container.clientWidth || 800;
-    const height = container.clientHeight || 600;
-
-    // Scene & Camera
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2500);
-    camera.position.set(0, 30, 240);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
-    container.appendChild(renderer.domElement);
-
-    const globeGroup = new THREE.Group();
-    scene.add(globeGroup);
-
-    const SPHERE_RADIUS = 72;
-
-    // A. Dark Glass Core
-    const coreGeo = new THREE.SphereGeometry(SPHERE_RADIUS * 0.98, 48, 48);
-    const coreMat = new THREE.MeshPhongMaterial({
-      color: 0x07090e,
-      emissive: 0x050c18,
-      specular: 0x38bdf8,
-      shininess: 90,
-      transparent: true,
-      opacity: 0.88,
-    });
-    const coreMesh = new THREE.Mesh(coreGeo, coreMat);
-    globeGroup.add(coreMesh);
-
-    // B. Meridian & Latitudinal Grid Rings
-    const gridGroup = new THREE.Group();
-    const ringMat = new THREE.LineBasicMaterial({
-      color: 0x1e293b,
-      transparent: true,
-      opacity: 0.35,
-      blending: THREE.AdditiveBlending,
-    });
-
-    for (let lat = -60; lat <= 60; lat += 30) {
-      const phi = (90 - lat) * (Math.PI / 180);
-      const r = SPHERE_RADIUS * Math.sin(phi);
-      const y = SPHERE_RADIUS * Math.cos(phi);
-      const pts = [];
-      const segments = 64;
-      for (let i = 0; i <= segments; i++) {
-        const theta = (i / segments) * Math.PI * 2;
-        pts.push(new THREE.Vector3(r * Math.cos(theta), y, r * Math.sin(theta)));
-      }
-      const ringGeo = new THREE.BufferGeometry().setFromPoints(pts);
-      gridGroup.add(new THREE.Line(ringGeo, ringMat));
-    }
-
-    for (let lon = 0; lon < 360; lon += 45) {
-      const theta = lon * (Math.PI / 180);
-      const pts = [];
-      const segments = 64;
-      for (let i = 0; i <= segments; i++) {
-        const phi = (i / segments) * Math.PI;
-        const x = SPHERE_RADIUS * Math.sin(phi) * Math.cos(theta);
-        const y = SPHERE_RADIUS * Math.cos(phi);
-        const z = SPHERE_RADIUS * Math.sin(phi) * Math.sin(theta);
-        pts.push(new THREE.Vector3(x, y, z));
-      }
-      const ringGeo = new THREE.BufferGeometry().setFromPoints(pts);
-      gridGroup.add(new THREE.Line(ringGeo, ringMat));
-    }
-    globeGroup.add(gridGroup);
-
-    // C. Atmosphere Halo Shell
-    const auraGeo = new THREE.SphereGeometry(SPHERE_RADIUS * 1.03, 32, 32);
-    const auraMat = new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
-      transparent: true,
-      opacity: 0.05,
-      side: THREE.BackSide,
-      blending: THREE.AdditiveBlending,
-    });
-    const auraMesh = new THREE.Mesh(auraGeo, auraMat);
-    globeGroup.add(auraMesh);
-
-    // Lat/Lon to 3D Vector
-    function latLonToVec3(lat: number, lon: number, radius: number): THREE.Vector3 {
-      const phi = (90 - lat) * (Math.PI / 180);
-      const theta = (lon + 180) * (Math.PI / 180);
-      const x = -(radius * Math.sin(phi) * Math.cos(theta));
-      const z = radius * Math.sin(phi) * Math.sin(theta);
-      const y = radius * Math.cos(phi);
-      return new THREE.Vector3(x, y, z);
-    }
-
-    // D. Compute positions & Render Nodes
-    const nodeMeshes: THREE.Mesh[] = [];
-    const nodePositions: THREE.Vector3[] = [];
-    const nodeGroup = new THREE.Group();
-    globeGroup.add(nodeGroup);
-
-    topology.nodes.forEach((node, idx) => {
-      const nodePosInfo = getNodePos(node, idx, topology.nodes.length, selectedNode?.id === node.id);
-      const pos = latLonToVec3(nodePosInfo.lat, nodePosInfo.lon, SPHERE_RADIUS + (nodePosInfo.active ? 1.6 : 0.8));
-      nodePositions.push(pos);
-
-      const size = nodePosInfo.active
-        ? 3.6
-        : (node.importance || 0) > 0.8
-        ? 2.4
-        : (node.importance || 0) > 0.5
-        ? 1.6
-        : 1.0;
-
-      let geom: THREE.BufferGeometry;
-      if (node.kind === 'file') {
-        geom = new THREE.BoxGeometry(size * 1.1, size * 1.1, size * 1.1);
-      } else if (node.kind === 'class') {
-        geom = new THREE.OctahedronGeometry(size * 1.2, 0);
-      } else if (node.kind === 'type' || node.kind === 'struct') {
-        geom = new THREE.TetrahedronGeometry(size * 1.1, 0);
-      } else {
-        geom = new THREE.SphereGeometry(size, 14, 14);
-      }
-
-      const col = new THREE.Color(node.comm_color || '#38bdf8');
-      const mat = new THREE.MeshStandardMaterial({
-        color: col,
-        emissive: col,
-        emissiveIntensity: nodePosInfo.active ? 0.95 : 0.45,
-        roughness: 0.25,
-        metalness: 0.5,
-      });
-
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.position.copy(pos);
-      mesh.lookAt(new THREE.Vector3(0, 0, 0));
-      mesh.userData = { id: node.id, idx, data: node };
-      nodeMeshes.push(mesh);
-      nodeGroup.add(mesh);
-    });
-
-    // E. Beacon for selected node
-    const beaconGroup = new THREE.Group();
-    globeGroup.add(beaconGroup);
-
-    function updateBeacon(pos: THREE.Vector3) {
-      while (beaconGroup.children.length > 0) {
-        beaconGroup.remove(beaconGroup.children[0]);
-      }
-      const ringGeo = new THREE.RingGeometry(5.0, 6.2, 32);
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: 0x38bdf8,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.85,
-        blending: THREE.AdditiveBlending,
-      });
-      const beacon = new THREE.Mesh(ringGeo, ringMat);
-      beacon.position.copy(pos.clone().multiplyScalar(1.02));
-      beacon.lookAt(new THREE.Vector3(0, 0, 0));
-      beaconGroup.add(beacon);
-
-      const haloGeo = new THREE.RingGeometry(7.5, 8.5, 32);
-      const haloMat = new THREE.MeshBasicMaterial({
-        color: 0x818cf8,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.4,
-        blending: THREE.AdditiveBlending,
-      });
-      const halo = new THREE.Mesh(haloGeo, haloMat);
-      halo.position.copy(pos.clone().multiplyScalar(1.025));
-      halo.lookAt(new THREE.Vector3(0, 0, 0));
-      beaconGroup.add(halo);
-    }
-
-    if (nodePositions.length > 0) {
-      updateBeacon(nodePositions[0]);
-    }
-
-    // F. Curved Great-Circle Relational Arcs
-    const edgeGroup = new THREE.Group();
-    globeGroup.add(edgeGroup);
-    const edgeLines: Array<{ line: THREE.Line; edge: any }> = [];
-
-    function createCurvedArc(pA: THREE.Vector3, pB: THREE.Vector3, altitude: number) {
-      const points = [];
-      const segments = 24;
-      for (let i = 0; i <= segments; i++) {
-        const t = i / segments;
-        const p = new THREE.Vector3().lerpVectors(pA, pB, t);
-        const dist = pA.distanceTo(pB);
-        const arcHeight = Math.sin(t * Math.PI) * (dist * 0.22 + altitude);
-        p.normalize().multiplyScalar(SPHERE_RADIUS + arcHeight);
-        points.push(p);
-      }
-      return new THREE.BufferGeometry().setFromPoints(points);
-    }
-
-    topology.edges.forEach((rel) => {
-      const s = (rel as any).source ?? (rel as any).src;
-      const d = (rel as any).target ?? (rel as any).dst;
-      const srcIdx = topology.nodes.findIndex((n) => n.name === s || n.id === s);
-      const dstIdx = topology.nodes.findIndex((n) => n.name === d || n.id === d);
-      const pA = nodePositions[srcIdx >= 0 ? srcIdx : (rel as any).from];
-      const pB = nodePositions[dstIdx >= 0 ? dstIdx : (rel as any).to];
-      if (!pA || !pB) return;
-
-      const isPrimary = (s === selectedNode?.name || d === selectedNode?.name);
-      const geo = createCurvedArc(pA, pB, isPrimary ? 3.5 : 1.2);
-      const edgeColor = (rel.type === 'IMPORTS' ? '#10b981' : rel.type === 'DEFINES' ? '#a855f7' : '#38bdf8');
-      const mat = new THREE.LineBasicMaterial({
-        color: new THREE.Color((rel as any).color || edgeColor),
-        transparent: true,
-        opacity: isPrimary ? 0.95 : 0.28,
-        blending: isPrimary ? THREE.AdditiveBlending : THREE.NormalBlending,
-      });
-      const line = new THREE.Line(geo, mat);
-      line.userData = { edge: rel };
-      edgeLines.push({ line, edge: rel });
-      edgeGroup.add(line);
-    });
-
-    // G. Lighting
-    const ambientLight = new THREE.AmbientLight(0x0f172a, 2.5);
-    scene.add(ambientLight);
-
-    const dirLight1 = new THREE.DirectionalLight(0x38bdf8, 2.0);
-    dirLight1.position.set(120, 100, 150);
-    scene.add(dirLight1);
-
-    const dirLight2 = new THREE.DirectionalLight(0xa855f7, 1.4);
-    dirLight2.position.set(-150, -80, -100);
-    scene.add(dirLight2);
-
-    // H. Mouse drag, Zoom, and Raycasting
-    let isDragging = false;
-    let prevMouse = { x: 0, y: 0 };
-    let targetRotX = 0.25;
-    let targetRotY = -0.55;
-    let curRotX = 0.25;
-    let curRotY = -0.55;
-    let localAutoOrbit = true;
-
-    const dom = renderer.domElement;
-
-    const onMouseDown = (e: MouseEvent) => {
-      isDragging = true;
-      localAutoOrbit = false;
-      setAutoRotate(false);
-      prevMouse = { x: e.clientX, y: e.clientY };
-    };
-
-    const onMouseUp = () => {
-      isDragging = false;
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isDragging) return;
-      const dx = e.clientX - prevMouse.x;
-      const dy = e.clientY - prevMouse.y;
-      targetRotY += dx * 0.005;
-      targetRotX += dy * 0.005;
-      targetRotX = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, targetRotX));
-      prevMouse = { x: e.clientX, y: e.clientY };
-
-      const az = Math.round(((targetRotY * 180) / Math.PI) % 360);
-      const el = Math.round((targetRotX * 180) / Math.PI);
-      setAzimuthText(`Azimuth ${Math.abs(az)}° • El ${el}°`);
-    };
-
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      camera.position.z += e.deltaY * 0.15;
-      camera.position.z = Math.max(120, Math.min(480, camera.position.z));
-    };
-
-    // Raycast click selection
-    const raycaster = new THREE.Raycaster();
-    const mouseCoord = new THREE.Vector2();
-
-    const onClick = (e: MouseEvent) => {
-      const rect = dom.getBoundingClientRect();
-      mouseCoord.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      mouseCoord.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-      raycaster.setFromCamera(mouseCoord, camera);
-      const intersects = raycaster.intersectObjects(nodeMeshes);
-
-      if (intersects.length > 0) {
-        const hit = intersects[0].object as THREE.Mesh;
-        const nodeData = hit.userData.data as GlobeNode;
-        setSelectedNode(nodeData);
-        updateBeacon(hit.position);
-      }
-    };
-
-    dom.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mouseup', onMouseUp);
-    window.addEventListener('mousemove', onMouseMove);
-    dom.addEventListener('wheel', onWheel, { passive: false });
-    dom.addEventListener('click', onClick);
-
-    // Expose control actions
-    controlsRef.current = {
-      recenter: () => {
-        targetRotX = 0.25;
-        targetRotY = -0.55;
-        camera.position.set(0, 30, 240);
-        localAutoOrbit = false;
-        setAutoRotate(false);
-      },
-      focusNode: (node: GlobeNode) => {
-        const idx = topology.nodes.findIndex((n) => n.id === node.id || n.name === node.name);
-        const posInfo = getNodePos(node, idx >= 0 ? idx : 0, topology.nodes.length, true);
-        const phi = (90 - posInfo.lat) * (Math.PI / 180);
-        const theta = (posInfo.lon + 180) * (Math.PI / 180);
-        targetRotX = -(phi - Math.PI / 2);
-        targetRotY = -theta + Math.PI / 2;
-        camera.position.set(0, 15, 175);
-        localAutoOrbit = false;
-        setAutoRotate(false);
-        if (idx >= 0 && nodePositions[idx]) {
-          updateBeacon(nodePositions[idx]);
-        }
-      },
-      viewPoles: () => {
-        targetRotX = Math.PI / 2.2;
-        targetRotY = 0;
-        localAutoOrbit = false;
-        setAutoRotate(false);
-      },
-      toggleOrbit: () => {
-        localAutoOrbit = !localAutoOrbit;
-        setAutoRotate(localAutoOrbit);
-      },
-      applyFilters: (
-        tax: typeof filterTaxonomy,
-        edg: typeof filterEdges,
-        hop: number | 'full',
-        selected: GlobeNode | null
-      ) => {
-        const selectedName = selected?.name;
-        const neighborNames = new Set<string>();
-        if (selectedName) {
-          neighborNames.add(selectedName);
-          topology.edges.forEach((e) => {
-            const s = (e as any).source ?? (e as any).src;
-            const d = (e as any).target ?? (e as any).dst;
-            if (s === selectedName) neighborNames.add(d);
-            if (d === selectedName) neighborNames.add(s);
-          });
-        }
-
-        nodeMeshes.forEach((mesh) => {
-          const node = mesh.userData.data as GlobeNode;
-          let visible = true;
-          const kind = (node.kind || '').toLowerCase();
-          if (kind.includes('func') || kind === 'method') {
-            visible = tax.functions;
-          } else if (kind === 'class' || kind === 'struct') {
-            visible = tax.classes;
-          } else if (kind === 'type' || kind === 'interface') {
-            visible = tax.types;
-          } else if (kind === 'file') {
-            visible = tax.files;
-          }
-
-          if (visible && hop === 1 && selectedName) {
-            visible = neighborNames.has(node.name);
-          }
-          mesh.visible = visible;
-        });
-
-        edgeLines.forEach(({ line, edge }) => {
-          let visible = true;
-          const relType = (edge.type || '').toUpperCase();
-          if (relType === 'CALLS') visible = edg.calls;
-          else if (relType === 'IMPORTS') visible = edg.imports;
-          else if (relType === 'DEFINES') visible = edg.defines;
-          else if (relType === 'INHERITS') visible = edg.inherits;
-          else if (relType === 'SIMILAR_TO' || relType === 'SIMILAR') visible = edg.similar;
-
-          const s = (edge as any).source ?? (edge as any).src;
-          const d = (edge as any).target ?? (edge as any).dst;
-          const touchesSelected =
-            selectedName && (s === selectedName || d === selectedName);
-
-          if (visible && hop === 1 && selectedName) {
-            visible = !!touchesSelected;
-          }
-          line.visible = visible;
-
-          const mat = line.material as THREE.LineBasicMaterial;
-          if (touchesSelected) {
-            mat.opacity = 0.95;
-          } else {
-            mat.opacity = selectedName ? 0.15 : 0.28;
-          }
-        });
-      },
-      sceneNodes: nodeMeshes,
-    };
-
-    // Resize handler
-    const onResize = () => {
-      if (!container) return;
-      const w = container.clientWidth;
-      const h = container.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    window.addEventListener('resize', onResize);
-
-    // Animation Loop
-    let animId: number;
-    const clock = new THREE.Clock();
-
-    const animate = () => {
-      animId = requestAnimationFrame(animate);
-      const delta = clock.getDelta();
-      const time = clock.getElapsedTime();
-
-      if (localAutoOrbit && !isDragging) {
-        targetRotY += delta * 0.08;
-      }
-
-      curRotX += (targetRotX - curRotX) * 0.08;
-      curRotY += (targetRotY - curRotY) * 0.08;
-
-      globeGroup.rotation.x = curRotX;
-      globeGroup.rotation.y = curRotY;
-
-      if (glowEnabled) {
-        auraMesh.scale.setScalar(1 + Math.sin(time * 1.5) * 0.008);
-      }
-      ringMat.opacity = 0.28 + Math.sin(time * 2.0) * 0.06;
-
-      renderer.render(scene, camera);
-    };
-
-    animate();
-
-    return () => {
-      cancelAnimationFrame(animId);
-      dom.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mouseup', onMouseUp);
-      window.removeEventListener('mousemove', onMouseMove);
-      dom.removeEventListener('wheel', onWheel);
-      dom.removeEventListener('click', onClick);
-      window.removeEventListener('resize', onResize);
-      renderer.dispose();
-    };
-  }, [topology, glowEnabled, viewMode]);
-
-  // 3. Initialize & Animate 2D Interactive Network Graph (Approved Graph UI)
-  useEffect(() => {
-    if (viewMode !== '2d') return;
-    const canvas = canvas2dRef.current;
-    if (!canvas || !topology) return;
+    if (!canvas || !container) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     let animId: number;
     let animOffset = 0;
-    let isDragging = false;
-    let draggedNode: any = null;
-    let startPos = { x: 0, y: 0 };
-    let didMove = false;
+    let isDraggingNode = false;
+    let isPanning = false;
+    let draggedNode: GraphNode2D | null = null;
+    let pointerStart = { x: 0, y: 0 };
+    let hasMoved = false;
 
-    const parent = canvas.parentElement;
-    const w = parent?.clientWidth || 800;
-    const h = parent?.clientHeight || 600;
+    // Fast node lookup index
+    const nodeLookup = new Map<string, GlobeNode>();
+    topology.nodes.forEach((n) => {
+      nodeLookup.set(n.id, n);
+      nodeLookup.set(n.name, n);
+    });
 
     const activeNode = selectedNode || topology.nodes[0];
     if (!activeNode) return;
 
-    const centerId = activeNode.name;
-    const centerColor = activeNode.comm_color || '#38bdf8';
+    // Viewport dimensions
+    const width = container.clientWidth || 900;
+    const height = container.clientHeight || 650;
 
-    const nodesMap = new Map<string, any>();
-    const edgesList: Array<{ from: string; to: string; type: string; color: string }> = [];
+    // Assemble 2D graph nodes
+    const nodesMap = new Map<string, GraphNode2D>();
+    const edgesList: GraphEdge2D[] = [];
 
-    // Center Node (Focus Target)
-    nodesMap.set(centerId, {
-      id: centerId,
+    const centerKey = activeNode.name;
+    const centerColor = activeNode.comm_color || KIND_COLOR_MAP[activeNode.kind] || '#38bdf8';
+
+    // Center Active Focus Node
+    nodesMap.set(centerKey, {
+      id: activeNode.id,
       name: activeNode.name,
       kind: activeNode.kind || 'function',
       filePath: activeNode.file_path || '',
-      x: w / 2,
-      y: h / 2,
-      vx: 0,
-      vy: 0,
-      radius: 20,
+      startLine: activeNode.start_line,
+      endLine: activeNode.end_line,
+      x: width / 2,
+      y: height / 2,
+      radius: 22,
       color: centerColor,
-      community: activeNode.comm_name || 'Core Subsystem',
+      community: activeNode.comm_name || 'Core',
+      inDegree: activeNode.in_degree || callers.length,
+      outDegree: activeNode.out_degree || callees.length,
       isCenter: true,
       isInbound: false,
       isOutbound: false,
+      isImport: false,
       rawNode: activeNode,
     });
 
-    // Inbound Callers (Arrayed to the Left)
-    const validCallers = (callers || []).slice(0, 7);
-    const cCount = validCallers.length;
-    validCallers.forEach((c, idx) => {
-      const cId = c.caller || 'caller';
-      const targetY = h / 2 + (idx - (cCount - 1) / 2) * 58;
-      const targetX = Math.max(90, w / 2 - 240);
-      const raw = topology.nodes.find((n) => n.name === cId);
-      const col = raw?.comm_color || '#38bdf8';
+    // Extract callers & callees from both API calls and topology edges
+    const inboundNames = new Set<string>();
+    callers.forEach((c) => {
+      if (c.caller) inboundNames.add(c.caller);
+    });
+    topology.edges.forEach((e) => {
+      const s = (e as any).source ?? (e as any).src;
+      const d = (e as any).target ?? (e as any).dst;
+      if (d === activeNode.id || d === activeNode.name) {
+        const srcNode = nodeLookup.get(s);
+        if (srcNode) inboundNames.add(srcNode.name);
+      }
+    });
 
-      nodesMap.set(cId, {
-        id: cId,
-        name: cId,
-        kind: raw?.kind || 'caller',
-        filePath: c.file_path || raw?.file_path || '',
+    const outboundNames = new Set<string>();
+    callees.forEach((c) => {
+      if (c.callee) outboundNames.add(c.callee);
+    });
+    topology.edges.forEach((e) => {
+      const s = (e as any).source ?? (e as any).src;
+      const d = (e as any).target ?? (e as any).dst;
+      if (s === activeNode.id || s === activeNode.name) {
+        const dstNode = nodeLookup.get(d);
+        if (dstNode) outboundNames.add(dstNode.name);
+      }
+    });
+
+    const isAllMode = activeHop === 'all';
+    const isTwoHop = activeHop === 2;
+
+    // Place Inbound Callers on the Left
+    const callerArr = Array.from(inboundNames).slice(0, isAllMode ? 100 : isTwoHop ? 16 : 8);
+    callerArr.forEach((cName, idx) => {
+      const raw = nodeLookup.get(cName);
+      const targetY = height / 2 + (idx - (callerArr.length - 1) / 2) * (isAllMode ? 46 : 62);
+      const targetX = Math.max(90, width / 2 - (isAllMode ? 320 : 250));
+      const col = raw?.comm_color || KIND_COLOR_MAP[raw?.kind || 'function'] || '#38bdf8';
+
+      nodesMap.set(cName, {
+        id: raw?.id || cName,
+        name: cName,
+        kind: raw?.kind || 'function',
+        filePath: raw?.file_path || '',
+        startLine: raw?.start_line,
+        endLine: raw?.end_line,
         x: targetX,
         y: targetY,
-        vx: 0,
-        vy: 0,
-        radius: 14,
+        radius: 15,
         color: col,
-        community: raw?.comm_name || 'Inbound',
+        community: raw?.comm_name || 'Caller',
+        inDegree: raw?.in_degree || 1,
+        outDegree: raw?.out_degree || 1,
         isCenter: false,
         isInbound: true,
         isOutbound: false,
+        isImport: false,
+        isSubNode: raw?.kind === 'method' || raw?.kind === 'function',
         rawNode: raw,
       });
 
-      if (filterEdges.calls) {
+      if (filterEdges.CALLS) {
         edgesList.push({
-          from: cId,
-          to: centerId,
+          from: cName,
+          to: centerKey,
           type: 'CALLS',
           color: '#38bdf8',
         });
       }
     });
 
-    // Outbound Callees (Arrayed to the Right)
-    const validCallees = (callees || []).slice(0, 7);
-    const outCount = validCallees.length;
-    validCallees.forEach((c, idx) => {
-      const cId = c.callee || 'callee';
-      const targetY = h / 2 + (idx - (outCount - 1) / 2) * 58;
-      const targetX = Math.min(w - 90, w / 2 + 240);
-      const raw = topology.nodes.find((n) => n.name === cId);
-      const col = raw?.comm_color || '#a855f7';
+    // Place Outbound Callees on the Right
+    const calleeArr = Array.from(outboundNames).slice(0, isAllMode ? 100 : isTwoHop ? 16 : 8);
+    calleeArr.forEach((cName, idx) => {
+      const raw = nodeLookup.get(cName);
+      const targetY = height / 2 + (idx - (calleeArr.length - 1) / 2) * (isAllMode ? 46 : 62);
+      const targetX = Math.min(width - 90, width / 2 + (isAllMode ? 320 : 250));
+      const col = raw?.comm_color || KIND_COLOR_MAP[raw?.kind || 'function'] || '#a855f7';
 
-      nodesMap.set(cId, {
-        id: cId,
-        name: cId,
-        kind: raw?.kind || 'callee',
-        filePath: c.file_path || raw?.file_path || '',
+      nodesMap.set(cName, {
+        id: raw?.id || cName,
+        name: cName,
+        kind: raw?.kind || 'function',
+        filePath: raw?.file_path || '',
+        startLine: raw?.start_line,
+        endLine: raw?.end_line,
         x: targetX,
         y: targetY,
-        vx: 0,
-        vy: 0,
-        radius: 14,
+        radius: 15,
         color: col,
-        community: raw?.comm_name || 'Outbound',
+        community: raw?.comm_name || 'Callee',
+        inDegree: raw?.in_degree || 1,
+        outDegree: raw?.out_degree || 1,
         isCenter: false,
         isInbound: false,
         isOutbound: true,
+        isImport: false,
+        isSubNode: raw?.kind === 'method' || raw?.kind === 'function',
         rawNode: raw,
       });
 
-      if (filterEdges.calls) {
+      if (filterEdges.CALLS) {
         edgesList.push({
-          from: centerId,
-          to: cId,
+          from: centerKey,
+          to: cName,
           type: 'CALLS',
           color: '#a855f7',
         });
       }
     });
 
-    // Extended Hop Neighbors (2-Hop / Full)
-    if (activeHop === 2 || activeHop === 3 || activeHop === 'full') {
-      const maxExtra = activeHop === 2 ? 6 : activeHop === 3 ? 12 : 20;
-      let added = 0;
-      for (const n of topology.nodes) {
-        if (added >= maxExtra) break;
-        if (nodesMap.has(n.name)) continue;
-        const isNeighbor = topology.edges.some((e) => {
-          const s = (e as any).source ?? (e as any).src;
-          const d = (e as any).target ?? (e as any).dst;
-          return (s === n.name && nodesMap.has(d)) || (d === n.name && nodesMap.has(s));
+    // Extract and Place Imports Nodes at the Top
+    const importItems: { id: string; name: string; module: string; file_path?: string; line?: number }[] = [];
+    const seenImports = new Set<string>();
+
+    imports.forEach((imp) => {
+      const impKey = imp.name ? `${imp.name}` : imp.module;
+      if (!seenImports.has(impKey) && impKey !== centerKey) {
+        seenImports.add(impKey);
+        importItems.push({
+          id: `imp_${impKey}`,
+          name: impKey,
+          module: imp.module,
+          file_path: imp.file_path,
+          line: imp.line_number,
         });
-        if (isNeighbor || n.comm === activeNode.comm) {
-          const angle = (added / maxExtra) * Math.PI * 2;
-          const dist = 320;
+      }
+    });
+
+    topology.edges.forEach((e) => {
+      const relType = (e.type || '').toUpperCase();
+      if (relType === 'IMPORTS') {
+        const s = (e as any).source ?? (e as any).src;
+        const d = (e as any).target ?? (e as any).dst;
+        const sName = nodeLookup.get(s)?.name || s;
+        const dName = nodeLookup.get(d)?.name || d;
+        if ((s === activeNode.id || s === activeNode.name || sName === activeNode.name) && dName !== centerKey) {
+          if (!seenImports.has(dName)) {
+            seenImports.add(dName);
+            const raw = nodeLookup.get(d);
+            importItems.push({
+              id: raw?.id || `imp_${dName}`,
+              name: dName,
+              module: dName,
+              file_path: raw?.file_path,
+              line: raw?.start_line,
+            });
+          }
+        }
+      }
+    });
+
+    if (filterEdges.IMPORTS) {
+      const importArr = importItems.slice(0, isAllMode ? 100 : isTwoHop ? 16 : 8);
+      importArr.forEach((imp, idx) => {
+        const raw = nodeLookup.get(imp.name) || nodeLookup.get(imp.module);
+        const count = importArr.length;
+        const spreadWidth = Math.min(width - 240, Math.max(220, count * (isAllMode ? 85 : 105)));
+        const targetX = width / 2 + (count > 1 ? (idx / (count - 1) - 0.5) * spreadWidth : 0);
+        const arcOffset = count > 2 ? Math.sin((idx / (count - 1)) * Math.PI) * 26 : 0;
+        const targetY = Math.max(75, height / 2 - (isAllMode ? 220 : 180) - arcOffset);
+
+        nodesMap.set(imp.name, {
+          id: imp.id,
+          name: imp.name,
+          kind: raw?.kind || 'module',
+          filePath: imp.file_path || raw?.file_path || '',
+          startLine: imp.line || raw?.start_line,
+          endLine: raw?.end_line,
+          x: targetX,
+          y: targetY,
+          radius: 14,
+          color: '#10b981',
+          community: raw?.comm_name || 'Imported Module',
+          inDegree: raw?.in_degree || 1,
+          outDegree: raw?.out_degree || 0,
+          isCenter: false,
+          isInbound: false,
+          isOutbound: false,
+          isImport: true,
+          isSubNode: false,
+          rawNode: raw,
+        });
+
+        edgesList.push({
+          from: centerKey,
+          to: imp.name,
+          type: 'IMPORTS',
+          color: '#10b981',
+        });
+      });
+    }
+
+    // 2-Hop / All Expansion Nodes
+    if (isAllMode) {
+      // In "All" mode: EVERY node and sub-node in the repository appears!
+      const commMap = new Map<number, GlobeNode[]>();
+      topology.nodes.forEach((n) => {
+        if (!nodesMap.has(n.name)) {
+          const cId = n.comm ?? 0;
+          if (!commMap.has(cId)) commMap.set(cId, []);
+          commMap.get(cId)!.push(n);
+        }
+      });
+
+      const totalComms = Math.max(1, commMap.size);
+      let commIdx = 0;
+
+      commMap.forEach((cNodes) => {
+        // Position community clusters in an elliptical orbit around the center
+        const commAngle = (commIdx / totalComms) * 2 * Math.PI - Math.PI / 2;
+        const clusterDist = Math.max(300, Math.min(width, height) * 0.44);
+        const clusterCenterX = width / 2 + Math.cos(commAngle) * clusterDist;
+        const clusterCenterY = height / 2 + Math.sin(commAngle) * (clusterDist * 0.76);
+
+        cNodes.forEach((n, localIdx) => {
+          // Sub-nodes arranged in expanding concentric rings around their cluster center
+          const ringIndex = Math.floor(Math.sqrt(localIdx));
+          const itemsInRing = Math.max(4, ringIndex * 6);
+          const ringPos = localIdx - ringIndex * ringIndex;
+          const ringRadius = 40 + ringIndex * 34;
+          const localAngle = (ringPos / itemsInRing) * 2 * Math.PI;
+
+          const nodeX = clusterCenterX + Math.cos(localAngle) * ringRadius;
+          const nodeY = clusterCenterY + Math.sin(localAngle) * (ringRadius * 0.85);
+
+          const col = n.comm_color || KIND_COLOR_MAP[n.kind] || '#38bdf8';
+          const isSubNode =
+            n.kind === 'method' ||
+            n.kind === 'function' ||
+            n.kind === 'type' ||
+            (Boolean(n.signature) && n.signature.includes('('));
+
           nodesMap.set(n.name, {
-            id: n.name,
+            id: n.id,
             name: n.name,
             kind: n.kind,
             filePath: n.file_path,
-            x: w / 2 + Math.cos(angle) * dist,
-            y: h / 2 + Math.sin(angle) * (dist * 0.7),
-            vx: 0,
-            vy: 0,
-            radius: 12,
-            color: n.comm_color || '#34d399',
-            community: n.comm_name,
+            startLine: n.start_line,
+            endLine: n.end_line,
+            x: nodeX,
+            y: nodeY,
+            radius: n.kind === 'class' || n.kind === 'module' ? 16 : isSubNode ? 10 : 13,
+            color: col,
+            community: n.comm_name || 'Subsystem',
+            inDegree: n.in_degree || 1,
+            outDegree: n.out_degree || 1,
             isCenter: false,
             isInbound: false,
             isOutbound: false,
+            isImport: n.kind === 'module' && (n.file_path?.startsWith('external') || n.file_path?.startsWith('stdlib')),
+            isSubNode: isSubNode,
+            rawNode: n,
+          });
+        });
+        commIdx++;
+      });
+    } else if (isTwoHop) {
+      // 2-Hop expansion
+      const limit = 40;
+      let added = 0;
+      for (const n of topology.nodes) {
+        if (added >= limit) break;
+        if (nodesMap.has(n.name)) continue;
+
+        const isConnected = topology.edges.some((e) => {
+          const s = (e as any).source ?? (e as any).src;
+          const d = (e as any).target ?? (e as any).dst;
+          const sName = nodeLookup.get(s)?.name || s;
+          const dName = nodeLookup.get(d)?.name || d;
+          return (sName === n.name && nodesMap.has(dName)) || (dName === n.name && nodesMap.has(sName));
+        });
+
+        if (isConnected) {
+          const angle = (added / limit) * Math.PI * 2;
+          const dist = 310;
+          nodesMap.set(n.name, {
+            id: n.id,
+            name: n.name,
+            kind: n.kind,
+            filePath: n.file_path,
+            startLine: n.start_line,
+            endLine: n.end_line,
+            x: width / 2 + Math.cos(angle) * dist,
+            y: height / 2 + Math.sin(angle) * (dist * 0.72),
+            radius: 12,
+            color: n.comm_color || KIND_COLOR_MAP[n.kind] || '#34d399',
+            community: n.comm_name,
+            inDegree: n.in_degree || 1,
+            outDegree: n.out_degree || 1,
+            isCenter: false,
+            isInbound: false,
+            isOutbound: false,
+            isImport: false,
+            isSubNode: n.kind === 'method' || n.kind === 'function',
             rawNode: n,
           });
           added++;
         }
       }
+    }
 
+    // Connect edges between all active nodes on canvas
+    if (isTwoHop || isAllMode) {
       topology.edges.forEach((e) => {
-        const es = (e as any).source ?? (e as any).src;
-        const ed = (e as any).target ?? (e as any).dst;
-        if (nodesMap.has(es) && nodesMap.has(ed)) {
-          if (!edgesList.some((ex) => ex.from === es && ex.to === ed)) {
+        const s = (e as any).source ?? (e as any).src;
+        const d = (e as any).target ?? (e as any).dst;
+        const sName = nodeLookup.get(s)?.name || s;
+        const dName = nodeLookup.get(d)?.name || d;
+        const relType = (e.type || 'CALLS').toUpperCase();
+
+        if (filterEdges[relType] && nodesMap.has(sName) && nodesMap.has(dName)) {
+          if (!edgesList.some((ex) => ex.from === sName && ex.to === dName)) {
             edgesList.push({
-              from: es,
-              to: ed,
-              type: e.type || 'CALLS',
-              color: e.type === 'IMPORTS' ? '#a855f7' : (e.type === 'DEFINES' ? '#fbbf24' : '#38bdf8'),
+              from: sName,
+              to: dName,
+              type: relType,
+              color: EDGE_COLOR_MAP[relType] || '#38bdf8',
             });
           }
         }
@@ -762,159 +919,200 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
     const currentNodes = Array.from(nodesMap.values());
     simNodesRef.current = currentNodes;
 
-    const resize = () => {
-      const p = canvas.parentElement;
-      if (!p) return;
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = p.clientWidth * dpr;
-      canvas.height = p.clientHeight * dpr;
-      ctx.resetTransform?.();
-      ctx.scale(dpr, dpr);
-    };
-
-    resize();
-    window.addEventListener('resize', resize);
-
-    const onMouseDown = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      startPos = { x, y };
-      didMove = false;
-
-      for (const n of simNodesRef.current) {
-        const dx = n.x - x;
-        const dy = n.y - y;
-        if (Math.sqrt(dx * dx + dy * dy) <= n.radius + 6) {
-          isDragging = true;
-          draggedNode = n;
-          break;
-        }
+    // ResizeObserver ensures canvas always matches container exactly
+    const resizeCanvas = () => {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      if (w > 0 && h > 0) {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
       }
     };
+    resizeCanvas();
 
-    const onMouseMove = (e: MouseEvent) => {
+    const resizeObserver = new ResizeObserver(resizeCanvas);
+    resizeObserver.observe(container);
+
+    // Coordinate conversion considering pan and zoom
+    const getCanvasPoint = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const rawX = clientX - rect.left;
+      const rawY = clientY - rect.top;
+      return {
+        x: (rawX - (rect.width / 2 + pan.x)) / zoom + rect.width / 2,
+        y: (rawY - (rect.height / 2 + pan.y)) / zoom + rect.height / 2,
+      };
+    };
 
-      if (isDragging && draggedNode) {
-        const dx = x - startPos.x;
-        const dy = y - startPos.y;
-        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didMove = true;
-        draggedNode.x = Math.max(35, Math.min(rect.width - 35, x));
-        draggedNode.y = Math.max(35, Math.min(rect.height - 35, y));
+    // Pointer Events
+    const handleMouseDown = (e: MouseEvent) => {
+      pointerStart = { x: e.clientX, y: e.clientY };
+      hasMoved = false;
+
+      const pt = getCanvasPoint(e.clientX, e.clientY);
+      const hit = simNodesRef.current.find((n) => {
+        const dx = n.x - pt.x;
+        const dy = n.y - pt.y;
+        return Math.sqrt(dx * dx + dy * dy) <= n.radius + 6;
+      });
+
+      if (hit) {
+        isDraggingNode = true;
+        draggedNode = hit;
       } else {
-        const hovering = simNodesRef.current.some((n) => {
-          const dx = n.x - x;
-          const dy = n.y - y;
-          return Math.sqrt(dx * dx + dy * dy) <= n.radius + 6;
-        });
-        canvas.style.cursor = hovering ? 'pointer' : 'default';
+        isPanning = true;
       }
     };
 
-    const onMouseUp = () => {
-      if (isDragging && draggedNode) {
-        if (!didMove) {
-          if (draggedNode.rawNode) {
-            setSelectedNode(draggedNode.rawNode);
+    const handleMouseMove = (e: MouseEvent) => {
+      const dx = e.clientX - pointerStart.x;
+      const dy = e.clientY - pointerStart.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasMoved = true;
+
+      if (isDraggingNode && draggedNode) {
+        const pt = getCanvasPoint(e.clientX, e.clientY);
+        draggedNode.x = pt.x;
+        draggedNode.y = pt.y;
+      } else if (isPanning) {
+        setPan((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+        pointerStart = { x: e.clientX, y: e.clientY };
+      } else {
+        const pt = getCanvasPoint(e.clientX, e.clientY);
+        const hovering = simNodesRef.current.some((n) => {
+          const ndx = n.x - pt.x;
+          const ndy = n.y - pt.y;
+          return Math.sqrt(ndx * ndx + ndy * ndy) <= n.radius + 6;
+        });
+        canvas.style.cursor = hovering ? 'pointer' : 'grab';
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (isDraggingNode && draggedNode && !hasMoved) {
+        // Click on node -> focus it!
+        if (draggedNode.rawNode) {
+          setSelectedNode(draggedNode.rawNode);
+        } else {
+          const found = nodeLookup.get(draggedNode.name);
+          if (found) {
+            setSelectedNode(found);
           } else {
-            const found = topology.nodes.find((n) => n.name === draggedNode?.name);
-            if (found) {
-              setSelectedNode(found);
-            } else {
-              setSelectedNode({
-                id: String(Math.floor(Math.random() * 10000)),
-                name: draggedNode.name,
-                kind: draggedNode.kind,
-                signature: `${draggedNode.kind} ${draggedNode.name}()`,
-                file_path: draggedNode.filePath,
-                start_line: 1,
-                end_line: 50,
-                language: 'python',
-                in_degree: 2,
-                out_degree: 2,
-                comm: 0,
-                comm_name: draggedNode.community,
-                comm_color: draggedNode.color,
-                importance: 0.8,
-              });
-            }
+            // For import nodes that might not have a rawNode yet, create a synthetic GlobeNode
+            setSelectedNode({
+              id: draggedNode.id,
+              name: draggedNode.name,
+              kind: draggedNode.kind,
+              file_path: draggedNode.filePath,
+              start_line: draggedNode.startLine || 1,
+              end_line: draggedNode.endLine || 1,
+              language: 'python',
+              in_degree: draggedNode.inDegree,
+              out_degree: draggedNode.outDegree,
+              comm: 0,
+              comm_name: draggedNode.community,
+              comm_color: draggedNode.color,
+              importance: 0.8,
+              signature: `import ${draggedNode.name}`,
+            });
           }
         }
       }
-      isDragging = false;
+      isDraggingNode = false;
+      isPanning = false;
       draggedNode = null;
     };
 
-    canvas.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+      setZoom((prev) => Math.min(2.5, Math.max(0.4, prev * zoomFactor)));
+    };
 
+    canvas.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+
+    // 60 FPS Render loop
     const render = () => {
-      const rect = canvas.getBoundingClientRect();
-      const width = rect.width;
-      const height = rect.height;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = canvas.width / dpr;
+      const h = canvas.height / dpr;
 
-      ctx.clearRect(0, 0, width, height);
+      if (w <= 0 || h <= 0) {
+        animId = requestAnimationFrame(render);
+        return;
+      }
 
-      // Subtle Background Grid
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+
+      // Apply pan & zoom relative to center
+      ctx.translate(w / 2 + pan.x, h / 2 + pan.y);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-w / 2, -h / 2);
+
+      // 1. Grid
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
       ctx.lineWidth = 1;
-      for (let x = 0; x < width; x += 44) {
+      const step = 44;
+      for (let x = -600; x < w + 600; x += step) {
         ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
+        ctx.moveTo(x, -600);
+        ctx.lineTo(x, h + 600);
         ctx.stroke();
       }
-      for (let y = 0; y < height; y += 44) {
+      for (let y = -600; y < h + 600; y += step) {
         ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
+        ctx.moveTo(-600, y);
+        ctx.lineTo(w + 600, y);
         ctx.stroke();
       }
 
-      // Render Edges
+      // 2. Render Edges & Animated Light Particles
       edgesList.forEach((edge, idx) => {
         const source = nodesMap.get(edge.from);
         const target = nodesMap.get(edge.to);
         if (!source || !target) return;
 
-        const isRelated = edge.from === activeNode.name || edge.to === activeNode.name;
+        const isIncident = edge.from === activeNode.name || edge.to === activeNode.name;
+        const isImportEdge = edge.type === 'IMPORTS';
 
-        ctx.strokeStyle = isRelated ? edge.color : 'rgba(100, 116, 139, 0.25)';
-        ctx.lineWidth = isRelated ? 2.2 : 1;
+        ctx.strokeStyle = isIncident ? edge.color : 'rgba(100, 116, 139, 0.25)';
+        ctx.lineWidth = isIncident ? (isImportEdge ? 2.0 : 2.2) : 1.0;
+
+        if (isImportEdge) {
+          ctx.setLineDash([5, 4]); // Dashed line for import dependencies
+        } else {
+          ctx.setLineDash([]);
+        }
 
         ctx.beginPath();
         ctx.moveTo(source.x, source.y);
         ctx.lineTo(target.x, target.y);
         ctx.stroke();
+        ctx.setLineDash([]); // Reset line dash for arrowheads and nodes
 
-        // Arrowhead
+        // Arrowhead pointing in the direction of call/import
         const headlen = 7;
         const angle = Math.atan2(target.y - source.y, target.x - source.x);
-        const arrowDist = target.radius + 3;
-        const arrowX = target.x - arrowDist * Math.cos(angle);
-        const arrowY = target.y - arrowDist * Math.sin(angle);
+        const tipDist = target.radius + 3;
+        const tipX = target.x - tipDist * Math.cos(angle);
+        const tipY = target.y - tipDist * Math.sin(angle);
 
-        ctx.fillStyle = isRelated ? edge.color : 'rgba(100, 116, 139, 0.4)';
+        ctx.fillStyle = isIncident ? edge.color : 'rgba(100, 116, 139, 0.4)';
         ctx.beginPath();
-        ctx.moveTo(arrowX, arrowY);
-        ctx.lineTo(
-          arrowX - headlen * Math.cos(angle - Math.PI / 7),
-          arrowY - headlen * Math.sin(angle - Math.PI / 7)
-        );
-        ctx.lineTo(
-          arrowX - headlen * Math.cos(angle + Math.PI / 7),
-          arrowY - headlen * Math.sin(angle + Math.PI / 7)
-        );
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(tipX - headlen * Math.cos(angle - Math.PI / 7), tipY - headlen * Math.sin(angle - Math.PI / 7));
+        ctx.lineTo(tipX - headlen * Math.cos(angle + Math.PI / 7), tipY - headlen * Math.sin(angle + Math.PI / 7));
         ctx.closePath();
         ctx.fill();
 
-        // Directional pulse particle
-        if (animRunning2D && isRelated) {
-          const t = ((animOffset * 0.015) + idx * 0.28) % 1;
+        // Directional animated pulse particles
+        if (animRunning && isIncident) {
+          const t = (animOffset * 0.015 + idx * 0.25) % 1;
           const px = source.x + (target.x - source.x) * t;
           const py = source.y + (target.y - source.y) * t;
           ctx.beginPath();
@@ -927,43 +1125,83 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
         }
       });
 
-      // Render Nodes
+      // 3. Render Nodes
       currentNodes.forEach((node) => {
         const isCenter = node.isCenter;
         const isNeighbor = node.isInbound || node.isOutbound;
+        const isImport = node.isImport;
 
+        // Radiant halo for central node or subtle glow for import node
         if (isCenter) {
           ctx.beginPath();
-          ctx.arc(node.x, node.y, node.radius + 9, 0, Math.PI * 2);
+          ctx.arc(node.x, node.y, node.radius + 10, 0, Math.PI * 2);
           ctx.fillStyle = `${node.color}33`;
+          ctx.fill();
+        } else if (isImport) {
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, node.radius + 6, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.16)';
           ctx.fill();
         }
 
+        // Main node body
         ctx.beginPath();
         ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-        ctx.fillStyle = isCenter ? node.color : isNeighbor ? `${node.color}dd` : '#1e293b';
+        ctx.fillStyle = isCenter
+          ? node.color
+          : isImport
+          ? 'rgba(16, 185, 129, 0.22)'
+          : isNeighbor
+          ? `${node.color}dd`
+          : '#1e293b';
         ctx.fill();
 
-        ctx.strokeStyle = isCenter ? '#ffffff' : node.color;
-        ctx.lineWidth = isCenter ? 2.5 : 1.8;
+        ctx.strokeStyle = isCenter ? '#ffffff' : isImport ? '#10b981' : node.color;
+        ctx.lineWidth = isCenter ? 2.5 : isImport ? 2.0 : 1.8;
+        if (isImport) {
+          ctx.setLineDash([3, 3]);
+        } else {
+          ctx.setLineDash([]);
+        }
         ctx.stroke();
+        ctx.setLineDash([]);
 
-        ctx.font = isCenter ? 'bold 12px monospace' : '11px monospace';
-        ctx.fillStyle = isCenter ? '#ffffff' : isNeighbor ? '#f1f5f9' : '#94a3b8';
+        // Node Label
+        ctx.font = isCenter ? 'bold 12px monospace' : isImport ? '600 11px monospace' : '11px monospace';
+        ctx.fillStyle = isCenter ? '#ffffff' : isImport ? '#34d399' : isNeighbor ? '#f1f5f9' : '#94a3b8';
         const label = node.name;
         const textWidth = ctx.measureText(label).width;
         ctx.fillText(label, node.x - textWidth / 2, node.y + node.radius + 15);
 
-        if (isCenter || isNeighbor) {
+        // Subtitle badge
+        if (isCenter || isNeighbor || isImport || node.isSubNode || activeHop === 'all') {
           ctx.font = '9px sans-serif';
-          ctx.fillStyle = isCenter ? node.color : 'rgba(255, 255, 255, 0.6)';
-          const sub = isCenter ? 'ACTIVE FOCUS' : node.isInbound ? 'INBOUND' : 'OUTBOUND';
+          ctx.fillStyle = isCenter
+            ? node.color
+            : isImport
+            ? '#10b981'
+            : node.isSubNode
+            ? '#c084fc'
+            : 'rgba(255, 255, 255, 0.6)';
+          const sub = isCenter
+            ? 'ACTIVE FOCUS'
+            : isImport
+            ? 'IMPORTS'
+            : node.isInbound
+            ? 'CALLS THIS'
+            : node.isOutbound
+            ? 'INVOKED BY THIS'
+            : node.isSubNode
+            ? (node.kind ? node.kind.toUpperCase() : 'SUB-NODE')
+            : (node.kind ? node.kind.toUpperCase() : 'NODE');
           const subWidth = ctx.measureText(sub).width;
           ctx.fillText(sub, node.x - subWidth / 2, node.y - node.radius - 6);
         }
       });
 
-      if (animRunning2D) {
+      ctx.restore();
+
+      if (animRunning) {
         animOffset += 1;
       }
       animId = requestAnimationFrame(render);
@@ -973,761 +1211,443 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
 
     return () => {
       cancelAnimationFrame(animId);
-      canvas.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      window.removeEventListener('resize', resize);
+      resizeObserver.disconnect();
+      canvas.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      canvas.removeEventListener('wheel', handleWheel);
     };
-  }, [viewMode, topology, selectedNode, callers, callees, activeHop, filterEdges, animRunning2D]);
-
-  const handleCopyBundle = () => {
-    if (!selectedNode) return;
-    const bundleText = JSON.stringify(
-      {
-        symbol: selectedNode.name,
-        kind: selectedNode.kind,
-        file: selectedNode.file_path,
-        signature: selectedNode.signature,
-        community: selectedNode.comm_name,
-        spherical_coordinates: getNodePos(selectedNode, 0, topology?.nodes.length || 1, true),
-        in_degree: selectedNode.in_degree,
-        out_degree: selectedNode.out_degree,
-        callers: callers,
-        callees: callees,
-      },
-      null,
-      2
-    );
-    navigator.clipboard.writeText(bundleText);
-    setCopiedBundle(true);
-    setTimeout(() => setCopiedBundle(false), 2000);
-  };
+  }, [topology, selectedNode, callers, callees, imports, activeHop, filterEdges, animRunning, pan, zoom]);
 
   return (
-    <div className="globe-page-layout">
-      {/* 1. LEFT FILTER & SPHERICAL CONTROL PANEL (300px) */}
-      <aside className="globe-left-panel">
+    <div className="graph2d-page-layout">
+      {/* 1. LEFT PANEL: SEARCH & LIVE EDGE FILTERS */}
+      <aside className="graph2d-left-panel">
         <div className="panel-header">
-          <div className="panel-title-wrap">
-            <span className="material-symbols-outlined text-primary">public</span>
-            <span className="panel-title">Spherical Filters</span>
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-primary text-base">hub</span>
+            <span className="panel-title">Graph Explorer</span>
           </div>
-          <button
-            className="btn-reset"
-            onClick={() => {
-              setFilterTaxonomy({
-                functions: true,
-                classes: true,
-                types: true,
-                files: true,
-                communities: true,
-              });
-              setFilterEdges({
-                calls: true,
-                imports: true,
-                defines: true,
-                inherits: true,
-                similar: true,
-              });
-              controlsRef.current?.recenter();
-            }}
-          >
-            Reset All
-          </button>
+          <span className="text-xs text-outline">{topology.nodes.length} nodes</span>
         </div>
 
         <div className="panel-scrollable">
-          {/* Projection Scope Switcher */}
-          <div className="scope-switcher">
-            <button className="scope-btn scope-btn-active">Full Repo Globe</button>
-            <button className="scope-btn" onClick={() => setActiveHop(1)}>
-              Focused Sphere
-            </button>
-          </div>
-
-          {/* Node Taxonomy Selection */}
+          {/* Quick Search */}
           <div className="filter-section">
-            <div className="filter-section-header">
-              <span className="filter-title">Node Taxonomy</span>
-              <span className="filter-meta">{topology?.nodes.length ?? 142} Active</span>
+            <div className="search-box">
+              <span className="material-symbols-outlined text-xs text-outline">search</span>
+              <input
+                type="text"
+                placeholder="Find symbol..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="search-input"
+              />
+              {searchQuery && (
+                <button className="clear-btn" onClick={() => setSearchQuery('')}>
+                  ✕
+                </button>
+              )}
             </div>
 
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.functions}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, functions: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-cyan" />
-                <span className="kind-label">Functions & Methods</span>
+            {filteredSymbols.length > 0 && (
+              <div className="search-dropdown">
+                {filteredSymbols.map((s) => (
+                  <div
+                    key={s.id}
+                    className="search-item"
+                    onClick={() => {
+                      setSelectedNode(s);
+                      setSearchQuery('');
+                      handleRecenter();
+                    }}
+                  >
+                    <span className="font-semibold text-primary truncate">{s.name}</span>
+                    <span className="text-[10px] text-outline truncate">{s.file_path}</span>
+                  </div>
+                ))}
               </div>
-              <span className="kind-count">64</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.classes}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, classes: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-purple" />
-                <span className="kind-label">Classes & Structs</span>
-              </div>
-              <span className="kind-count">28</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.types}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, types: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-blue" />
-                <span className="kind-label">Types & Interfaces</span>
-              </div>
-              <span className="kind-count">24</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.files}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, files: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-gray" />
-                <span className="kind-label">Files & Modules</span>
-              </div>
-              <span className="kind-count">18</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterTaxonomy.communities}
-                  onChange={(e) =>
-                    setFilterTaxonomy({ ...filterTaxonomy, communities: e.target.checked })
-                  }
-                />
-                <span className="kind-dot kind-dot-emerald" />
-                <span className="kind-label">Community Hubs</span>
-              </div>
-              <span className="kind-count text-tertiary">8</span>
-            </label>
+            )}
           </div>
 
-          {/* Relational Arcs Selection */}
+          {/* Hop Radius Depth */}
           <div className="filter-section">
-            <div className="filter-section-header">
-              <span className="filter-title">Relational Arcs</span>
-              <span className="filter-meta">{topology?.edges.length ?? 284} Total</span>
+            <span className="filter-title">Neighborhood Depth</span>
+            <div className="hop-pill-group">
+              <button
+                className={`hop-pill ${activeHop === 1 ? 'hop-pill-active' : ''}`}
+                onClick={() => {
+                  setActiveHop(1);
+                  setZoom(1.0);
+                  setPan({ x: 0, y: 0 });
+                }}
+              >
+                1-Hop
+              </button>
+              <button
+                className={`hop-pill ${activeHop === 2 ? 'hop-pill-active' : ''}`}
+                onClick={() => {
+                  setActiveHop(2);
+                  setZoom(0.85);
+                  setPan({ x: 0, y: 0 });
+                }}
+              >
+                2-Hop
+              </button>
+              <button
+                className={`hop-pill ${activeHop === 'all' ? 'hop-pill-active' : ''}`}
+                onClick={() => {
+                  setActiveHop('all');
+                  setZoom(0.68);
+                  setPan({ x: 0, y: 0 });
+                  fetchTopology('all');
+                }}
+              >
+                All
+              </button>
             </div>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterEdges.calls}
-                  onChange={(e) => setFilterEdges({ ...filterEdges, calls: e.target.checked })}
-                />
-                <span className="arc-line arc-cyan" />
-                <span className="font-code text-xs">CALLS</span>
-              </div>
-              <span className="kind-count text-primary">142</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterEdges.imports}
-                  onChange={(e) => setFilterEdges({ ...filterEdges, imports: e.target.checked })}
-                />
-                <span className="arc-line arc-dashed" />
-                <span className="font-code text-xs">IMPORTS</span>
-              </div>
-              <span className="kind-count text-outline">68</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterEdges.defines}
-                  onChange={(e) => setFilterEdges({ ...filterEdges, defines: e.target.checked })}
-                />
-                <span className="arc-line arc-purple" />
-                <span className="font-code text-xs">DEFINES</span>
-              </div>
-              <span className="kind-count text-secondary">44</span>
-            </label>
-
-            <label className="filter-item">
-              <div className="filter-item-left">
-                <input
-                  type="checkbox"
-                  checked={filterEdges.similar}
-                  onChange={(e) => setFilterEdges({ ...filterEdges, similar: e.target.checked })}
-                />
-                <span className="arc-line arc-dotted" />
-                <span className="font-code text-xs">SIMILAR_TO</span>
-              </div>
-              <span className="kind-count text-outline">32</span>
-            </label>
           </div>
 
-          {/* Louvain Community Clusters */}
+          {/* Edge Filter Checkboxes with Real Live Counts */}
           <div className="filter-section">
-            <div className="filter-section-header">
-              <span className="filter-title">Louvain Clusters (Q=0.82)</span>
-              <span className="material-symbols-outlined text-xs text-outline">bubble_chart</span>
-            </div>
+            <span className="filter-title">Edge Filters</span>
+            <div className="flex flex-col gap-2 mt-2">
+              <label className="filter-row">
+                <input
+                  type="checkbox"
+                  checked={filterEdges.CALLS}
+                  onChange={(e) => setFilterEdges({ ...filterEdges, CALLS: e.target.checked })}
+                  className="accent-sky-500"
+                />
+                <span className="color-dot bg-sky-400" />
+                <span className="filter-label">Calls</span>
+                <span className="filter-count text-sky-400">{edgeCounts.CALLS || 0}</span>
+              </label>
 
-            <div className="community-list">
-              {(topology?.communities || []).slice(0, 5).map((comm) => (
+              <label className="filter-row">
+                <input
+                  type="checkbox"
+                  checked={filterEdges.IMPORTS}
+                  onChange={(e) => setFilterEdges({ ...filterEdges, IMPORTS: e.target.checked })}
+                  className="accent-emerald-500"
+                />
+                <span className="color-dot bg-emerald-400" />
+                <span className="filter-label">Imports</span>
+                <span className="filter-count text-emerald-400">{edgeCounts.IMPORTS || 0}</span>
+              </label>
+
+              <label className="filter-row">
+                <input
+                  type="checkbox"
+                  checked={filterEdges.DEFINES}
+                  onChange={(e) => setFilterEdges({ ...filterEdges, DEFINES: e.target.checked })}
+                  className="accent-purple-500"
+                />
+                <span className="color-dot bg-purple-400" />
+                <span className="filter-label">Defines</span>
+                <span className="filter-count text-purple-400">{edgeCounts.DEFINES || 0}</span>
+              </label>
+
+              <label className="filter-row">
+                <input
+                  type="checkbox"
+                  checked={filterEdges.SIMILAR_TO}
+                  onChange={(e) => setFilterEdges({ ...filterEdges, SIMILAR_TO: e.target.checked })}
+                  className="accent-pink-500"
+                />
+                <span className="color-dot bg-pink-400" />
+                <span className="filter-label">Similar To</span>
+                <span className="filter-count text-pink-400">{edgeCounts.SIMILAR_TO || 0}</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Subsystem Communities (Live from DB) */}
+          <div className="filter-section">
+            <span className="filter-title">Communities (Louvain)</span>
+            <div className="flex flex-col gap-1.5 mt-2">
+              {(topology.communities || []).slice(0, 6).map((c: GlobeCommunity) => (
                 <div
-                  key={comm.id}
-                  className="community-row"
+                  key={c.id}
+                  className="community-item"
                   onClick={() => {
-                    const target = topology?.nodes.find((n) => n.comm === comm.id);
-                    if (target) {
-                      setSelectedNode(target);
-                      controlsRef.current?.focusNode(target);
+                    const firstMember = topology.nodes.find((n) => n.comm === c.id);
+                    if (firstMember) {
+                      setSelectedNode(firstMember);
+                      handleRecenter();
                     }
                   }}
                 >
-                  <div className="community-row-left">
-                    <span
-                      className="comm-color-dot"
-                      style={{ backgroundColor: comm.color }}
-                    />
-                    <span className="comm-name truncate">{comm.name}</span>
+                  <div className="flex items-center gap-2 truncate">
+                    <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: c.color }} />
+                    <span className="text-xs truncate">{c.name}</span>
                   </div>
-                  <span className="comm-sym-count">{(comm as any).count ?? (comm as any).member_count ?? 0} sym</span>
+                  <span className="text-[10px] text-outline font-mono">{c.count}</span>
                 </div>
               ))}
             </div>
           </div>
-
-          {/* Projection Controls */}
-          <div className="projection-controls">
-            <span className="filter-title">Projection Controls</span>
-            <div className="slider-row">
-              <div className="slider-label">
-                <span>Arc Curvature</span>
-                <span>{curvature}%</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={curvature}
-                onChange={(e) => setCurvature(Number(e.target.value))}
-                className="slider-input"
-              />
-            </div>
-
-            <div className="toggle-row">
-              <span className="toggle-label">Atmospheric Glow</span>
-              <button
-                className={`glow-toggle ${glowEnabled ? 'glow-toggle-on' : ''}`}
-                onClick={() => setGlowEnabled(!glowEnabled)}
-              >
-                <span className="glow-knob" />
-              </button>
-            </div>
-          </div>
         </div>
       </aside>
 
-      {/* 2. CENTER CANVAS (THE 2D / 3D GRAPH VIEWPORT) */}
-      <main className="globe-viewport">
-        {/* Subtle coordinate dot grid */}
-        <div className="cosmic-grid-overlay" />
+      {/* 2. CENTER CANVAS: DEDICATED 2D INTERACTIVE GRAPH */}
+      <main ref={containerRef} className="graph2d-viewport">
+        <canvas ref={canvasRef} className="graph2d-canvas" />
 
-        {/* Viewport Canvas (2D Interactive Graph vs 3D Planet Globe) */}
-        {viewMode === '2d' ? (
-          <div className="graph-2d-container">
-            <canvas ref={canvas2dRef} className="graph-2d-canvas" />
-            <div className="graph-2d-hint">
-              <span className="material-symbols-outlined text-xs text-primary">touch_app</span>
-              <span>Click node to focus callers/callees • Drag to reposition • Pulses show call flow</span>
-            </div>
-          </div>
-        ) : (
-          <div ref={containerRef} className="threejs-canvas-wrapper" />
-        )}
-
-        {/* Top Canvas HUD Bar */}
-        <div className="top-hud-bar">
-          {/* View Mode Switcher: 2D Interactive Graph vs 3D Planet */}
-          <div className="hud-pill view-mode-switcher">
-            <button
-              className={`hop-btn ${viewMode === '2d' ? 'hop-btn-active' : ''}`}
-              onClick={() => setViewMode('2d')}
-            >
-              <span className="material-symbols-outlined text-xs">hub</span>
-              <span>2D Interactive Graph</span>
-            </button>
-            <button
-              className={`hop-btn ${viewMode === '3d' ? 'hop-btn-active' : ''}`}
-              onClick={() => setViewMode('3d')}
-            >
-              <span className="material-symbols-outlined text-xs">public</span>
-              <span>3D Planet Globe</span>
-            </button>
-          </div>
-
-          {/* Topology Telemetry */}
-          <div className="hud-pill">
-            <div className="live-ping">
-              <span className="ping-dot" />
-              <span className="hud-heading">
-                {viewMode === '2d' ? 'AST Call Graph' : 'Planet Topology'}
-              </span>
-            </div>
-            <span className="hud-sub">
-              {topology?.total_nodes ?? 142} Nodes • {topology?.total_edges ?? 284} Arcs
+        {/* Top Floating HUD Bar */}
+        <div className="canvas-hud">
+          <div className="hud-metric-pill">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-xs font-semibold text-white">2D Code Graph</span>
+            <span className="text-xs text-outline font-mono">
+              {topology.total_nodes ?? topology.nodes.length} Nodes • {topology.total_edges ?? topology.edges.length} Edges
             </span>
-            <span className="louvain-badge">Louvain Q=0.82</span>
-          </div>
-
-          {/* Hop Depth Toggles */}
-          <div className="hud-pill hop-selector">
-            <button
-              className={`hop-btn ${activeHop === 1 ? 'hop-btn-active' : ''}`}
-              onClick={() => setActiveHop(1)}
-            >
-              1 Hop
-            </button>
-            <button
-              className={`hop-btn ${activeHop === 2 ? 'hop-btn-active' : ''}`}
-              onClick={() => setActiveHop(2)}
-            >
-              2 Hops (Active)
-            </button>
-            <button
-              className={`hop-btn ${activeHop === 3 ? 'hop-btn-active' : ''}`}
-              onClick={() => setActiveHop(3)}
-            >
-              3 Hops
-            </button>
-            <button
-              className={`hop-btn ${activeHop === 'full' ? 'hop-btn-active' : ''}`}
-              onClick={() => setActiveHop('full')}
-            >
-              Full Graph
-            </button>
-          </div>
-
-          {/* Camera / Animation Action Toggles */}
-          <div className="hud-actions">
-            {viewMode === '2d' ? (
-              <>
+            {isOffline && (
+              <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded flex items-center gap-1.5">
+                <span>Sample Mode (Backend Offline)</span>
                 <button
-                  className={`hud-btn ${animRunning2D ? 'hud-btn-active' : ''}`}
-                  onClick={() => setAnimRunning2D(!animRunning2D)}
-                >
-                  <span className="material-symbols-outlined text-sm">
-                    {animRunning2D ? 'pause' : 'play_arrow'}
-                  </span>
-                  <span>{animRunning2D ? 'Pause Float' : 'Resume Float'}</span>
-                </button>
-                <button
-                  className="hud-btn"
                   onClick={() => {
-                    if (selectedNode) {
-                      // Trigger re-center on selected node
-                      setSelectedNode({ ...selectedNode });
-                    }
+                    fastAstApi.getGlobeTopology({ maxNodes: 200 }).then((data) => {
+                      if (data?.nodes?.length) {
+                        setTopology(data);
+                        setSelectedNode(data.nodes[0]);
+                        setIsOffline(false);
+                      }
+                    });
                   }}
+                  className="underline hover:text-white font-semibold cursor-pointer"
+                  title="Retry fetching live topology"
                 >
-                  <span className="material-symbols-outlined text-sm">center_focus_strong</span>
-                  <span>Recenter</span>
+                  Retry
                 </button>
-              </>
-            ) : (
-              <>
-                <button
-                  className={`hud-btn ${autoRotate ? 'hud-btn-active' : ''}`}
-                  onClick={() => controlsRef.current?.toggleOrbit()}
-                >
-                  <span className="material-symbols-outlined text-sm">rotate_right</span>
-                  <span>Auto Orbit</span>
-                </button>
-                <button className="hud-btn" onClick={() => controlsRef.current?.viewPoles()}>
-                  <span className="material-symbols-outlined text-sm">explore</span>
-                  <span>Poles</span>
-                </button>
-                <button className="hud-btn" onClick={() => controlsRef.current?.recenter()}>
-                  <span className="material-symbols-outlined text-sm">center_focus_strong</span>
-                  <span>Recenter</span>
-                </button>
-              </>
+              </span>
             )}
           </div>
-        </div>
 
-        {/* State Preview Switcher Pill */}
-        <div className="state-switcher-container">
-          <div className="state-switcher-pill">
-            <span className="state-label">State Preview:</span>
+          <div className="hud-actions">
             <button
-              className={`state-btn ${previewState === 'populated' ? 'state-btn-active' : ''}`}
-              onClick={() => setPreviewState('populated')}
+              className="hud-btn"
+              onClick={() => setAnimRunning(!animRunning)}
+              title="Toggle edge particle flow animation"
             >
-              <span className="dot dot-cyan" /> Populated
+              <span className="material-symbols-outlined text-sm">{animRunning ? 'pause' : 'play_arrow'}</span>
+              <span>{animRunning ? 'Pause' : 'Play'}</span>
             </button>
-            <button
-              className={`state-btn ${previewState === 'focused' ? 'state-btn-active' : ''}`}
-              onClick={() => {
-                setPreviewState('focused');
-                setActiveHop(1);
-              }}
-            >
-              <span className="dot dot-purple" /> Focused (1-Hop)
-            </button>
-            <button
-              className={`state-btn ${previewState === 'forming' ? 'state-btn-active' : ''}`}
-              onClick={() => setPreviewState('forming')}
-            >
-              <span className="material-symbols-outlined text-xs animate-spin">sync</span> Index Forming
-            </button>
-            <button
-              className={`state-btn ${previewState === 'preindex' ? 'state-btn-active' : ''}`}
-              onClick={() => setPreviewState('preindex')}
-            >
-              <span className="dot dot-red" /> Pre-index
+            <button className="hud-btn" onClick={handleRecenter} title="Recenter graph view">
+              <span className="material-symbols-outlined text-sm">center_focus_strong</span>
+              <span>Recenter</span>
             </button>
           </div>
         </div>
 
-        {/* In-Canvas Floating Quick Action Bar */}
-        <div className="floating-actions-bar">
-          <button
-            className="canvas-action-btn"
-            onClick={() => {
-              if (selectedNode) controlsRef.current?.focusNode(selectedNode);
-            }}
-          >
-            <span className="material-symbols-outlined text-primary text-sm">scatter_plot</span>
-            <span>Expand 1-Hop Neighbors</span>
-          </button>
-          <button
-            className="canvas-action-btn"
-            onClick={() => {
-              if (selectedNode) controlsRef.current?.focusNode(selectedNode);
-            }}
-          >
-            <span className="material-symbols-outlined text-secondary text-sm">my_location</span>
-            <span>Recenter Selected</span>
-          </button>
-          <button className="canvas-action-btn btn-export" onClick={handleCopyBundle}>
-            <span className="material-symbols-outlined text-sm">dataset</span>
-            <span>{copiedBundle ? 'Copied Bundle!' : 'Export Evidence Slice'}</span>
-          </button>
-        </div>
-
-        {/* Floating Spherical Radar / Tilt Readout */}
-        <div className="floating-radar">
-          <div className="radar-circle">
-            <div className="radar-outer" />
-            <div className="radar-dashed" />
-            <div className="radar-center-dot" />
-          </div>
-          <div className="radar-readout">
-            <span className="radar-degrees">{azimuthText}</span>
-            <span className="radar-zoom">Zoom 1.00x • Equator</span>
-          </div>
-        </div>
-
-        {/* Bottom Legend Bar */}
-        <div className="bottom-legend-bar">
-          <div className="legend-group">
-            <span className="legend-title">Nodes:</span>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-cyan" />
-              <span>Function</span>
-            </div>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-purple" />
-              <span>Class</span>
-            </div>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-blue" />
-              <span>Type</span>
-            </div>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-gray" />
-              <span>File</span>
-            </div>
-            <div className="legend-item">
-              <span className="kind-dot kind-dot-emerald" />
-              <span>Community Hub</span>
-            </div>
-          </div>
-
-          <div className="legend-group">
-            <span className="legend-title">Arcs:</span>
-            <div className="legend-item">
-              <span className="arc-line arc-cyan" />
-              <span>CALLS</span>
-            </div>
-            <div className="legend-item">
-              <span className="arc-line arc-dashed" />
-              <span>IMPORTS</span>
-            </div>
-            <div className="legend-item">
-              <span className="arc-line arc-purple" />
-              <span>DEFINES</span>
-            </div>
-            <div className="legend-item">
-              <span className="arc-line arc-dotted" />
-              <span>SIMILAR_TO</span>
-            </div>
-          </div>
+        {/* Bottom Hint */}
+        <div className="canvas-hint">
+          <span className="material-symbols-outlined text-xs text-primary">mouse</span>
+          <span>Click node to focus callers/callees • Drag node to rearrange • Scroll to zoom • Drag background to pan</span>
         </div>
       </main>
 
-      {/* 3. RIGHT INSPECTOR PANEL (SELECTED NODE INSPECTOR - 320px) */}
-      <aside className="globe-right-panel">
+      {/* 3. RIGHT INSPECTOR PANEL: FOCUSED SYMBOL DETAILS */}
+      <aside className="graph2d-right-panel">
         <div className="panel-header">
-          <div className="panel-title-wrap">
-            <span className="material-symbols-outlined text-secondary">travel_explore</span>
-            <span className="panel-title">Spherical Inspector</span>
+          <span className="panel-title">Symbol Inspector</span>
+          <span className="kind-badge uppercase">{selectedNode.kind || 'SYMBOL'}</span>
+        </div>
+
+        <div className="panel-scrollable">
+          {/* Symbol Hero Card */}
+          <div className="inspector-card">
+            <div className="text-sm font-bold font-mono text-white break-all">{selectedNode.name}</div>
+            <div className="text-xs font-mono text-outline mt-1 break-all">
+              {selectedNode.file_path}:{selectedNode.start_line || 1}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 mt-3 pt-3 border-t border-[var(--hairline)]">
+              <div className="stat-box">
+                <span className="stat-label">In-Degree</span>
+                <span className="stat-val text-sky-400 font-mono">{selectedNode.in_degree || callers.length}</span>
+              </div>
+              <div className="stat-box">
+                <span className="stat-label">Out-Degree</span>
+                <span className="stat-val text-purple-400 font-mono">{selectedNode.out_degree || callees.length}</span>
+              </div>
+            </div>
+
+            <div className="mt-3 text-xs flex items-center justify-between text-outline">
+              <span>Subsystem:</span>
+              <span className="font-semibold text-primary">{selectedNode.comm_name || 'Core'}</span>
+            </div>
           </div>
-          <div className="inspector-top-btns">
-            <button className="icon-btn" title="Bookmark">
-              <span className="material-symbols-outlined text-sm">bookmark_border</span>
+
+          {/* Inbound Callers List */}
+          <div className="edge-group-section">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-sky-400">Inbound Callers ({callers.length})</span>
+              <span className="text-[10px] text-outline font-mono">SQLite Edges</span>
+            </div>
+
+            {isLoadingCalls ? (
+              <div className="text-xs text-outline py-2">Loading callers...</div>
+            ) : callers.length > 0 ? (
+              <div className="flex flex-col gap-1.5">
+                {callers.map((c, idx) => {
+                  const cName = c.caller || 'caller';
+                  return (
+                    <div
+                      key={idx}
+                      className="edge-node-row"
+                      onClick={() => {
+                        const target = topology.nodes.find((n) => n.name === cName || n.id === cName);
+                        if (target) {
+                          setSelectedNode(target);
+                          handleRecenter();
+                        } else {
+                          onNavigateToExplore?.(cName, c.file_path);
+                        }
+                      }}
+                      title={`Focus ${cName}`}
+                    >
+                      <div className="truncate">
+                        <span className="text-xs font-mono text-sky-300 font-semibold truncate block">
+                          ← {cName}
+                        </span>
+                        <span className="text-[10px] text-outline truncate block">
+                          {c.file_path ? c.file_path.split('/').pop() : ''}:{c.line_number || 1}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-xs text-outline italic py-1">No inbound callers recorded</div>
+            )}
+          </div>
+
+          {/* Outbound Callees List */}
+          <div className="edge-group-section">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-purple-400">Outbound Callees ({callees.length})</span>
+              <span className="text-[10px] text-outline font-mono">SQLite Edges</span>
+            </div>
+
+            {isLoadingCalls ? (
+              <div className="text-xs text-outline py-2">Loading callees...</div>
+            ) : callees.length > 0 ? (
+              <div className="flex flex-col gap-1.5">
+                {callees.map((c, idx) => {
+                  const cName = c.callee || 'callee';
+                  return (
+                    <div
+                      key={idx}
+                      className="edge-node-row"
+                      onClick={() => {
+                        const target = topology.nodes.find((n) => n.name === cName || n.id === cName);
+                        if (target) {
+                          setSelectedNode(target);
+                          handleRecenter();
+                        } else {
+                          onNavigateToExplore?.(cName, c.file_path);
+                        }
+                      }}
+                      title={`Focus ${cName}`}
+                    >
+                      <div className="truncate">
+                        <span className="text-xs font-mono text-purple-300 font-semibold truncate block">
+                          → {cName}
+                        </span>
+                        <span className="text-[10px] text-outline truncate block">
+                          {c.file_path ? c.file_path.split('/').pop() : ''}:{c.line_number || 1}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-xs text-outline italic py-1">No outbound callees recorded</div>
+            )}
+          </div>
+
+          {/* Imported Dependencies List */}
+          <div className="edge-group-section">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-emerald-400">Imported Dependencies ({imports.length})</span>
+              <span className="text-[10px] text-outline font-mono">Imports Table</span>
+            </div>
+
+            {isLoadingCalls ? (
+              <div className="text-xs text-outline py-2">Loading imports...</div>
+            ) : imports.length > 0 ? (
+              <div className="flex flex-col gap-1.5 max-h-[190px] overflow-y-auto pr-1">
+                {imports.map((imp, idx) => {
+                  const label = imp.name ? `${imp.name} (${imp.module})` : imp.module;
+                  return (
+                    <div
+                      key={idx}
+                      className="edge-node-row edge-node-row-import"
+                      onClick={() => {
+                        const target = topology.nodes.find(
+                          (n) => n.name === (imp.name || imp.module) || n.name === imp.module
+                        );
+                        if (target) {
+                          setSelectedNode(target);
+                          handleRecenter();
+                        } else {
+                          onNavigateToExplore?.(imp.name || imp.module, imp.file_path);
+                        }
+                      }}
+                      title={`Inspect ${label}`}
+                    >
+                      <div className="truncate">
+                        <span className="text-xs font-mono text-emerald-300 font-semibold truncate block">
+                          ⇲ {label}
+                        </span>
+                        <span className="text-[10px] text-outline truncate block">
+                          {imp.file_path ? imp.file_path.split('/').pop() : ''}:{imp.line_number || 1}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-xs text-outline italic py-1">No imports recorded for this symbol</div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div className="mt-auto pt-4 flex flex-col gap-2">
+            <button
+              className="action-btn action-btn-primary"
+              onClick={() => onNavigateToExplore?.(selectedNode.name, selectedNode.file_path)}
+            >
+              <span className="material-symbols-outlined text-sm">code</span>
+              <span>Open in Code Explorer</span>
+            </button>
+
+            <button className="action-btn action-btn-secondary" onClick={handleCopyBundle}>
+              <span className="material-symbols-outlined text-sm">content_copy</span>
+              <span>{copiedBundle ? 'Copied Bundle!' : 'Copy LLM Evidence Bundle'}</span>
             </button>
           </div>
         </div>
-
-        {selectedNode ? (
-          <div className="panel-scrollable">
-            {/* Node Hero Card */}
-            <div className="hero-card">
-              <div className="hero-card-tags">
-                <span className="kind-badge">
-                  {selectedNode.kind.toUpperCase()} • Lines {selectedNode.start_line ?? 1}-
-                  {selectedNode.end_line || ((selectedNode.start_line ?? 1) + 25)}
-                </span>
-                <span className="access-tag">Public Async</span>
-              </div>
-
-              <div className="node-names">
-                <span className="node-symbol-name">{selectedNode.name}</span>
-                <span className="node-file-path">{selectedNode.file_path}</span>
-              </div>
-
-              <div className="metric-grid">
-                <div className="metric-box">
-                  <span className="metric-label">Spherical Pos</span>
-                  <span className="metric-val text-primary font-code">
-                    {(() => {
-                      const pos = getNodePos(selectedNode, 0, topology?.nodes.length || 1, true);
-                      return `${pos.lat > 0 ? `+${pos.lat.toFixed(0)}` : pos.lat.toFixed(0)}° | ${pos.lon.toFixed(0)}°`;
-                    })()}
-                  </span>
-                </div>
-                <div className="metric-box">
-                  <span className="metric-label">Degree Centrality</span>
-                  <span className="metric-val text-tertiary font-code">
-                    {selectedNode.importance} (Top 5%)
-                  </span>
-                </div>
-              </div>
-
-              <div className="arc-count-pill">
-                <span>
-                  In/Out Arcs: <strong>{selectedNode.in_degree ?? 4} in / {selectedNode.out_degree ?? 3} out</strong>
-                </span>
-                <span>
-                  Cluster: <strong className="text-primary">{selectedNode.comm_name}</strong>
-                </span>
-              </div>
-            </div>
-
-            {/* Semantic Intent */}
-            <div className="section-card">
-              <div className="section-card-header">
-                <span className="section-card-title">Semantic Intent</span>
-                <span className="material-symbols-outlined text-xs text-tertiary">psychology</span>
-              </div>
-              <p className="intent-text">
-                {selectedNode.signature ||
-                  `Traverses outgoing AST edge references up to depth hops and computes neighborhood degree weights for semantic ranking in downstream evidence retrieval.`}
-              </p>
-            </div>
-
-            {/* Community Membership Context */}
-            <div className="community-context-card">
-              <div className="comm-ctx-left">
-                <span
-                  className="comm-ctx-dot"
-                  style={{ backgroundColor: selectedNode.comm_color }}
-                />
-                <div className="comm-ctx-text">
-                  <span className="comm-ctx-title">
-                    Community #{selectedNode.comm}: {selectedNode.comm_name}
-                  </span>
-                  <span className="comm-ctx-sub">Equatorial Dense Sector</span>
-                </div>
-              </div>
-              <button
-                className="icon-btn"
-                title="Filter by Community"
-                onClick={() => controlsRef.current?.focusNode(selectedNode)}
-              >
-                <span className="material-symbols-outlined text-sm">filter_center_focus</span>
-              </button>
-            </div>
-
-            {/* Inbound Callers on Planet */}
-            <div className="callers-section">
-              <div className="callers-header">
-                <span>Spherical Inbound Callers ({callers.length})</span>
-                <span className="text-outline">SQLite Edges</span>
-              </div>
-
-              {isLoadingCalls ? (
-                <div className="p-2 text-xs text-outline font-code">Loading callers...</div>
-              ) : callers.length > 0 ? (
-                callers.map((c, idx) => {
-                  const callerName = c.caller || 'caller';
-                  return (
-                    <div
-                      key={idx}
-                      className="caller-item cursor-pointer hover:bg-surface-high transition-colors"
-                      onClick={() => {
-                        const found = topology?.nodes.find((n) => n.name === callerName);
-                        if (found) {
-                          setSelectedNode(found);
-                          controlsRef.current?.focusNode(found);
-                        } else {
-                          onNavigateToExplore?.(callerName, c.file_path);
-                        }
-                      }}
-                      title={`Focus ${callerName} on globe or explore`}
-                    >
-                      <div className="caller-info">
-                        <span className="caller-name text-primary font-code truncate">{callerName}</span>
-                        <span className="caller-sub">
-                          {c.file_path ? c.file_path.split('/').pop() : 'file'}:{c.line_number || 1}
-                        </span>
-                      </div>
-                      <span className="arc-deg-pill">CALLS</span>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="p-2 text-xs text-outline font-code">
-                  No inbound callers recorded in SQLite graph
-                </div>
-              )}
-            </div>
-
-            {/* Outbound Callees */}
-            <div className="callers-section">
-              <div className="callers-header">
-                <span>Spherical Outbound Callees ({callees.length})</span>
-                <span className="text-outline">SQLite Edges</span>
-              </div>
-
-              {isLoadingCalls ? (
-                <div className="p-2 text-xs text-outline font-code">Loading callees...</div>
-              ) : callees.length > 0 ? (
-                callees.map((c, idx) => {
-                  const calleeName = c.callee || 'callee';
-                  return (
-                    <div
-                      key={idx}
-                      className="caller-item cursor-pointer hover:bg-surface-high transition-colors"
-                      onClick={() => {
-                        const found = topology?.nodes.find((n) => n.name === calleeName);
-                        if (found) {
-                          setSelectedNode(found);
-                          controlsRef.current?.focusNode(found);
-                        } else {
-                          onNavigateToExplore?.(calleeName, c.file_path);
-                        }
-                      }}
-                      title={`Focus ${calleeName} on globe or explore`}
-                    >
-                      <div className="caller-info">
-                        <span className="caller-name text-secondary font-code truncate">{calleeName}</span>
-                        <span className="caller-sub">
-                          {c.file_path ? c.file_path.split('/').pop() : 'file'}:{c.line_number || 1}
-                        </span>
-                      </div>
-                      <span className="arc-deg-pill">INVOKES</span>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="p-2 text-xs text-outline font-code">
-                  No outbound invocations recorded in SQLite graph
-                </div>
-              )}
-            </div>
-
-            {/* Primary Action Buttons */}
-            <div className="action-buttons-wrap">
-              <button
-                className="btn-action btn-action-primary"
-                onClick={() => controlsRef.current?.focusNode(selectedNode)}
-              >
-                <span className="material-symbols-outlined text-sm">my_location</span>
-                <span>Center Globe on Node</span>
-              </button>
-
-              <button
-                className="btn-action btn-action-secondary"
-                onClick={() => onNavigateToExplore?.(selectedNode.name, selectedNode.file_path)}
-              >
-                <span className="material-symbols-outlined text-sm text-outline">account_tree</span>
-                <span>Open in Explore Tree</span>
-              </button>
-
-              <button className="btn-action btn-action-copy" onClick={handleCopyBundle}>
-                <span className="material-symbols-outlined text-sm">content_copy</span>
-                <span>{copiedBundle ? 'Copied to Clipboard!' : 'Copy Evidence Bundle (320 tok)'}</span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="empty-inspector">
-            <span className="material-symbols-outlined text-2xl text-outline mb-2">public</span>
-            <span>Click any node on the 3D globe to inspect relationships</span>
-          </div>
-        )}
       </aside>
 
       <style>{`
-        .globe-page-layout {
+        .graph2d-page-layout {
           position: relative;
           width: 100%;
           height: calc(100vh - 56px);
           display: flex;
-          background: var(--surface-lowest);
+          background: #080b11;
+          color: var(--on-surface);
           overflow: hidden;
         }
 
         /* 1. Left Panel */
-        .globe-left-panel {
-          width: 300px;
+        .graph2d-left-panel {
+          width: 280px;
           flex-shrink: 0;
           height: 100%;
           background: var(--surface-low);
@@ -1735,306 +1655,172 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
           display: flex;
           flex-direction: column;
           z-index: 20;
-          box-shadow: 2px 0 16px rgba(0, 0, 0, 0.4);
         }
         .panel-header {
-          height: 44px;
-          padding: 0 14px;
+          height: 48px;
+          padding: 0 16px;
+          border-bottom: 1px solid var(--hairline);
           display: flex;
           align-items: center;
           justify-content: space-between;
           background: var(--surface);
-          border-bottom: 1px solid var(--hairline);
-        }
-        .panel-title-wrap {
-          display: flex;
-          align-items: center;
-          gap: 8px;
+          flex-shrink: 0;
         }
         .panel-title {
-          font-weight: 600;
           font-size: 13px;
-          color: var(--on-surface);
-        }
-        .btn-reset {
-          background: transparent;
-          border: none;
-          color: var(--primary);
-          font-size: 11px;
-          cursor: pointer;
-          font-family: var(--font-body);
-        }
-        .btn-reset:hover {
-          text-decoration: underline;
+          font-weight: 700;
+          letter-spacing: -0.01em;
         }
         .panel-scrollable {
           flex: 1;
           overflow-y: auto;
-          padding: 12px;
+          padding: 14px;
           display: flex;
           flex-direction: column;
-          gap: 14px;
-        }
-        .scope-switcher {
-          display: flex;
-          background: var(--surface-container);
-          padding: 3px;
-          border-radius: 4px;
-          gap: 3px;
-        }
-        .scope-btn {
-          flex: 1;
-          background: transparent;
-          border: none;
-          padding: 5px;
-          border-radius: 3px;
-          color: var(--outline);
-          font-size: 11px;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .scope-btn-active {
-          background: var(--surface-high);
-          color: var(--primary);
-          font-weight: 600;
-          box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+          gap: 16px;
         }
         .filter-section {
           display: flex;
           flex-direction: column;
-          gap: 5px;
-        }
-        .filter-section-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 0 2px 4px;
+          gap: 6px;
         }
         .filter-title {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-        }
-        .filter-meta {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-        }
-        .filter-item {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 5px 8px;
-          border-radius: 4px;
-          background: rgba(30, 31, 38, 0.5);
-          cursor: pointer;
-          transition: background 0.15s;
-        }
-        .filter-item:hover {
-          background: var(--surface-container);
-        }
-        .filter-item-left {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .kind-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          display: inline-block;
-        }
-        .kind-dot-cyan { background: var(--primary); box-shadow: 0 0 6px rgba(56, 189, 248, 0.5); }
-        .kind-dot-purple { background: var(--secondary); border-radius: 2px; }
-        .kind-dot-blue { background: #818cf8; }
-        .kind-dot-gray { background: var(--outline); border-radius: 2px; }
-        .kind-dot-emerald { background: var(--tertiary-light); }
-        .kind-label {
-          font-size: 12px;
-          color: var(--on-surface);
-        }
-        .kind-count {
-          font-family: var(--font-mono);
           font-size: 11px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
           color: var(--outline);
         }
-        .arc-line {
-          width: 14px;
-          height: 2px;
-          display: inline-block;
-        }
-        .arc-cyan { background: var(--primary); }
-        .arc-dashed { border-top: 2px dashed var(--outline); background: transparent; }
-        .arc-purple { background: var(--secondary); }
-        .arc-dotted { border-top: 2px dotted var(--outline); background: transparent; }
 
-        .community-list {
+        /* Search */
+        .search-box {
+          position: relative;
+          display: flex;
+          align-items: center;
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          padding: 6px 8px;
+          gap: 6px;
+        }
+        .search-input {
+          background: transparent;
+          border: none;
+          color: var(--on-surface);
+          font-size: 12px;
+          outline: none;
+          width: 100%;
+        }
+        .clear-btn {
+          color: var(--outline);
+          font-size: 11px;
+          cursor: pointer;
+          background: none;
+          border: none;
+        }
+        .search-dropdown {
+          margin-top: 4px;
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          max-height: 180px;
+          overflow-y: auto;
           display: flex;
           flex-direction: column;
-          gap: 4px;
         }
-        .community-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 6px 8px;
-          border-radius: 4px;
-          background: var(--surface-container);
+        .search-item {
+          padding: 6px 10px;
           cursor: pointer;
+          border-bottom: 1px solid var(--hairline);
+          display: flex;
+          flex-direction: column;
           transition: background 0.15s;
         }
-        .community-row:hover {
+        .search-item:hover {
           background: var(--surface-high);
         }
-        .community-row-left {
+
+        /* Hop Pills */
+        .hop-pill-group {
+          display: flex;
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          padding: 2px;
+          gap: 2px;
+        }
+        .hop-pill {
+          flex: 1;
+          padding: 4px 8px;
+          font-size: 11px;
+          font-weight: 600;
+          border-radius: 4px;
+          background: transparent;
+          border: none;
+          color: var(--outline);
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+        .hop-pill-active {
+          background: var(--primary);
+          color: #080b11;
+        }
+
+        /* Filter Rows */
+        .filter-row {
           display: flex;
           align-items: center;
           gap: 8px;
-          overflow: hidden;
+          font-size: 12px;
+          cursor: pointer;
+          padding: 2px 0;
         }
-        .comm-color-dot {
+        .color-dot {
           width: 8px;
           height: 8px;
           border-radius: 50%;
           flex-shrink: 0;
         }
-        .comm-name {
-          font-size: 12px;
+        .filter-label {
+          flex: 1;
           color: var(--on-surface);
         }
-        .comm-sym-count {
+        .filter-count {
           font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
+          font-size: 11px;
         }
 
-        .projection-controls {
-          margin-top: auto;
-          background: var(--surface-container);
-          padding: 10px;
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .slider-row {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .slider-label {
-          display: flex;
-          justify-content: space-between;
-          font-size: 11px;
-          color: var(--outline);
-        }
-        .slider-input {
-          width: 100%;
-          height: 4px;
-          accent-color: var(--primary);
-        }
-        .toggle-row {
+        /* Community rows */
+        .community-item {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding-top: 4px;
-        }
-        .toggle-label {
-          font-size: 12px;
-          color: var(--on-surface);
-        }
-        .glow-toggle {
-          width: 32px;
-          height: 18px;
-          border-radius: 9px;
-          background: var(--surface-high);
-          border: none;
+          padding: 5px 8px;
+          border-radius: 4px;
+          background: var(--surface);
           cursor: pointer;
-          position: relative;
-          transition: background 0.2s;
+          transition: background 0.15s;
         }
-        .glow-toggle-on {
-          background: var(--primary);
-        }
-        .glow-knob {
-          width: 14px;
-          height: 14px;
-          border-radius: 50%;
-          background: var(--surface-lowest);
-          position: absolute;
-          top: 2px;
-          left: 2px;
-          transition: transform 0.2s;
-        }
-        .glow-toggle-on .glow-knob {
-          transform: translateX(14px);
+        .community-item:hover {
+          background: var(--surface-high);
         }
 
-        /* 2. Center Viewport */
-        .globe-viewport {
-          flex: 1;
+        /* 2. Center Canvas Viewport */
+        .graph2d-viewport {
           position: relative;
+          flex: 1;
           height: 100%;
+          background: #080b11;
           overflow: hidden;
-          background: var(--surface-lowest);
         }
-        .cosmic-grid-overlay {
-          position: absolute;
-          inset: 0;
-          pointer-events: none;
-          opacity: 0.18;
-          background-image: radial-gradient(#38bdf8 1px, transparent 1px);
-          background-size: 24px 24px;
-        }
-        .threejs-canvas-wrapper {
-          position: absolute;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-        }
-        .graph-2d-container {
-          position: absolute;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-          overflow: hidden;
-          background: rgba(10, 14, 20, 0.4);
-        }
-        .graph-2d-canvas {
+        .graph2d-canvas {
           position: absolute;
           inset: 0;
           width: 100%;
           height: 100%;
           touch-action: none;
         }
-        .graph-2d-hint {
-          position: absolute;
-          bottom: 46px;
-          left: 18px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 6px 14px;
-          background: rgba(15, 23, 42, 0.85);
-          border: 1px solid var(--hairline);
-          border-radius: 6px;
-          font-size: 11px;
-          color: var(--on-surface-variant);
-          backdrop-filter: blur(10px);
-          z-index: 10;
-          pointer-events: none;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-        }
-        .view-mode-switcher {
-          border: 1px solid rgba(56, 189, 248, 0.4) !important;
-          background: rgba(56, 189, 248, 0.08) !important;
-          box-shadow: 0 0 16px rgba(56, 189, 248, 0.15);
-        }
-
-        .top-hud-bar {
+        .canvas-hud {
           position: absolute;
           top: 14px;
           left: 18px;
@@ -2045,296 +1831,60 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
           pointer-events: none;
           z-index: 10;
         }
-        .hud-pill {
+        .hud-metric-pill {
           pointer-events: auto;
           display: flex;
           align-items: center;
-          gap: 12px;
+          gap: 8px;
           padding: 6px 14px;
-          border-radius: 8px;
-          background: rgba(30, 31, 38, 0.85);
-          backdrop-filter: blur(12px);
+          background: rgba(15, 23, 42, 0.85);
           border: 1px solid var(--hairline);
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-        }
-        .live-ping {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .ping-dot {
-          width: 7px;
-          height: 7px;
-          border-radius: 50%;
-          background: var(--tertiary-light);
-          box-shadow: 0 0 8px var(--tertiary-light);
-          animation: pulseGlow 1.8s infinite;
-        }
-        .hud-heading {
-          font-weight: 600;
-          font-size: 13px;
-          color: var(--on-surface);
-        }
-        .hud-sub {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
-        }
-        .louvain-badge {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          padding: 2px 6px;
-          border-radius: 4px;
-          background: rgba(16, 185, 129, 0.15);
-          color: var(--tertiary-light);
-          font-weight: 600;
-        }
-        .hop-selector {
-          gap: 4px;
-          padding: 3px 6px;
-        }
-        .hop-btn {
-          background: transparent;
-          border: none;
-          padding: 4px 10px;
-          border-radius: 4px;
-          font-size: 11px;
-          color: var(--outline);
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .hop-btn-active {
-          background: var(--primary);
-          color: var(--surface-lowest);
-          font-weight: 600;
+          border-radius: 20px;
+          backdrop-filter: blur(8px);
         }
         .hud-actions {
           pointer-events: auto;
           display: flex;
-          gap: 4px;
-          background: rgba(30, 31, 38, 0.85);
-          backdrop-filter: blur(12px);
-          padding: 3px 6px;
-          border-radius: 8px;
-          border: 1px solid var(--hairline);
+          align-items: center;
+          gap: 6px;
         }
         .hud-btn {
           display: flex;
           align-items: center;
-          gap: 4px;
-          background: transparent;
-          border: none;
-          padding: 4px 8px;
-          border-radius: 4px;
-          color: var(--outline);
-          font-size: 11px;
+          gap: 6px;
+          padding: 6px 12px;
+          background: rgba(15, 23, 42, 0.85);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          color: var(--on-surface);
+          font-size: 12px;
           cursor: pointer;
-          transition: all 0.15s;
+          backdrop-filter: blur(8px);
+          transition: background 0.15s;
         }
         .hud-btn:hover {
-          color: var(--on-surface);
           background: var(--surface-high);
         }
-        .hud-btn-active {
-          background: var(--surface-high);
-          color: var(--primary);
-        }
-
-        .state-switcher-container {
+        .canvas-hint {
           position: absolute;
-          top: 64px;
-          left: 0;
-          right: 0;
+          bottom: 14px;
+          left: 18px;
           display: flex;
-          justify-content: center;
+          align-items: center;
+          gap: 6px;
+          padding: 5px 12px;
+          background: rgba(15, 23, 42, 0.85);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          font-size: 11px;
+          color: var(--outline);
+          backdrop-filter: blur(8px);
           pointer-events: none;
           z-index: 10;
         }
-        .state-switcher-pill {
-          pointer-events: auto;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 12px;
-          border-radius: 20px;
-          background: rgba(40, 42, 48, 0.9);
-          backdrop-filter: blur(12px);
-          border: 1px solid var(--hairline);
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-        }
-        .state-label {
-          font-size: 10px;
-          font-family: var(--font-mono);
-          color: var(--outline);
-          text-transform: uppercase;
-        }
-        .state-btn {
-          display: flex;
-          align-items: center;
-          gap: 5px;
-          background: transparent;
-          border: none;
-          padding: 3px 8px;
-          border-radius: 12px;
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .state-btn-active {
-          background: rgba(56, 189, 248, 0.2);
-          color: var(--primary);
-          font-weight: 500;
-        }
-        .dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-        }
-        .dot-cyan { background: var(--primary); }
-        .dot-purple { background: var(--secondary); }
-        .dot-red { background: var(--error); }
-
-        .floating-actions-bar {
-          position: absolute;
-          bottom: 50px;
-          left: 50%;
-          transform: translateX(-50%);
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 6px;
-          background: rgba(40, 42, 48, 0.95);
-          backdrop-filter: blur(16px);
-          border-radius: 8px;
-          border: 1px solid var(--hairline);
-          box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
-          z-index: 10;
-        }
-        .canvas-action-btn {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          background: var(--surface-container);
-          border: 1px solid var(--hairline);
-          color: var(--on-surface);
-          padding: 5px 12px;
-          border-radius: 4px;
-          font-size: 11.5px;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .canvas-action-btn:hover {
-          background: var(--surface-bright);
-          color: #fff;
-        }
-        .btn-export {
-          background: var(--primary);
-          color: var(--surface-lowest);
-          font-weight: 600;
-          border-color: transparent;
-        }
-        .btn-export:hover {
-          background: var(--primary-light);
-          color: var(--surface-lowest);
-        }
-
-        .floating-radar {
-          position: absolute;
-          bottom: 50px;
-          right: 20px;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          padding: 8px 12px;
-          border-radius: 8px;
-          background: rgba(30, 31, 38, 0.9);
-          backdrop-filter: blur(12px);
-          border: 1px solid var(--hairline);
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-          z-index: 10;
-        }
-        .radar-circle {
-          position: relative;
-          width: 32px;
-          height: 32px;
-          border-radius: 50%;
-          background: var(--surface-lowest);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        .radar-outer {
-          position: absolute;
-          inset: 0;
-          border-radius: 50%;
-          border: 1px solid rgba(56, 189, 248, 0.3);
-        }
-        .radar-dashed {
-          width: 20px;
-          height: 20px;
-          border-radius: 50%;
-          border: 1px dashed rgba(135, 146, 154, 0.4);
-        }
-        .radar-center-dot {
-          width: 5px;
-          height: 5px;
-          border-radius: 50%;
-          background: var(--primary);
-          box-shadow: 0 0 6px var(--primary);
-        }
-        .radar-readout {
-          display: flex;
-          flex-direction: column;
-        }
-        .radar-degrees {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--on-surface);
-        }
-        .radar-zoom {
-          font-size: 10px;
-          color: var(--outline);
-        }
-
-        .bottom-legend-bar {
-          position: absolute;
-          bottom: 0;
-          left: 0;
-          right: 0;
-          height: 36px;
-          background: rgba(30, 31, 38, 0.92);
-          backdrop-filter: blur(12px);
-          border-top: 1px solid var(--hairline);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 0 20px;
-          z-index: 10;
-        }
-        .legend-group {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-        }
-        .legend-title {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          text-transform: uppercase;
-        }
-        .legend-item {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 11px;
-          color: var(--on-surface);
-        }
 
         /* 3. Right Inspector Panel */
-        .globe-right-panel {
+        .graph2d-right-panel {
           width: 320px;
           flex-shrink: 0;
           height: 100%;
@@ -2343,277 +1893,89 @@ export const GlobePage: React.FC<GlobePageProps> = ({ onNavigateToExplore }) => 
           display: flex;
           flex-direction: column;
           z-index: 20;
-          box-shadow: -2px 0 16px rgba(0, 0, 0, 0.4);
-        }
-        .inspector-top-btns {
-          display: flex;
-          gap: 4px;
-        }
-        .icon-btn {
-          background: transparent;
-          border: none;
-          color: var(--outline);
-          padding: 4px;
-          border-radius: 4px;
-          cursor: pointer;
-        }
-        .icon-btn:hover {
-          color: var(--on-surface);
-          background: var(--surface-high);
-        }
-
-        .hero-card {
-          background: var(--surface-container);
-          padding: 12px;
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .hero-card-tags {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
         }
         .kind-badge {
           font-family: var(--font-mono);
           font-size: 10px;
-          background: rgba(56, 189, 248, 0.12);
-          color: var(--primary);
-          padding: 2px 6px;
-          border-radius: 3px;
           font-weight: 600;
+          padding: 2px 6px;
+          border-radius: 4px;
+          background: rgba(56, 189, 248, 0.15);
+          color: #38bdf8;
+          border: 1px solid rgba(56, 189, 248, 0.3);
         }
-        .access-tag {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--tertiary-light);
+        .inspector-card {
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 8px;
+          padding: 12px;
         }
-        .node-names {
+        .stat-box {
           display: flex;
           flex-direction: column;
           gap: 2px;
         }
-        .node-symbol-name {
+        .stat-label {
+          font-size: 10px;
+          text-transform: uppercase;
+          color: var(--outline);
+        }
+        .stat-val {
           font-size: 14px;
           font-weight: 700;
-          color: var(--on-surface);
-          word-break: break-all;
         }
-        .node-file-path {
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
+        .edge-group-section {
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 8px;
+          padding: 12px;
         }
-        .metric-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 6px;
-          padding-top: 4px;
-        }
-        .metric-box {
+        .edge-node-row {
+          padding: 6px 8px;
+          border-radius: 4px;
           background: var(--surface-lowest);
-          padding: 6px 8px;
-          border-radius: 4px;
           border: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-        .metric-label {
-          font-size: 9px;
-          color: var(--outline);
-          text-transform: uppercase;
-        }
-        .metric-val {
-          font-size: 11px;
-          font-weight: 600;
-        }
-        .arc-count-pill {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 6px 8px;
-          border-radius: 4px;
-          background: var(--surface-low);
-          font-family: var(--font-mono);
-          font-size: 11px;
-          color: var(--outline);
-        }
-
-        .section-card {
-          background: var(--surface-container);
-          padding: 10px 12px;
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .section-card-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-        .section-card-title {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-        }
-        .intent-text {
-          margin: 0;
-          font-size: 12px;
-          line-height: 1.5;
-          color: var(--on-surface-variant);
-        }
-
-        .community-context-card {
-          background: rgba(30, 31, 38, 0.7);
-          padding: 8px 10px;
-          border-radius: 6px;
-          border: 1px solid var(--hairline);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-        .comm-ctx-left {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .comm-ctx-dot {
-          width: 10px;
-          height: 10px;
-          border-radius: 50%;
-          box-shadow: 0 0 6px rgba(56, 189, 248, 0.5);
-        }
-        .comm-ctx-text {
-          display: flex;
-          flex-direction: column;
-        }
-        .comm-ctx-title {
-          font-size: 11.5px;
-          font-weight: 500;
-          color: var(--on-surface);
-        }
-        .comm-ctx-sub {
-          font-size: 10px;
-          color: var(--outline);
-        }
-
-        .callers-section {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .callers-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          font-family: var(--font-mono);
-          font-size: 10px;
-          color: var(--outline);
-          text-transform: uppercase;
-          padding: 0 2px;
-        }
-        .caller-item {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 6px 8px;
-          border-radius: 4px;
-          background: var(--surface-container);
-          cursor: pointer;
-          transition: background 0.15s;
-        }
-        .caller-item:hover {
-          background: var(--surface-high);
-        }
-        .caller-info {
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-          padding-right: 6px;
-        }
-        .caller-name {
-          font-size: 11.5px;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .caller-sub {
-          font-size: 10px;
-          color: var(--outline);
-        }
-        .arc-deg-pill {
-          font-family: var(--font-mono);
-          font-size: 10px;
-          background: var(--surface-lowest);
-          color: var(--on-surface);
-          padding: 2px 6px;
-          border-radius: 3px;
-          border: 1px solid var(--hairline);
-        }
-
-        .action-buttons-wrap {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-          margin-top: auto;
-          padding-top: 8px;
-        }
-        .btn-action {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
-          padding: 8px 12px;
-          border-radius: 4px;
-          font-size: 12px;
-          font-weight: 600;
           cursor: pointer;
           transition: all 0.15s;
         }
-        .btn-action-primary {
-          background: var(--primary);
-          color: var(--surface-lowest);
-          border: 1px solid transparent;
-        }
-        .btn-action-primary:hover {
-          background: var(--primary-light);
-          box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
-        }
-        .btn-action-secondary {
-          background: var(--surface-container);
-          border: 1px solid var(--hairline);
-          color: var(--on-surface);
-        }
-        .btn-action-secondary:hover {
+        .edge-node-row:hover {
           background: var(--surface-high);
+          border-color: rgba(56, 189, 248, 0.4);
         }
-        .btn-action-copy {
-          background: var(--secondary-container);
-          border: 1px solid rgba(168, 85, 247, 0.3);
-          color: var(--secondary-light);
+        .edge-node-row-import:hover {
+          background: rgba(16, 185, 129, 0.08);
+          border-color: rgba(16, 185, 129, 0.4);
         }
-        .btn-action-copy:hover {
-          background: rgba(168, 85, 247, 0.25);
-        }
-
-        .empty-inspector {
-          flex: 1;
+        .action-btn {
           display: flex;
-          flex-direction: column;
           align-items: center;
           justify-content: center;
-          color: var(--outline);
-          text-align: center;
-          padding: 20px;
+          gap: 8px;
+          padding: 9px 12px;
+          border-radius: 6px;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          border: none;
+          transition: all 0.15s;
+        }
+        .action-btn-primary {
+          background: var(--primary);
+          color: #080b11;
+        }
+        .action-btn-primary:hover {
+          filter: brightness(1.1);
+        }
+        .action-btn-secondary {
+          background: var(--surface);
+          color: var(--on-surface);
+          border: 1px solid var(--hairline);
+        }
+        .action-btn-secondary:hover {
+          background: var(--surface-high);
         }
       `}</style>
     </div>
   );
 };
+

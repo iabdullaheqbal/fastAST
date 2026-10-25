@@ -119,9 +119,17 @@ html, body {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 0.15s, background 0.15s;
 }
-.api-retry-btn:hover {
+.api-retry-btn:hover:not(:disabled) {
   opacity: 0.9;
+}
+.api-retry-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 @keyframes spin {

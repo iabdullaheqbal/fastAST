@@ -9,6 +9,7 @@ interface AppHeaderProps {
   onReindex: () => void;
   onRetryConnection: () => void;
   isReindexing: boolean;
+  isRetrying?: boolean;
 }
 
 export const AppHeader: React.FC<AppHeaderProps> = ({
@@ -19,6 +20,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   onReindex,
   onRetryConnection,
   isReindexing,
+  isRetrying = false,
 }) => {
   const [searchValue, setSearchValue] = useState('');
 
@@ -48,8 +50,8 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           <span className="material-symbols-outlined text-xs text-outline">folder_code</span>
           <span className="repo-name">{repoName}</span>
           <span
-            className={`status-pill ${isOnline ? 'status-pill-online' : 'status-pill-offline'}`}
-            onClick={!isOnline ? onRetryConnection : undefined}
+            className={`status-pill ${isOnline ? 'status-pill-online' : 'status-pill-offline'} ${isRetrying ? 'opacity-70 pointer-events-none' : ''}`}
+            onClick={!isOnline && !isRetrying ? onRetryConnection : undefined}
             title={
               isOnline
                 ? `Connected to ${health?.db_path || '.fastast.db'}`
@@ -57,7 +59,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
             }
           >
             <span className={`status-dot ${isOnline ? 'dot-online' : 'dot-offline'}`} />
-            {isOnline ? 'API :4200' : 'API Offline'}
+            {isOnline ? 'API :4200' : isRetrying ? 'Connecting...' : 'API Offline • Retry'}
           </span>
         </div>
       </div>
@@ -106,9 +108,16 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
             </div>
           </div>
         ) : (
-          <button className="header-btn header-btn-error" onClick={onRetryConnection}>
-            <span className="material-symbols-outlined text-sm">sync_problem</span>
-            <span>Reconnect API</span>
+          <button
+            className="header-btn header-btn-error"
+            onClick={onRetryConnection}
+            disabled={isRetrying}
+            title="Attempt to reconnect to FastAST API server"
+          >
+            <span className={`material-symbols-outlined text-sm ${isRetrying ? 'animate-spin' : ''}`}>
+              {isRetrying ? 'sync' : 'sync_problem'}
+            </span>
+            <span>{isRetrying ? 'Connecting...' : 'Retry Connection'}</span>
           </button>
         )}
 

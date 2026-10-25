@@ -19,9 +19,9 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ stats, health, apiError 
     {
       to: '/globe',
       icon: 'hub',
-      label: 'Code Graph',
-      badge: '2D / 3D',
-      sub: 'Interactive 2D & 3D Graph',
+      label: '2D Code Graph',
+      badge: symbolCount !== undefined ? String(symbolCount) : undefined,
+      sub: 'Call Graph & Dependencies',
     },
     {
       to: '/explore',
