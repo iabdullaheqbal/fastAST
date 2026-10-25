@@ -18,11 +18,15 @@ Exposes live SQLite codebase memory endpoints on port 4200 with CORS enabled:
 """
 
 import datetime
+import errno
 import json
 import math
+import os
+import socket
 import sqlite3
+import sys
 import urllib.parse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -1066,13 +1070,76 @@ def _generate_galaxy_topology(
     }
 
 
+class FastASTHTTPServer(ThreadingHTTPServer):
+    """Multi-threaded HTTP server allowing immediate socket address reuse (SO_REUSEADDR)."""
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 def run_api_server(port: int = 4200, host: str = "127.0.0.1") -> None:
-    server = HTTPServer((host, port), FastASTAPIHandler)
+    server = None
+    try:
+        server = FastASTHTTPServer((host, port), FastASTAPIHandler)
+    except OSError as err:
+        if err.errno == errno.EADDRINUSE:
+            # Check if an existing FastAST API instance is already healthy on this port
+            try:
+                import urllib.request
+                with urllib.request.urlopen(f"http://{host}:{port}/api/health", timeout=1.5) as resp:
+                    if resp.status == 200:
+                        print(f"FastAST API Server is already running and healthy at http://{host}:{port}")
+                        # Keep process alive to prevent launcher script failures
+                        while True:
+                            import time
+                            time.sleep(2)
+            except Exception:
+                pass
+
+            # Try to reclaim port if held by a stale process
+            import subprocess
+            reclaimed = False
+            try:
+                res = subprocess.run(["fuser", "-k", "-9", f"{port}/tcp"], capture_output=True, timeout=2)
+                if res.returncode == 0:
+                    reclaimed = True
+            except Exception:
+                try:
+                    pids = subprocess.check_output(["lsof", "-ti", f":{port}"], timeout=2).decode().split()
+                    for pid in pids:
+                        subprocess.run(["kill", "-9", pid], capture_output=True)
+                    reclaimed = bool(pids)
+                except Exception:
+                    pass
+
+            if reclaimed:
+                import time
+                time.sleep(0.5)
+                try:
+                    server = FastASTHTTPServer((host, port), FastASTAPIHandler)
+                    print(f"Reclaimed port {port} from stale process.")
+                except Exception:
+                    reclaimed = False
+
+            if not reclaimed:
+                print(
+                    f"\n[FastAST Error] Port {port} on {host} is already in use by another process.\n"
+                    f"To free port {port}, run:\n"
+                    f"  lsof -ti :{port} | xargs kill -9 2>/dev/null || fuser -k {port}/tcp\n"
+                    f"Or specify an alternative port:\n"
+                    f"  python -m fastast.cli serve --port 4201\n",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            raise
+
     print(f"FastAST API Server listening on http://{host}:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down FastAST API Server.")
+    finally:
         server.server_close()
 
 

@@ -30,9 +30,23 @@ cleanup() {
     if [ -n "$API_PID" ]; then
         kill "$API_PID" 2>/dev/null || true
     fi
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -ti :4200 | xargs kill -9 2>/dev/null || true
+    fi
     exit 0
 }
-trap cleanup SIGINT SIGTERM
+trap cleanup SIGINT SIGTERM EXIT
+
+# Clean up any stale process on port 4200 before starting
+if command -v lsof >/dev/null 2>&1 && lsof -ti :4200 >/dev/null 2>&1; then
+    echo "Port 4200 is currently in use. Cleaning up stale process..."
+    lsof -ti :4200 | xargs kill -9 2>/dev/null || true
+    sleep 0.5
+elif command -v fuser >/dev/null 2>&1 && fuser 4200/tcp >/dev/null 2>&1; then
+    echo "Port 4200 is currently in use. Cleaning up stale process..."
+    fuser -k 4200/tcp 2>/dev/null || true
+    sleep 0.5
+fi
 
 # 1. Start FastAST HTTP API Server on port 4200
 echo "Starting FastAST API Server on http://127.0.0.1:4200..."
