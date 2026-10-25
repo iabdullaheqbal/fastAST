@@ -27,20 +27,11 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Windsurf**, **Co
 
 ---
 
-## Token Efficiency: 85% to 95% Prompt Reduction
+## Token Efficiency
 
 When AI coding agents investigate bugs or explore repositories without FastAST, they typically read entire files (`cat`/`read_file`) or dump wide `grep` matches into context. This exhausts token limits, inflates API bills, and causes "lost in the middle" hallucinations.
 
 FastAST replaces raw file ingestion with **AST-bounded symbol slices** and **precomputed 1-hop graph neighborhoods**, enforcing strict programmatic budgets (`max_tokens: 1024` or `2048`).
-
-### Quantitative Benchmark
-
-| Operation | Traditional Agent (Whole Files & Grep) | FastAST (AST Slices & Graph Bundles) | Token Reduction |
-| :--- | :--- | :--- | :--- |
-| **Inspect a function & its callers** | Reads 3–6 full calling files (~15,000 – 35,000 tokens) | AST symbol slice + 1-hop caller list (~600 – 1,200 tokens) | **~94%** |
-| **Understand file architecture** | Dumps full 500–1,500 line file (~4,000 – 12,000 tokens) | `get_file_outline` skeleton signatures (~200 – 450 tokens) | **~96%** |
-| **Feature / Bug Context Gathering** | Multi-file regex grep + reading surrounding code (~40,000 – 80,000 tokens) | Hybrid BM25 + Graph `build_evidence_bundle` clamped to budget (1,024 – 2,048 tokens) | **~95%** |
-| **10-Turn Agent Session** | **~400,000 – 800,000 tokens** | **~15,000 – 35,000 tokens** | **~95% (~500k+ saved)** |
 
 <p align="center">
   <img src="docs/assets/evidence_view.svg" alt="FastAST Token-Bounded Retrieval vs Traditional File Dumps" width="100%" />
@@ -306,3 +297,9 @@ python3 -m fastast.cli doctor
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
+
+---
+
+## Disclaimer
+
+This project was developed as part of the [Devpost Build with AI: Basics](https://build-with-ai-basics.devpost.com/) hackathon and was built with the assistance of AI .

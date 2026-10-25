@@ -6,10 +6,8 @@ dist/
 wheels/
 *.egg-info
 *.so
-#rigour
-.rigour
-rigour-fix-packet.json
-rigour-report.json
+
+
 # Virtual environments
 .venv
 /.bin/
