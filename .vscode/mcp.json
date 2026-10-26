@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "fastast": {
+      "command": "fastast-mcp",
+      "args": ["--transport", "stdio"]
+    }
+  }
+}
+

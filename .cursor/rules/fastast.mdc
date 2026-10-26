@@ -1,0 +1,18 @@
+---
+description: FastAST Codebase Memory & Navigation Rules
+globs: *
+alwaysApply: true
+---
+
+# FastAST Codebase Memory & Navigation Directives
+
+You have access to FastAST MCP tools (`fastast_*`) powered by compiled Rust Tree-Sitter grammars and a local SQLite symbol graph (`.fastast.db`).
+
+Always follow these rules:
+
+1. **Avoid Dumping Large Files:** Do NOT run grep, find, or cat across whole source files.
+2. **Search Symbols First:** Use `fastast_search_symbols` to locate functions, classes, and types by name.
+3. **Token-Bounded Evidence:** Use `fastast_get_evidence` to gather relevant code slices across multiple files within token limits.
+4. **Inspect Structure:** Use `fastast_file_outline` to inspect a file's structure and method signatures in ~300 tokens before editing.
+5. **Trace Call Graph:** Before refactoring or modifying a function, call `fastast_graph_neighbors` to inspect all callers, callees, and dependencies.
+
