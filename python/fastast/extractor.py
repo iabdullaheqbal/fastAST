@@ -5,11 +5,13 @@ extracting only meaningful facts (declarations, imports, and calls) into
 SymbolRecords and EdgeRecords ready for the graph layer.
 """
 
+from __future__ import annotations
+
 import ast
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 try:
     from fastast._core import ExtractedCall, ExtractedImport, index_code

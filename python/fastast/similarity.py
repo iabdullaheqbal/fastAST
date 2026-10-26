@@ -8,6 +8,8 @@ Provides:
 5. index_similarity: Runs MinHash + LSH over indexed symbols in SQLite and persists results.
 """
 
+from __future__ import annotations
+
 import hashlib
 import re
 import sqlite3

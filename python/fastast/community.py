@@ -6,6 +6,8 @@ Provides:
 3. detect_and_store_communities: Runs community detection on SQLite symbol graph and stores results.
 """
 
+from __future__ import annotations
+
 from collections import Counter, defaultdict
 import os
 from pathlib import Path

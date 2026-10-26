@@ -4,6 +4,8 @@ Handles repository file discovery, multi-layer ignore rules (.gitignore, .fastas
 hardcoded), content hashing (xxHash3 / BLAKE2b), language detection, and file classification.
 """
 
+from __future__ import annotations
+
 import hashlib
 import os
 import re

@@ -1,5 +1,7 @@
 """Configuration, environment overrides, path validation, and security boundaries for FastAST."""
 
+from __future__ import annotations
+
 from dataclasses import asdict, dataclass
 import json
 import logging

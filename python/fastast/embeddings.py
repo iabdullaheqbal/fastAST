@@ -10,6 +10,8 @@ Provides a pluggable embedding architecture:
 5. CustomEmbeddingProvider: Allows user-defined embedding functions.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 import hashlib
 import math

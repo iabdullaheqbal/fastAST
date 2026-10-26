@@ -5,6 +5,8 @@ pruning ambiguous relations, noise, and low-confidence edges, and providing
 fast bidirectional lookups and bounded multi-hop neighborhood traversals.
 """
 
+from __future__ import annotations
+
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path

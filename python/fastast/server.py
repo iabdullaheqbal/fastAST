@@ -4,6 +4,8 @@ Provides a comprehensive, standardized tool suite for AI coding agents
 (Claude Code, Cursor, Windsurf, SWE-bench) over stdio JSON-RPC 2.0.
 """
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union

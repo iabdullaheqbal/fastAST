@@ -1,10 +1,12 @@
 """SQLite database schema and access layer for FastAST symbol graph."""
 
+from __future__ import annotations
+
 import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from fastast.config import get_logger
 from fastast.model import (

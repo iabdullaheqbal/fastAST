@@ -9,6 +9,8 @@ EdgeRecord graph:
 - Structured EvidenceBundle assembly for AI coding agents
 """
 
+from __future__ import annotations
+
 import re
 import sqlite3
 from dataclasses import dataclass, field

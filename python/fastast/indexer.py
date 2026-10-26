@@ -10,6 +10,8 @@ Production-grade, end-to-end repository indexing pipeline for FastAST:
 - Integrated CLI and MCP server support
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import sqlite3

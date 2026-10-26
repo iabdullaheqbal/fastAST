@@ -1,11 +1,13 @@
 """Production diagnostics, health checks, and repair utilities for FastAST repositories."""
 
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from fastast.config import get_logger, load_config
 from fastast.db import (

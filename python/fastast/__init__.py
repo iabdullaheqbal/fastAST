@@ -78,11 +78,7 @@ from fastast.watcher import (
     RepositoryWatcher,
 )
 
-__version__ = "0.2.0"
-
-_logger = logging.getLogger("fastast")
-
-import logging
+__version__ = "0.2.1"
 
 _logger = logging.getLogger("fastast")
 

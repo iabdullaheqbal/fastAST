@@ -1,5 +1,7 @@
 """Inter-process repository locking and concurrency protection for FastAST."""
 
+from __future__ import annotations
+
 import json
 import os
 import socket
