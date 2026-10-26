@@ -40,7 +40,8 @@ class RepositoryWatcher:
     ):
         self.repo_path = Path(repo_path).resolve()
         self.config = load_config(self.repo_path)
-        self.db_path = (self.repo_path / db_name).resolve()
+        from fastast.config import get_db_path
+        self.db_path = get_db_path(self.repo_path, db_name=db_name)
         self.poll_interval = max(0.1, poll_interval)
 
         d_ms = debounce_ms if debounce_ms is not None else self.config.watch_debounce_ms

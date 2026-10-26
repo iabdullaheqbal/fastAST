@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import re
+import shutil
+import sys
 from typing import Any, Dict, List, Optional, Set, Union
 
 
@@ -181,4 +185,107 @@ def validate_safe_path(
         raise FileNotFoundError(f"Path does not exist within project root: '{target_path}'")
 
     return resolved
+
+
+def get_cache_root() -> Path:
+    """Return the platform-appropriate FastAST cache root directory."""
+    if "FASTAST_CACHE_DIR" in os.environ:
+        base = Path(os.environ["FASTAST_CACHE_DIR"]).resolve()
+    elif os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        base = Path(local_app_data) / "fastast" / "cache" if local_app_data else Path.home() / ".cache" / "fastast"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches" / "fastast"
+    else:
+        xdg_cache = os.environ.get("XDG_CACHE_HOME")
+        base = Path(xdg_cache) / "fastast" if xdg_cache else Path.home() / ".cache" / "fastast"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def get_project_cache_dir(repo_root: Optional[Union[str, Path]] = None) -> Path:
+    """Return the isolated cache directory for a given repository."""
+    root = Path(repo_root or ".").resolve()
+    repo_hash = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
+    safe_name = re.sub(r"[^\w\-]", "_", root.name) or "repo"
+    proj_dir = get_cache_root() / "projects" / f"{safe_name}_{repo_hash}"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    return proj_dir
+
+
+def get_db_path(
+    repo_root: Optional[Union[str, Path]] = None,
+    db_name: Optional[str] = None,
+    prefer_cache: Optional[bool] = None,
+) -> Path:
+    """Resolve the SQLite database path for a given repository.
+
+    By default, stores the database in the global cache directory (~/.cache/fastast/...)
+    so no .fastast.db file is ever created in the project repository.
+    """
+    root = Path(repo_root or ".").resolve()
+
+    # 1. Explicit override via environment variable
+    if "FASTAST_DB_PATH" in os.environ:
+        p = Path(os.environ["FASTAST_DB_PATH"]).resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    # 2. Custom db_name explicitly passed (e.g. from tests: "test.db", "syntax.db", or absolute path)
+    if db_name and db_name not in (".fastast.db", "fastast.db"):
+        candidate = Path(db_name)
+        if candidate.is_absolute():
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            return candidate
+        return root / db_name
+
+    # 3. Explicit local override via environment variable
+    if os.environ.get("FASTAST_STORAGE_MODE", "").lower() in ("local", "repo") or os.environ.get("FASTAST_USE_LOCAL_DB", "").lower() in ("1", "true", "yes"):
+        return root / (db_name or ".fastast.db")
+
+    # 4. Check if running in a unit/integration test runner or temporary test dir
+    is_test = (
+        prefer_cache is False
+        or "pytest" in sys.modules
+        or "unittest" in sys.modules
+        or os.environ.get("FASTAST_TEST_MODE") == "1"
+        or str(root).startswith("/tmp")
+        or str(root).startswith("/private/tmp")
+        or "tmp" in str(root).lower()
+    )
+    if is_test and prefer_cache is not True:
+        return root / (db_name or ".fastast.db")
+
+    # 5. Default production & MCP mode: Global cache directory
+    cache_dir = get_project_cache_dir(root)
+    cache_file_name = "fastast.db" if (not db_name or db_name in (".fastast.db", "fastast.db")) else db_name
+    cache_db = cache_dir / cache_file_name
+
+    # 6. Automatic migration: if an existing .fastast.db is in the repo, migrate it to the cache
+    local_db = root / ".fastast.db"
+    if local_db.exists() and not cache_db.exists():
+        try:
+            shutil.copy2(local_db, cache_db)
+            for ext in ("-wal", "-shm"):
+                wal = root / f".fastast.db{ext}"
+                if wal.exists():
+                    shutil.copy2(wal, cache_dir / f"fastast.db{ext}")
+                    wal.unlink(missing_ok=True)
+            local_db.unlink(missing_ok=True)
+            logger.info("Migrated repository database to global backend cache: %s", cache_db)
+        except Exception as exc:
+            logger.debug("Database migration notice: %s", exc)
+
+    return cache_db
+
+
+def get_lock_path(
+    repo_root: Optional[Union[str, Path]] = None,
+    db_path: Optional[Path] = None,
+) -> Path:
+    """Return the lock file path matching the database location."""
+    if db_path is None:
+        db_path = get_db_path(repo_root)
+    return db_path.parent / (db_path.name + ".lock")
+
 

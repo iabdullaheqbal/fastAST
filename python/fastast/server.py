@@ -21,6 +21,7 @@ except (ImportError, ModuleNotFoundError):
         MCP_AVAILABLE = False
         FastMCP = None
 
+from fastast.config import get_db_path
 from fastast.db import (
     get_call_graph as db_get_call_graph,
     get_connection,
@@ -190,7 +191,7 @@ def get_repository_stats(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -294,7 +295,7 @@ def query_symbols(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -407,7 +408,7 @@ def get_call_graph(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -526,7 +527,7 @@ def get_graph_neighborhood(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -654,7 +655,7 @@ def retrieve_evidence(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -834,7 +835,7 @@ def get_symbol_evidence(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -949,7 +950,7 @@ def get_file_outline(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -1076,7 +1077,7 @@ def get_snippet(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -1195,7 +1196,7 @@ def get_similar_symbols(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -1290,7 +1291,7 @@ def get_community(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))
@@ -1370,7 +1371,7 @@ def list_communities(
             indent=2,
         )
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     try:
         if not db_path.exists():
             do_index_repository(str(root))

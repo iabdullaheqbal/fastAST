@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from fastast import __version__
+from fastast.config import get_db_path
 from fastast.db import get_call_graph, get_connection, search_symbols
 from fastast.indexer import index_repository
 
@@ -295,7 +296,7 @@ def run_symbols(
     if root.is_file():
         root = root.parent
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         if not quiet and not json_output:
             print("Index not found. Indexing repository first...")
@@ -388,7 +389,7 @@ def run_calls(
     if root.is_file():
         root = root.parent
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         if not quiet and not json_output:
             print("Index not found. Indexing repository first...")
@@ -521,7 +522,7 @@ def run_graph(
             sys.stderr.write("Error: Symbol name cannot be empty.\n")
         return 1
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         from fastast.indexer import index_repository
         index_repository(str(root))
@@ -616,7 +617,7 @@ def run_query(
             sys.stderr.write("Error: Query string cannot be empty.\n")
         return 1
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         from fastast.indexer import index_repository
         index_repository(str(root))
@@ -834,7 +835,7 @@ def run_similar(
             sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
         return 1
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         if json_output:
             print(
@@ -917,7 +918,7 @@ def run_communities(
             sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
         return 1
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         if json_output:
             print(
@@ -1000,7 +1001,7 @@ def run_community(
             sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
         return 1
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         if json_output:
             print(
@@ -1081,7 +1082,7 @@ def run_stats(
             sys.stderr.write(f"Error: Directory not found: {dir_path}\n")
         return 1
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         if json_output:
             print(json.dumps({"error": "Index database not found. Run 'fastast index' first.", "results": [], "meta": {}}, indent=2))

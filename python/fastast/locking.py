@@ -36,9 +36,18 @@ class RepositoryLock:
         timeout: float = 30.0,
         stale_timeout: float = 600.0,  # 10 minutes
         poll_interval: float = 0.1,
+        lock_path: Optional[Union[str, Path]] = None,
     ):
         self.repo_root = Path(repo_root).resolve()
-        self.lock_path = self.repo_root / lock_name
+        if lock_path is not None:
+            self.lock_path = Path(lock_path).resolve()
+        elif (self.repo_root / lock_name).exists():
+            self.lock_path = self.repo_root / lock_name
+        elif lock_name != ".fastast.lock":
+            self.lock_path = self.repo_root / lock_name
+        else:
+            from fastast.config import get_lock_path
+            self.lock_path = get_lock_path(self.repo_root)
         self.timeout = max(0.1, timeout)
         self.stale_timeout = max(1.0, stale_timeout)
         self.poll_interval = poll_interval

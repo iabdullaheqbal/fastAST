@@ -49,8 +49,9 @@ def diagnose_repository(
     """Perform comprehensive system diagnostics and health evaluation of a FastAST repository."""
     root = Path(repo_path).resolve()
     config = load_config(root)
-    db_path = (root / db_name).resolve()
-    lock_path = root / ".fastast.lock"
+    from fastast.config import get_db_path, get_lock_path
+    db_path = get_db_path(root, db_name=db_name)
+    lock_path = get_lock_path(root, db_path)
 
     issues: List[str] = []
     recommendations: List[str] = []

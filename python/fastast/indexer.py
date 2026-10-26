@@ -74,7 +74,8 @@ class RepositoryIndexer:
         if db_path is not None:
             self.db_path = Path(db_path).resolve()
         else:
-            self.db_path = (self.repo_path / db_name).resolve()
+            from fastast.config import get_db_path
+            self.db_path = get_db_path(self.repo_path, db_name=db_name)
 
         self.languages = {lang.lower() for lang in languages} if languages else None
         self.extra_ignores = extra_ignores
@@ -447,10 +448,12 @@ class RepositoryIndexer:
                 conn.close()
 
         if self.lock_enabled:
+            from fastast.config import get_lock_path
             lock = RepositoryLock(
                 self.repo_path,
                 timeout=self.lock_timeout,
                 stale_timeout=self.config.stale_lock_seconds,
+                lock_path=get_lock_path(self.repo_path, self.db_path),
             )
             with lock:
                 return _do_index()

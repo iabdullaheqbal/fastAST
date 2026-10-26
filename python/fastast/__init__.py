@@ -9,6 +9,8 @@ from fastast.community import (
 )
 from fastast.config import (
     FastASTConfig,
+    get_cache_root,
+    get_db_path,
     load_config,
 )
 from fastast.db import (
@@ -78,7 +80,7 @@ from fastast.watcher import (
     RepositoryWatcher,
 )
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 _logger = logging.getLogger("fastast")
 

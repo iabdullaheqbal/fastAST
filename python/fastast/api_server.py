@@ -63,7 +63,8 @@ COMMUNITY_PALETTE = [
 
 
 def _get_db_path() -> Path:
-    return REPO_PATH / ".fastast.db"
+    from fastast.config import get_db_path
+    return get_db_path(REPO_PATH)
 
 
 def _get_db_conn(auto_index: bool = False) -> sqlite3.Connection:

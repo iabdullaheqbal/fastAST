@@ -1190,12 +1190,8 @@ def _get_default_engine(
         return RetrievalEngine(db_or_conn, repo_root=repo_root)
 
     root = Path(repo_root) if repo_root else Path.cwd()
-    db_path = root / ".fastast.db"
-    if not db_path.exists():
-        # Check current directory
-        alt = Path.cwd() / ".fastast.db"
-        if alt.exists():
-            db_path = alt
+    from fastast.config import get_db_path
+    db_path = get_db_path(root)
 
     if not db_path.exists():
         from fastast.indexer import index_repository

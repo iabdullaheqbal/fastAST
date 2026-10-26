@@ -28,7 +28,7 @@ class EvidenceMaterializer:
 
     def __init__(
         self,
-        db_or_conn: Union[sqlite3.Connection, Path, str] = ".fastast.db",
+        db_or_conn: Optional[Union[sqlite3.Connection, Path, str]] = None,
         repo_root: Optional[Union[Path, str]] = None,
     ):
         if isinstance(db_or_conn, sqlite3.Connection):
@@ -36,11 +36,16 @@ class EvidenceMaterializer:
             self._close_conn = False
             self.repo_root = Path(repo_root).resolve() if repo_root else Path(".").resolve()
         else:
-            db_path = Path(db_or_conn)
-            if not db_path.exists() and repo_root:
-                candidate = Path(repo_root) / db_path.name
-                if candidate.exists():
-                    db_path = candidate
+            self.repo_root = Path(repo_root).resolve() if repo_root else Path(".").resolve()
+            from fastast.config import get_db_path
+            if db_or_conn is None or db_or_conn in (".fastast.db", "fastast.db"):
+                db_path = get_db_path(self.repo_root)
+            else:
+                db_path = Path(db_or_conn)
+                if not db_path.exists() and not db_path.is_absolute():
+                    candidate = self.repo_root / db_path.name
+                    if candidate.exists():
+                        db_path = candidate
 
             from fastast.db import get_connection, init_db
 
@@ -640,7 +645,8 @@ def _get_default_materializer(
         return EvidenceMaterializer(db_or_conn, repo_root=repo_root)
 
     root = Path(repo_root or ".").resolve()
-    db_path = root / ".fastast.db"
+    from fastast.config import get_db_path
+    db_path = get_db_path(root)
     if not db_path.exists():
         from fastast.indexer import index_repository
         index_repository(str(root))

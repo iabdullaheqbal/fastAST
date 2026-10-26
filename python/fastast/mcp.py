@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from fastast import __version__
+from fastast.config import get_db_path, get_lock_path
 from fastast.db import (
     get_call_graph as db_get_call_graph,
     get_connection,
@@ -72,8 +73,8 @@ def tool_index_status(
             "repository_path": str(target_dir),
         }
 
-    db_path = root / ".fastast.db"
-    lock_path = root / ".fastast.lock"
+    db_path = get_db_path(root)
+    lock_path = get_lock_path(root, db_path)
 
     # Check lock state
     is_locked = False
@@ -181,7 +182,7 @@ def tool_search_symbols(
     if not root:
         return {"error": f"Directory not found: {directory_path}", "symbols": [], "count": 0}
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         return {
             "error": "Repository not indexed yet. Please call fastast_trigger_index first.",
@@ -471,7 +472,7 @@ def tool_community_detail(
     if not root:
         return {"error": f"Directory not found: {directory_path}", "members": []}
 
-    db_path = root / ".fastast.db"
+    db_path = get_db_path(root)
     if not db_path.exists():
         return {"error": "Repository not indexed yet. Call fastast_trigger_index first.", "members": []}
 
