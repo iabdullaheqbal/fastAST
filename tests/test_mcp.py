@@ -68,6 +68,7 @@ def test_mcp_tool_spec_and_schemas():
 
 def test_mcp_index_status_tool():
     """Test fastast_index_status tool on existing repository."""
+    tool_trigger_index(directory_path=".")  # ensure repository is indexed before asserting state
     status = tool_index_status(".")
     assert status["status"] in ("ready", "idle", "indexing")
     assert status["is_indexed"] is True
@@ -88,6 +89,7 @@ def test_mcp_index_status_tool():
 
 def test_mcp_search_symbols_tool():
     """Test fastast_search_symbols tool with various filters."""
+    tool_trigger_index(directory_path=".")  # ensure repository is indexed before searching
     # 1. Search by query
     res = tool_search_symbols(query="index", limit=10, directory_path=".")
     assert res["error"] is None

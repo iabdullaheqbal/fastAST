@@ -20,7 +20,7 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Windsurf**, **Co
 ## Key Features
 
 1. **Native Tree-Sitter AST Engine (Rust):** High-speed multi-language parsing extracting functions, classes, methods, docstrings, imports, and call sites across 9 languages.
-2. **Persistent Relational Code Graph:** Stores symbols and typed edges (`calls`, `defines`, `imports`, `inherits`) in a local SQLite WAL database (`.fastast.db`).
+2. **Persistent Relational Code Graph:** Stores symbols and typed edges (`calls`, `defines`, `imports`, `inherits`) in a per-repository SQLite WAL database under your platform cache (e.g. `~/.cache/fastast/projects/<repo>_<hash>/fastast.db`), so no database file is written into your working tree.
 3. **Token-Bounded Evidence Retrieval:** Combines BM25 full-text search, dense embeddings, and 1-hop graph expansion into concise evidence bundles bounded by strict token budgets.
 4. **Zero-Setup Graph Explorer (`fastast ui`):** An interactive 2D architecture canvas pre-bundled inside the PyPI package—**zero Node.js or npm dependencies required at runtime**.
 5. **Agent-Native MCP Server:** Standards-compliant Model Context Protocol (MCP) server for instant integration with Claude, Cursor, and VS Code.
@@ -32,6 +32,8 @@ FastAST equips AI coding agents (**Claude Code**, **Cursor**, **Windsurf**, **Co
 When AI coding agents investigate bugs or explore repositories without FastAST, they typically read entire files (`cat`/`read_file`) or dump wide `grep` matches into context. This exhausts token limits, inflates API bills, and causes "lost in the middle" hallucinations.
 
 FastAST replaces raw file ingestion with **AST-bounded symbol slices** and **precomputed 1-hop graph neighborhoods**, enforcing strict programmatic budgets (`max_tokens: 1024` or `2048`).
+
+> **About the default semantic search:** The built-in `SemanticProjectionProvider` is a lightweight, offline-first, zero-dependency vectorizer — a software-domain concept taxonomy combined with subword/character n-gram feature hashing, L2-normalized. It is **not** a learned neural embedding model; it contributes a lexical/morphological signal to hybrid ranking with no network calls or heavy dependencies. For true learned embeddings, set `FASTAST_EMBEDDING_PROVIDER=fastembed` (or `sentence-transformers`) — see [`python/fastast/embeddings.py`](python/fastast/embeddings.py).
 
 <p align="center">
   <img src="docs/assets/evidence_view.svg" alt="FastAST Token-Bounded Retrieval vs Traditional File Dumps" width="100%" />
@@ -84,7 +86,7 @@ fastast-mcp --version
 
 ### 2. Index a Repository
 
-Index any repository into a persistent local `.fastast.db` SQLite database:
+Index any repository into a per-repository SQLite database under your platform cache (Linux: `~/.cache/fastast/projects/<repo>_<hash>/fastast.db`, macOS: `~/Library/Caches/fastast/...`)—no database file is written into your repo:
 
 ```bash
 # Index current directory:
@@ -195,7 +197,7 @@ Add to your `claude_desktop_config.json` (*macOS:* `~/Library/Application Suppor
 | `fastast_list_communities` | `limit?: int` | Returns Louvain modularity clusters grouping symbols into architectural subsystems. |
 | `fastast_similar_symbols` | `symbol: string`, `min_similarity?: float` | Detects near-duplicate structural code clones using MinHash + LSH. |
 | `fastast_index_status` | `directory_path?: string` | Reports current index health, total files, symbols, and edge counts. |
-| `fastast_trigger_index` | `directory_path?: string`, `force?: bool` | Triggers incremental or full repository indexing into `.fastast.db`. |
+| `fastast_trigger_index` | `directory_path?: string`, `force?: bool` | Triggers incremental or full repository indexing into the SQLite code graph. |
 
 ---
 
@@ -203,7 +205,7 @@ Add to your `claude_desktop_config.json` (*macOS:* `~/Library/Application Suppor
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `fastast index` | `[DIR] [--force] [--json]` | Index repository into `.fastast.db` with incremental change detection. |
+| `fastast index` | `[DIR] [--force] [--json]` | Index repository into the SQLite code graph with incremental change detection. |
 | `fastast scan` | `[DIR] [--json]` | Fast repository survey reporting file counts, languages, and token estimates. |
 | `fastast symbols` | `QUERY [-k KIND] [-l LANG] [-n LIMIT]` | Search symbols by name, kind (`function`, `class`), or language. |
 | `fastast calls` | `SYMBOL [-d DEPTH] [--json]` | Trace inbound callers and outbound invocations across the repository. |
@@ -270,7 +272,7 @@ FastAST combines a native Rust Tree-Sitter parsing core with an embedded SQLite 
         │             │ • Token-Bounded Materializer  │
         ▼             └───────────────┬───────────────┘
 ┌─────────────────────────────────────┴───────────────┐
-│ Local SQLite WAL Store (.fastast.db)                │
+│ Local SQLite WAL Store (platform cache)             │
 │ files · symbols · edges · calls · imports           │
 │ symbols_fts · symbol_embeddings · symbol_similarity │
 │ symbol_communities · schema_migrations              │

@@ -3,6 +3,7 @@
 import sqlite3
 import tempfile
 import textwrap
+import time
 from pathlib import Path
 from fastast import index_code
 from fastast.db import (
