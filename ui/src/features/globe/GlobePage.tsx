@@ -1579,7 +1579,7 @@ export const GlobePage: React.FC<GlobePageProps> = ({ connectionVersion = 0, onN
             {isLoadingCalls ? (
               <div className="text-xs text-outline py-2">Loading imports...</div>
             ) : imports.length > 0 ? (
-              <div className="flex flex-col gap-1.5 max-h-[190px] overflow-y-auto pr-1">
+              <div className="flex flex-col gap-1.5">
                 {imports.map((imp, idx) => {
                   const label = imp.name ? `${imp.name} (${imp.module})` : imp.module;
                   return (
@@ -1617,7 +1617,7 @@ export const GlobePage: React.FC<GlobePageProps> = ({ connectionVersion = 0, onN
           </div>
 
           {/* Action Buttons */}
-          <div className="mt-auto pt-4 flex flex-col gap-2">
+          <div className="pt-2 pb-6 flex flex-col gap-2 flex-shrink-0">
             <button
               className="action-btn action-btn-primary"
               onClick={() => onNavigateToExplore?.(selectedNode.name, selectedNode.file_path)}
@@ -1638,7 +1638,7 @@ export const GlobePage: React.FC<GlobePageProps> = ({ connectionVersion = 0, onN
         .graph2d-page-layout {
           position: relative;
           width: 100%;
-          height: calc(100vh - 56px);
+          height: 100%;
           display: flex;
           background: #080b11;
           color: var(--on-surface);
@@ -1673,11 +1673,16 @@ export const GlobePage: React.FC<GlobePageProps> = ({ connectionVersion = 0, onN
         }
         .panel-scrollable {
           flex: 1;
+          min-width: 0;
+          min-height: 0;
+          width: 100%;
           overflow-y: auto;
+          overflow-x: hidden;
           padding: 14px;
           display: flex;
           flex-direction: column;
           gap: 16px;
+          overscroll-behavior: contain;
         }
         .filter-section {
           display: flex;
@@ -1888,11 +1893,13 @@ export const GlobePage: React.FC<GlobePageProps> = ({ connectionVersion = 0, onN
           width: 320px;
           flex-shrink: 0;
           height: 100%;
+          min-height: 0;
           background: var(--surface-low);
           border-left: 1px solid var(--hairline);
           display: flex;
           flex-direction: column;
           z-index: 20;
+          overflow: hidden;
         }
         .kind-badge {
           font-family: var(--font-mono);
@@ -1931,12 +1938,34 @@ export const GlobePage: React.FC<GlobePageProps> = ({ connectionVersion = 0, onN
           padding: 12px;
         }
         .edge-node-row {
+          min-width: 0;
+          max-width: 100%;
+          overflow: hidden;
           padding: 6px 8px;
           border-radius: 4px;
           background: var(--surface-lowest);
           border: 1px solid var(--hairline);
           cursor: pointer;
           transition: all 0.15s;
+        }
+        .edge-node-row > div,
+        .edge-node-row span {
+          min-width: 0;
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .inspector-card,
+        .edge-group-section {
+          min-width: 0;
+          max-width: 100%;
+          flex-shrink: 0;
+        }
+        .inspector-card > div,
+        .edge-group-section > div {
+          min-width: 0;
+          max-width: 100%;
         }
         .edge-node-row:hover {
           background: var(--surface-high);
@@ -1974,8 +2003,44 @@ export const GlobePage: React.FC<GlobePageProps> = ({ connectionVersion = 0, onN
         .action-btn-secondary:hover {
           background: var(--surface-high);
         }
+
+        @media (max-width: 1200px) {
+          .graph2d-left-panel {
+            width: 196px;
+          }
+          .graph2d-right-panel {
+            width: 320px;
+          }
+          .hud-metric-pill {
+            max-width: 142px;
+          }
+          .hud-metric-pill > .text-outline {
+            display: none;
+          }
+          .hud-actions {
+            gap: 4px;
+          }
+          .hud-btn {
+            padding: 6px 8px;
+          }
+        }
+
+        @media (max-width: 980px) {
+          .graph2d-left-panel {
+            width: 64px;
+          }
+          .graph2d-left-panel .panel-header,
+          .graph2d-left-panel .panel-scrollable {
+            display: none;
+          }
+          .graph2d-right-panel {
+            width: 280px;
+          }
+          .hud-btn span:last-child {
+            display: none;
+          }
+        }
       `}</style>
     </div>
   );
 };
-

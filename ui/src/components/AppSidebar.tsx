@@ -131,11 +131,19 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ stats, health, apiError 
           padding: 12px 10px;
           z-index: 30;
           user-select: none;
+          overflow-y: auto;
+          overflow-x: hidden;
         }
         .sidebar-section {
           display: flex;
           flex-direction: column;
           gap: 6px;
+          flex: 1;
+          min-height: 0;
+          overflow-y: auto;
+          overflow-x: hidden;
+          padding-right: 2px;
+          overscroll-behavior: contain;
         }
         .sidebar-heading {
           font-family: var(--font-mono);
@@ -150,6 +158,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ stats, health, apiError 
           display: flex;
           flex-direction: column;
           gap: 3px;
+          flex-shrink: 0;
         }
         .sidebar-link {
           display: flex;
@@ -223,6 +232,8 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ stats, health, apiError 
         .sidebar-footer {
           padding-top: 10px;
           border-top: 1px solid var(--hairline);
+          margin-top: auto;
+          flex-shrink: 0;
         }
         .conn-card {
           background: var(--surface);
@@ -259,6 +270,70 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ stats, health, apiError 
           font-size: 10px;
           color: var(--outline);
           line-height: 1.4;
+        }
+
+        @media (max-width: 1280px) {
+          .app-sidebar {
+            width: 196px;
+            padding: 8px 7px;
+          }
+          .sidebar-link {
+            padding: 6px 8px;
+          }
+          .sidebar-sub {
+            font-size: 9.5px;
+          }
+        }
+
+        @media (max-width: 980px) {
+          .app-sidebar {
+            width: 64px;
+            padding: 8px 6px;
+          }
+          .sidebar-heading,
+          .sidebar-link-text,
+          .sidebar-footer {
+            display: none;
+          }
+          .sidebar-nav {
+            align-items: center;
+          }
+          .sidebar-link {
+            width: 52px;
+            height: 44px;
+            justify-content: center;
+            padding: 0;
+          }
+          .sidebar-icon {
+            font-size: 20px;
+          }
+        }
+
+        @media (max-height: 620px) {
+          .app-sidebar {
+            padding-top: 6px;
+            padding-bottom: 6px;
+          }
+          .sidebar-heading {
+            display: none;
+          }
+          .sidebar-nav {
+            gap: 1px;
+          }
+          .sidebar-link {
+            padding-top: 5px;
+            padding-bottom: 5px;
+          }
+          .sidebar-sub,
+          .conn-meta {
+            display: none;
+          }
+          .sidebar-footer {
+            padding-top: 6px;
+          }
+          .conn-card {
+            padding: 7px 8px;
+          }
         }
       `}</style>
     </aside>
