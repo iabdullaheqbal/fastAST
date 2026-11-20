@@ -1,0 +1,183 @@
+/* FastAST Lens — Coverage Page Component Styles */
+
+.coverage-page {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-lowest);
+  overflow-y: auto;
+}
+
+.coverage-header {
+  padding: 14px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.coverage-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--on-surface);
+  margin: 0;
+}
+
+.coverage-subtitle {
+  font-size: 12px;
+  color: var(--outline);
+  margin: 2px 0 0 0;
+}
+
+.refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--surface-container);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  color: var(--on-surface);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.coverage-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1320px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.summary-cards-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.summary-card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--outline);
+  text-transform: uppercase;
+}
+
+.card-val {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.card-sub {
+  font-size: 11px;
+  color: var(--outline);
+}
+
+.cat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0;
+}
+
+.cat-chip {
+  background: var(--surface-low);
+  border: 1px solid var(--hairline);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  color: var(--on-surface-variant);
+}
+
+.section-card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.table-title {
+  font-size: 11px;
+  color: var(--outline);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.languages-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.lang-box {
+  background: var(--surface-low);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lang-box-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lang-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.lang-meter {
+  width: 100%;
+  height: 5px;
+  background: var(--surface-lowest);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.lang-meter-bar {
+  height: 100%;
+  border-radius: 3px;
+}
+
+.lang-box-bottom {
+  display: flex;
+  justify-content: space-between;
+}
+
+.kinds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.kind-stat-box {
+  background: var(--surface-low);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

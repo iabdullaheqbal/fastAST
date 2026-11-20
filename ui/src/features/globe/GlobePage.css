@@ -1,0 +1,447 @@
+/* FastAST Lens — 2D/3D Globe/Graph Page Component Styles */
+
+.graph2d-page-layout {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  background: #080b11;
+  color: var(--on-surface);
+  overflow: hidden;
+}
+
+/* 1. Left Panel */
+.graph2d-left-panel {
+  width: 280px;
+  flex-shrink: 0;
+  height: 100%;
+  background: var(--surface-low);
+  border-right: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+}
+
+.panel-header {
+  height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.panel-scrollable {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overscroll-behavior: contain;
+}
+
+.filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--outline);
+}
+
+/* Search */
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 6px 8px;
+  gap: 6px;
+}
+
+.search-input {
+  background: transparent;
+  border: none;
+  color: var(--on-surface);
+  font-size: 12px;
+  outline: none;
+  width: 100%;
+}
+
+.clear-btn {
+  color: var(--outline);
+  font-size: 11px;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+
+.search-dropdown {
+  margin-top: 4px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.search-item {
+  padding: 6px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  transition: background 0.15s;
+}
+
+.search-item:hover {
+  background: var(--surface-high);
+}
+
+/* Hop Pills */
+.hop-pill-group {
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.hop-pill {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  color: var(--outline);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.hop-pill-active {
+  background: var(--primary);
+  color: #080b11;
+}
+
+/* Filter Rows */
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.color-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.filter-label {
+  flex: 1;
+  color: var(--on-surface);
+}
+
+.filter-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* Community rows */
+.community-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: var(--surface);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.community-item:hover {
+  background: var(--surface-high);
+}
+
+/* 2. Center Canvas Viewport */
+.graph2d-viewport {
+  position: relative;
+  flex: 1;
+  height: 100%;
+  background: #080b11;
+  overflow: hidden;
+}
+
+.graph2d-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.canvas-hud {
+  position: absolute;
+  top: 14px;
+  left: 18px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.hud-metric-pill {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid var(--hairline);
+  border-radius: 20px;
+  backdrop-filter: blur(8px);
+}
+
+.hud-actions {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--on-surface);
+  font-size: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: background 0.15s;
+}
+
+.hud-btn:hover {
+  background: var(--surface-high);
+}
+
+.canvas-hint {
+  position: absolute;
+  bottom: 14px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--outline);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* 3. Right Inspector Panel */
+.graph2d-right-panel {
+  width: 320px;
+  flex-shrink: 0;
+  height: 100%;
+  min-height: 0;
+  background: var(--surface-low);
+  border-left: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+  overflow: hidden;
+}
+
+.kind-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.inspector-card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.stat-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--outline);
+}
+
+.stat-val {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.edge-group-section {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.edge-node-row {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--surface-lowest);
+  border: 1px solid var(--hairline);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.edge-node-row > div,
+.edge-node-row span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-card,
+.edge-group-section {
+  min-width: 0;
+  max-width: 100%;
+  flex-shrink: 0;
+}
+
+.inspector-card > div,
+.edge-group-section > div {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.edge-node-row:hover {
+  background: var(--surface-high);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.edge-node-row-import:hover {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s;
+}
+
+.action-btn-primary {
+  background: var(--primary);
+  color: #080b11;
+}
+
+.action-btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.action-btn-secondary {
+  background: var(--surface);
+  color: var(--on-surface);
+  border: 1px solid var(--hairline);
+}
+
+.action-btn-secondary:hover {
+  background: var(--surface-high);
+}
+
+@media (max-width: 1200px) {
+  .graph2d-left-panel {
+    width: 196px;
+  }
+  .graph2d-right-panel {
+    width: 320px;
+  }
+  .hud-metric-pill {
+    max-width: 142px;
+  }
+  .hud-metric-pill > .text-outline {
+    display: none;
+  }
+  .hud-actions {
+    gap: 4px;
+  }
+  .hud-btn {
+    padding: 6px 8px;
+  }
+}
+
+@media (max-width: 980px) {
+  .graph2d-left-panel {
+    width: 64px;
+  }
+  .graph2d-left-panel .panel-header,
+  .graph2d-left-panel .panel-scrollable {
+    display: none;
+  }
+  .graph2d-right-panel {
+    width: 280px;
+  }
+  .hud-btn span:last-child {
+    display: none;
+  }
+}

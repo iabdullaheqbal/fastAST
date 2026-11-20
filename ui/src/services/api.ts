@@ -11,9 +11,67 @@ import type {
   SymbolRecord,
 } from '../types';
 
-const API_BASE = '/api';
-const DIRECT_API_BASE = 'http://127.0.0.1:4200/api';
 const REQUEST_TIMEOUT_MS = 10000;
+
+/**
+ * Resolves the primary API base URL.
+ * Priority:
+ * 1. Vite environment variable `VITE_API_BASE_URL` or `VITE_API_URL`
+ * 2. Runtime window config `window.__FASTAST_API_URL__` (for dynamic cloud/container injection)
+ * 3. Default relative `/api` (works seamlessly for same-origin bundled UI and reverse proxies)
+ */
+export function getApiBase(): string {
+  const envUrl = (import.meta as any).env?.VITE_API_BASE_URL || (import.meta as any).env?.VITE_API_URL;
+  if (envUrl) {
+    return String(envUrl).replace(/\/+$/, '');
+  }
+  if (typeof window !== 'undefined' && (window as any).__FASTAST_API_URL__) {
+    return String((window as any).__FASTAST_API_URL__).replace(/\/+$/, '');
+  }
+  return '/api';
+}
+
+/**
+ * Resolves an optional direct fallback URL when running in local development
+ * (e.g. Vite dev server on port 5173 while FastAPI backend runs on port 4200).
+ * For remote deployments, avoids hardcoded 127.0.0.1 to prevent mixed content and unreachable host errors.
+ */
+export function getDirectFallbackBase(): string | null {
+  const envFallback = (import.meta as any).env?.VITE_API_DIRECT_FALLBACK;
+  if (envFallback) {
+    return String(envFallback).replace(/\/+$/, '');
+  }
+
+  if (typeof window === 'undefined') return null;
+
+  const { hostname, protocol, port } = window.location;
+
+  // If already on port 4200, relative `/api` is same-origin
+  if (port === '4200') return null;
+
+  // In local dev (localhost / 127.0.0.1 with Vite on 5173 or similar), attempt direct backend port
+  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  if (isLocalhost) {
+    return `${protocol}//${hostname}:4200/api`;
+  }
+
+  // On remote deployments, keep same origin
+  return null;
+}
+
+/**
+ * Returns a user-friendly display string representing the target API endpoint.
+ */
+export function getApiEndpointDisplay(): string {
+  const base = getApiBase();
+  if (base.startsWith('http://') || base.startsWith('https://')) {
+    return base;
+  }
+  if (typeof window !== 'undefined') {
+    return `${window.location.origin}${base}`;
+  }
+  return base;
+}
 
 export class ApiConnectionError extends Error {
   status?: number;
@@ -30,20 +88,22 @@ export class ApiConnectionError extends Error {
 async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const apiBase = getApiBase();
+  const directBase = getDirectFallbackBase();
 
   try {
     let res: Response | null = null;
     let primaryErr: any = null;
 
     try {
-      res = await fetch(`${API_BASE}${endpoint}`, {
+      res = await fetch(`${apiBase}${endpoint}`, {
         ...options,
         signal: controller.signal,
       });
-      // If Vite proxy returned 502/504 Bad Gateway or 500, attempt direct fallback to port 4200
-      if (!res.ok && (res.status === 502 || res.status === 504 || res.status === 500)) {
+      // If primary returned 502/504 Bad Gateway or 500, attempt direct fallback if available
+      if (directBase && !res.ok && (res.status === 502 || res.status === 504 || res.status === 500)) {
         try {
-          const directRes = await fetch(`${DIRECT_API_BASE}${endpoint}`, {
+          const directRes = await fetch(`${directBase}${endpoint}`, {
             ...options,
             signal: controller.signal,
           });
@@ -51,18 +111,22 @@ async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T>
             res = directRes;
           }
         } catch {
-          // Direct fallback failed, keep proxy response
+          // Direct fallback failed, keep primary response
         }
       }
     } catch (err: any) {
       primaryErr = err;
-      // Network failure on proxy route, attempt direct connect
-      try {
-        res = await fetch(`${DIRECT_API_BASE}${endpoint}`, {
-          ...options,
-          signal: controller.signal,
-        });
-      } catch {
+      // Network failure on primary route, attempt direct fallback if available
+      if (directBase) {
+        try {
+          res = await fetch(`${directBase}${endpoint}`, {
+            ...options,
+            signal: controller.signal,
+          });
+        } catch {
+          throw primaryErr;
+        }
+      } else {
         throw primaryErr;
       }
     }
@@ -85,14 +149,15 @@ async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T>
     if (err instanceof ApiConnectionError) {
       throw err;
     }
+    const targetDesc = getApiEndpointDisplay();
     if (err?.name === 'AbortError') {
       throw new ApiConnectionError(
-        `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s (${endpoint}). Ensure FastAST API server is running on port 4200.`,
+        `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s (${endpoint}). Ensure FastAST API server is running at ${targetDesc}.`,
         endpoint
       );
     }
     throw new ApiConnectionError(
-      `Cannot reach FastAST API server at http://127.0.0.1:4200 (${endpoint}). Start it with "fastast serve" or "./start_ui.sh".`,
+      `Cannot reach FastAST API server at ${targetDesc} (${endpoint}). Start it with "fastast serve" or check your network configuration.`,
       endpoint
     );
   } finally {
