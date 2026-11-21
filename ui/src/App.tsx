@@ -9,9 +9,8 @@ import { EvidencePage } from './features/evidence/EvidencePage';
 import { ExplorePage } from './features/explore/ExplorePage';
 import { GlobePage } from './features/globe/GlobePage';
 import { SystemPage } from './features/system/SystemPage';
-import { fastAstApi, getApiEndpointDisplay } from './services/api';
+import { fastAstApi } from './services/api';
 import type { HealthStatus, RepoStats } from './types';
-import './App.css';
 
 const AppWorkspace: React.FC = () => {
   const navigate = useNavigate();
@@ -36,7 +35,7 @@ const AppWorkspace: React.FC = () => {
     } catch (err: any) {
       setApiError(
         err?.message ||
-          `Cannot connect to FastAST API Server at ${getApiEndpointDisplay()}.`
+          'Cannot connect to FastAST API Server on http://127.0.0.1:4200.'
       );
     } finally {
       setIsRetrying(false);
@@ -112,7 +111,7 @@ const AppWorkspace: React.FC = () => {
                   <span className="material-symbols-outlined text-error">error</span>
                   <div>
                     <strong>Backend API Unreachable:</strong> {apiError} Run{' '}
-                    <code>fastast serve</code> or <code>./start_ui.sh</code> from the
+                    <code>fastast serve --port 4200</code> or <code>./start_ui.sh</code> from the
                     repository root.
                   </div>
                 </div>
@@ -162,6 +161,36 @@ const AppWorkspace: React.FC = () => {
           </Routes>
         </div>
       </div>
+
+      <style>{`
+        .app-root {
+          width: 100vw;
+          height: 100vh;
+          display: flex;
+          flex-direction: column;
+          background: var(--surface-lowest);
+          overflow: hidden;
+        }
+        .app-body {
+          flex: 1;
+          display: flex;
+          overflow: hidden;
+          position: relative;
+        }
+        .app-main-viewport {
+          flex: 1;
+          height: calc(100vh - 52px);
+          overflow: hidden;
+          position: relative;
+          display: flex;
+          flex-direction: column;
+        }
+        .global-error-strip {
+          padding: 10px 16px 0 16px;
+          background: var(--surface-lowest);
+          z-index: 35;
+        }
+      `}</style>
     </div>
   );
 };

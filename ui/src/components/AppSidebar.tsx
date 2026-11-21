@@ -1,8 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { getApiEndpointDisplay } from '../services/api';
 import type { HealthStatus, RepoStats } from '../types';
-import './AppSidebar.css';
 
 interface AppSidebarProps {
   stats: RepoStats | null;
@@ -112,13 +110,232 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ stats, health, apiError 
             </span>
           </div>
           <div className="conn-meta font-code">
-            <div style={{ wordBreak: 'break-all' }}>Endpoint: {getApiEndpointDisplay()}</div>
+            <div>Endpoint: 127.0.0.1:4200</div>
             <div>
               DB: {health?.db_exists ? '.fastast.db (WAL)' : 'Not initialized'}
             </div>
           </div>
         </div>
       </div>
+
+      <style>{`
+        .app-sidebar {
+          width: 220px;
+          flex-shrink: 0;
+          height: calc(100vh - 52px);
+          background: var(--surface-low);
+          border-right: 1px solid var(--hairline);
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          padding: 12px 10px;
+          z-index: 30;
+          user-select: none;
+          overflow-y: auto;
+          overflow-x: hidden;
+        }
+        .sidebar-section {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          flex: 1;
+          min-height: 0;
+          overflow-y: auto;
+          overflow-x: hidden;
+          padding-right: 2px;
+          overscroll-behavior: contain;
+        }
+        .sidebar-heading {
+          font-family: var(--font-mono);
+          font-size: 10px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--outline);
+          padding: 2px 8px;
+        }
+        .sidebar-nav {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          flex-shrink: 0;
+        }
+        .sidebar-link {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 10px;
+          border-radius: 6px;
+          text-decoration: none;
+          color: var(--on-surface-variant);
+          border: 1px solid transparent;
+          transition: all 0.12s ease;
+        }
+        .sidebar-link:hover {
+          background: var(--surface);
+          color: var(--on-surface);
+        }
+        .sidebar-link-active {
+          background: var(--surface-container);
+          color: var(--on-surface);
+          border-color: var(--hairline);
+          box-shadow: inset 2px 0 0 0 var(--primary);
+        }
+        .sidebar-link-active .sidebar-icon {
+          color: var(--primary);
+        }
+        .sidebar-icon {
+          font-size: 18px;
+          color: var(--outline);
+          flex-shrink: 0;
+        }
+        .sidebar-link-text {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 1px;
+        }
+        .sidebar-link-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 4px;
+        }
+        .sidebar-label {
+          font-size: 12.5px;
+          font-weight: 600;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .sidebar-badge {
+          font-family: var(--font-mono);
+          font-size: 9.5px;
+          padding: 1px 5px;
+          border-radius: 3px;
+          background: var(--surface-high);
+          color: var(--on-surface-variant);
+          font-weight: 600;
+        }
+        .sidebar-badge-err {
+          background: rgba(244, 63, 94, 0.2);
+          color: var(--error-light);
+        }
+        .sidebar-sub {
+          font-size: 10.5px;
+          color: var(--outline);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .sidebar-footer {
+          padding-top: 10px;
+          border-top: 1px solid var(--hairline);
+          margin-top: auto;
+          flex-shrink: 0;
+        }
+        .conn-card {
+          background: var(--surface);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          padding: 9px 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+        .conn-row {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+        }
+        .conn-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+        .conn-dot-ok {
+          background: var(--tertiary);
+        }
+        .conn-dot-err {
+          background: var(--error);
+        }
+        .conn-title {
+          font-size: 11.5px;
+          font-weight: 600;
+          color: var(--on-surface);
+        }
+        .conn-meta {
+          font-size: 10px;
+          color: var(--outline);
+          line-height: 1.4;
+        }
+
+        @media (max-width: 1280px) {
+          .app-sidebar {
+            width: 196px;
+            padding: 8px 7px;
+          }
+          .sidebar-link {
+            padding: 6px 8px;
+          }
+          .sidebar-sub {
+            font-size: 9.5px;
+          }
+        }
+
+        @media (max-width: 980px) {
+          .app-sidebar {
+            width: 64px;
+            padding: 8px 6px;
+          }
+          .sidebar-heading,
+          .sidebar-link-text,
+          .sidebar-footer {
+            display: none;
+          }
+          .sidebar-nav {
+            align-items: center;
+          }
+          .sidebar-link {
+            width: 52px;
+            height: 44px;
+            justify-content: center;
+            padding: 0;
+          }
+          .sidebar-icon {
+            font-size: 20px;
+          }
+        }
+
+        @media (max-height: 620px) {
+          .app-sidebar {
+            padding-top: 6px;
+            padding-bottom: 6px;
+          }
+          .sidebar-heading {
+            display: none;
+          }
+          .sidebar-nav {
+            gap: 1px;
+          }
+          .sidebar-link {
+            padding-top: 5px;
+            padding-bottom: 5px;
+          }
+          .sidebar-sub,
+          .conn-meta {
+            display: none;
+          }
+          .sidebar-footer {
+            padding-top: 6px;
+          }
+          .conn-card {
+            padding: 7px 8px;
+          }
+        }
+      `}</style>
     </aside>
   );
 };
